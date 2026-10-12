@@ -45,9 +45,9 @@ finish() {
 # built KERNEL MODULE
 built() {
   local file
-  file=$(modinfo -b "${root:-/}" -k "$1" -F filename "$2" 2>/dev/null)
+  file=$(modfile filename "$1" "$2")
   if [[ -n $file ]]; then
-    ok "$2.ko built for $1: $file (version $(modinfo -b "${root:-/}" -k "$1" -F version "$2" 2>/dev/null))"
+    ok "$2.ko built for $1: $file (version $(modfile version "$1" "$2"))"
   else
     bad "$2.ko is not built for kernel $1. Install the headers for $1, then run: sudo dkms autoinstall -k $1"
   fi
@@ -58,6 +58,22 @@ tool() {
   path=$(dirname -- "$(realpath -- "$0")")/$1
   [[ -x $path ]] || path=$(command -v "$1" || true)
   printf '%s\n' "$path"
+}
+
+# modinfo FIELD KERNEL MODULE. Without --root (the running system) no -b is
+# passed, so kmod honors MODULE_DIR (NixOS points it at the booted kernel's
+# tree, /run/booted-system/kernel-modules); a plain lookup without -k follows,
+# which resolves the loaded module itself. With --root (tests) the -b lookup
+# below DIR/usr/lib/modules is unchanged.
+modfile() { # FIELD KERNEL MODULE
+  local f=""
+  if [[ -z $root ]]; then
+    f=$(modinfo -k "$2" -F "$1" "$3" 2>/dev/null)
+    [[ -n $f ]] || f=$(modinfo -F "$1" "$3" 2>/dev/null)
+  else
+    f=$(modinfo -b "$root" -k "$2" -F "$1" "$3" 2>/dev/null)
+  fi
+  printf '%s\n' "$f"
 }
 
 smoke=0
@@ -104,12 +120,16 @@ dtbs=$(sed -n 's/^dtbs_source=//p' <<<"$dtstatus")
 # in-tree driver reads intree until the reboot.
 mods=$root/usr/lib/modules/$kver
 own=("$mods"/kernel/drivers/accel/ane/"$mod".ko*)
-file=$(modinfo -b "${root:-/}" -k "$kver" -F filename "$mod" 2>/dev/null)
+file=$(modfile filename "$kver" "$mod")
 grep -qx "kernel/drivers/accel/ane/$mod.ko" "$mods/modules.builtin" 2>/dev/null && own=("(builtin)") file="(builtin)"
 live=$(cat "$root/sys/module/$mod/srcversion" 2>/dev/null)
 for f in "${own[@]}"; do
   [[ -n $live && $(modinfo -F srcversion "$f" 2>/dev/null) == "$live" ]] && file=$f
 done
+if [[ -z $root && -z $file ]]; then
+  loaded=$(modinfo -F filename "$mod" 2>/dev/null)
+  [[ $loaded == */kernel/* ]] && file=$loaded
+fi
 case $file in
   "") src=none ;;
   "(builtin)"|*/kernel/*) src=intree ;;
@@ -200,7 +220,7 @@ built "$kver" "$mod"
 if [[ -d $root/sys/module/$mod ]]; then
   ver=$(cat "$root/sys/module/$mod/version" 2>/dev/null)
   ok "$mod is loaded${ver:+ (version $ver)}"
-  disk=$(modinfo -b "${root:-/}" -k "$kver" -F srcversion "$mod" 2>/dev/null)
+  disk=$(modfile srcversion "$kver" "$mod")
   live=$(cat "$root/sys/module/$mod/srcversion" 2>/dev/null)
   if [[ -n $disk && -n $live && $disk != "$live" ]]; then
     echo "  note  the loaded $mod differs from the installed $mod.ko. Reboot to load the new one. Do not rmmod $mod."

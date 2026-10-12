@@ -102,19 +102,28 @@ for config, source, mode in ((KERNEL_DTBS, 'other', f'dtbs_source=kernel: {oadt.
 MODINFO = '''#!/usr/bin/env python3
 import glob, os, sys
 a = sys.argv[1:]
-base, kver, field, target = (a[a.index('-b') + 1] if '-b' in a else '/'), (a[a.index('-k') + 1] if '-k' in a else ''), \\
-    a[a.index('-F') + 1], a[-1]
-mods = os.path.join(base, 'usr/lib/modules', kver)
+base = a[a.index('-b') + 1] if '-b' in a else os.environ.get('MODULE_DIR', '')
+kver = a[a.index('-k') + 1] if '-k' in a else ''
+field, target = a[a.index('-F') + 1], a[-1]
+# -b DIR: DIR/usr/lib/modules/KVER (the tests' --root layout). MODULE_DIR:
+# the tree itself (as on NixOS, /run/booted-system/kernel-modules), any kernel
+# when -k is absent. Plain modinfo with neither -b nor MODULE_DIR: /usr/lib/modules.
+trees = [os.path.join(base, 'usr/lib/modules')] if base and '-b' in a else ([base] if base else ['/usr/lib/modules'])
+mods = [os.path.join(t, kver) if kver else t for t in trees]
 if not target.startswith('/'):
-    try:
-        builtin = f'kernel/drivers/accel/ane/{target}.ko' in open(os.path.join(mods, 'modules.builtin')).read().split()
-    except OSError:
-        builtin = False
-    if builtin:
-        print('(builtin)' if field == 'filename' else '')
-        sys.exit(0)
-    hits = sorted(glob.glob(f'{mods}/updates/**/{target}.ko*', recursive=True)) or \\
-        sorted(glob.glob(f'{mods}/kernel/**/{target}.ko*', recursive=True))
+    for m in mods:
+        try:
+            if f'kernel/drivers/accel/ane/{target}.ko' in open(os.path.join(m, 'modules.builtin')).read().split():
+                print('(builtin)' if field == 'filename' else '')
+                sys.exit(0)
+        except OSError:
+            pass
+    hits = []
+    for m in mods:
+        hits = sorted(glob.glob(f'{m}/updates/**/{target}.ko*', recursive=True)) or \\
+               sorted(glob.glob(f'{m}/kernel/**/{target}.ko*', recursive=True))
+        if hits:
+            break
     if not hits:
         sys.exit(1)
     target = hits[0]
@@ -216,5 +225,25 @@ rc, out, _ = check(soc, builtin=True, loaded='')
 assert f'  driver_source=intree ({mod}: (builtin)); {INTREE}' in out.splitlines(), out
 rc, out, _ = check(soc)
 assert rc == 1 and '  driver_source=none' in out.splitlines(), out
+
+# 4g. The running system without --root: modinfo gets no -b, so MODULE_DIR
+#     decides (NixOS keeps the booted kernel's tree there). A plain lookup
+#     without -k is the fallback for a loaded module. The host's real /sys
+#     gives no SoC here, which the check tolerates; only the module lines are
+#     asserted.
+host_bin = Path(tempfile.mkdtemp())
+shutil.copy(repo / 'packaging/omarchy-ane-check', host_bin)
+stub(host_bin / 'modinfo', MODINFO)
+stub(host_bin / 'uname', f'#!/bin/sh\necho {KVER}\n')
+stub(host_bin / 'omarchy-ane-dt', '#!/bin/sh\necho "dtbs_source line not read here"\n')
+stub(host_bin / 'omarchy-ane-firmware-fetch', '#!/bin/sh\necho "/usr/lib/firmware/x matches the pin"\n')
+nix = Path(tempfile.mkdtemp()) / 'kernel-modules'
+(nix / KVER / 'kernel/drivers/accel/ane').mkdir(parents=True)
+(nix / KVER / 'kernel/drivers/accel/ane' / f'{mod}.ko.zst').write_text(f'srcversion=N version=0.4.0\n')
+p = subprocess.run([str(host_bin / 'omarchy-ane-check')], capture_output=True, text=True,
+                   env={**os.environ, 'PATH': f'{host_bin}:{os.environ["PATH"]}',
+                        'MODULE_DIR': str(nix)})
+assert f'  driver_source=intree ({mod}: {nix / KVER / "kernel/drivers/accel/ane" / f"{mod}.ko.zst"})' in p.stdout, p.stdout
+assert p.stdout.splitlines()[1].startswith('  driver_source=intree'), p.stdout  # printed before the host's DT stop
 assert '  dtbs_source=unknown' in out.splitlines(), 'no /etc/default/update-m1n1: unknown'
 print('test_ane_intree: ok')

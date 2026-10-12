@@ -299,6 +299,30 @@ def run(root, hook=False):
     print(f"installed {dest} ({len(data)} bytes, sha256 {digest})")
     return shadow
 
+def loader_copy(root, name, size, sha256):
+    """(path, None) when the copy under the kernel's firmware search path
+    (firmware_class.path, first in the kernel's search order) matches the pin,
+    (None, None) when the parameter is empty or the copy is missing, and
+    (None, problem) when it is there but does not match."""
+    try:
+        base = (root / "sys/module/firmware_class/parameters/path").read_text().strip("\n\x00")
+    except OSError:
+        return None, None
+    if not base:
+        return None, None
+    path = root / base.lstrip("/") / name
+    try:
+        verify(path.read_bytes(), size, sha256)
+    except FileNotFoundError:
+        return None, None
+    except (OSError, Refuse) as e:
+        return None, (f"{path}: {e}. The kernel loads this copy first "
+                      f"(firmware_class.path), before the vendor copy and {root / 'usr/lib/firmware' / name}. "
+                      "The pin is for the raw image, so a zstd-compressed NixOS store copy also "
+                      "fails it. Install the pinned file uncompressed under the loader path")
+    return path, None
+
+
 
 def check(root):
     chip = soc(root)
@@ -307,6 +331,12 @@ def check(root):
     if chip not in FETCH:
         raise Refuse(f"{chip}: no pinned ANE firmware for this chip")
     _, name, size, sha256 = FETCH[chip][:4]
+    loader, lshadow = loader_copy(root, name, size, sha256)
+    if lshadow:
+        raise Refuse(lshadow)
+    if loader:
+        print(f"{loader} (kernel firmware path) matches the pin")
+        return
     vendor, shadow = vendor_copy(root, name, size, sha256)
     if shadow:
         raise Refuse(shadow)
@@ -321,7 +351,6 @@ def check(root):
     except Refuse as e:
         raise Refuse(f"{dest}: {e}. Run: sudo omarchy-ane-firmware-fetch")
     print(f"{dest} matches the pin")
-
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])

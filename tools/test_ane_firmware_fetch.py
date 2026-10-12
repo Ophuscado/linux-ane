@@ -236,6 +236,38 @@ for chip, row in fetch.FETCH.items():
             (case, out)
         assert installed(t, name) == (after if on else ours), case
 
+# 7b. The kernel's firmware search path (firmware_class.path, first in the
+#     kernel's search order; NixOS points it at the Nix store) is checked
+#     before the vendor copy and our own. Empty or absent parameter: the old
+#     order. --check only; run() keeps installing to usr/lib/firmware.
+chip, name = 'apple,t6021', fetch.FETCH['apple,t6021'][1]
+def fw_system(loader_dir, loader_data, vendor=None, ours=None):
+    t = system([b'apple,j414c', b'apple,t6021'], b'13.5')
+    if loader_dir is not None:
+        p = t / 'sys/module/firmware_class/parameters/path'
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(loader_dir + '\n')
+    if loader_dir and loader_data is not None:
+        f = t / loader_dir.lstrip('/') / name
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_bytes(loader_data)
+    for sub, data in (('usr/lib/firmware/vendor', vendor), ('usr/lib/firmware', ours)):
+        if data is not None:
+            (t / sub / name).parent.mkdir(parents=True, exist_ok=True)
+            (t / sub / name).write_bytes(data)
+    return t
+
+for case, loader_dir, loader, vendor, ours, rc, line in (
+        ('no parameter file', None, None, good, good, 0, '(Asahi vendor firmware) matches the pin'),
+        ('empty parameter', '', None, good, good, 0, '(Asahi vendor firmware) matches the pin'),
+        ('loader matches', '/nix/store/fw', good, good, good, 0, f'/nix/store/fw/{name} (kernel firmware path) matches the pin'),
+        ('loader wrong, vendor good', '/nix/store/fw', other, good, good, 1, 'The kernel loads this copy first'),
+        ('loader missing, ours good', '/nix/store/fw', None, None, good, 0, f'firmware/{name} matches the pin')):
+    c, t = (chip, case), fw_system(loader_dir, loader, vendor, ours)
+    rc_, out = call('--check', '--root', str(t))
+    assert rc_ == rc and line in out, (c, out)
+
+
 # 8. RangeFile reads a 206 body only up to the range it asked for: a body
 # longer than the request is truncated, not slurped (offline: _get is faked).
 seen = []
