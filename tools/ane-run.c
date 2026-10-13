@@ -17,6 +17,7 @@
 void ane_set_oracle_nchw(struct ane_nn *nn, uint32_t ch,
 			 const uint64_t nchw[6]);
 #include "ane_f16_add.h"
+#include "ane_check_band.h"
 
 /*
 // ane-run -- run one ANEC program through libane and save its outputs.
@@ -1478,12 +1479,12 @@ static int rms_check(struct ane_nn *nn, struct io_file *in,
 	for (i = 0; i < C; i++) {
 		xv = ane_f16_to_f64(a[i * channel_stride]);
 		gv = ane_f16_to_f64(gamma[64 / 2 + i]);
-		want_v = xv * gv / rscaled;
+		want_v = ane_rms_want(xv, gv, rscaled);
 		want = ane_f16_round_half_away(want_v);
 		got = y[i * channel_stride];
 		err = fabs(ane_f16_to_f64(got) - want_v);
 		sumabs = fabs(xv) + fabs(gv) + fabs(rscaled);
-		nerr = sumabs > 0.0 ? err / (sumabs * 0x1p-11) : 0.0;
+		nerr = ane_cond_units(err, sumabs);
 		if (nerr > max_nerr) {
 			max_nerr = nerr;
 		}
@@ -1491,7 +1492,7 @@ static int rms_check(struct ane_nn *nn, struct io_file *in,
 			    ane_f16_to_f64(want)) /
 		       f16_ulp(ane_f16_to_f64(want));
 		milli = (uint64_t)(diff * 1000.0 + 0.5);
-		in_band += diff <= 2.0 || nerr <= 4.0;
+		in_band += ane_lane_in_band(diff, err, sumabs);
 		exact += want == got;
 		if (milli > max_ulp_milli) {
 			max_ulp_milli = milli;
@@ -1670,7 +1671,7 @@ static int check_program(int op, struct ane_nn *nn, struct io_file *in,
 			 * one partial sum. Cancellation makes the ulp of the
 			 * result a poor scale. */
 			err = fabs(ane_f16_to_f64(y[i]) - acc);
-			nerr = sumabs > 0.0 ? err / (sumabs * 0x1p-11) : 0.0;
+			nerr = ane_cond_units(err, sumabs);
 			if (nerr > max_nerr) {
 				max_nerr = nerr;
 			}
@@ -1682,7 +1683,7 @@ static int check_program(int op, struct ane_nn *nn, struct io_file *in,
 			       f16_ulp(ane_f16_to_f64(want));
 			milli = (uint64_t)(diff * 1000.0 + 0.5);
 
-			in_band += diff <= 2.0 || nerr <= 4.0;
+			in_band += ane_lane_in_band(diff, err, sumabs);
 			if (milli > max_ulp_milli) {
 				max_ulp_milli = milli;
 			}
