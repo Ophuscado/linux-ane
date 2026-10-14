@@ -133,7 +133,6 @@ check: ane-run ane-selfcheck ane-session test_libane_ioctl test_ane_stats test_t
 	./test_t6021_pool
 	./test_ane_session_cache
 	./test_ane_session_state
-	python3 test_qwen_resident_states.py
 	./test_ane_bo_probe
 	./test_t6021_prog_lookup
 	./test_check_band
@@ -142,6 +141,8 @@ ifeq ($(NUMPY_OK),yes)
 	$(PYTHON) test_qwen_resident.py
 	$(PYTHON) test_qwen_resident_ab.py
 	$(PYTHON) test_qwen_resident_proxy.py
+	$(PYTHON) test_qwen_resident_states.py
+	$(PYTHON) test_qwen_resident_states_ab.py
 else
 	@echo "SKIP resident Python tests: numpy is not installed"
 endif
