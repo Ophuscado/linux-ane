@@ -153,7 +153,7 @@ class MockSession(qpr.ResidentSession):
 
 def port(name, direction, shape, strides, tile):
     return {"name": name, "direction": direction, "shape": shape, "strides": strides, "surface_bytes": 2 * int(np.prod(shape)),
-            "tile_bytes": tile}
+            "tile_bytes": tile, "dtype": "fp16"}
 
 
 def check_pairing_and_refusals(failures):
@@ -182,6 +182,20 @@ def check_pairing_and_refusals(failures):
         except qpr.Refuse:
             if s2.sent:
                 failures.append(f"a pair differing in {label} was refused only after sending {s2.sent}")
+    for label, mutate in (("dtype differs", lambda p: p["k_out"].update(dtype="fp32")),
+                          ("dtype missing on the output", lambda p: p["k_out"].pop("dtype")),
+                          ("dtype missing on the input", lambda p: p["k_in"].pop("dtype")),
+                          ("dtype not fp16 on both", lambda p: (p["k_out"].update(dtype="int8"), p["k_in"].update(dtype="int8"))),
+                          ("element stride 4", lambda p: (p["k_out"].update(strides=[48, 24, 8, 4]), p["k_in"].update(strides=[48, 24, 8, 4])))):
+        bad = copy.deepcopy(ports)
+        mutate(bad)
+        s4 = MockSession()
+        try:
+            s4.states("p", bad, [("k_in", "k_out")])
+            failures.append(f"a pair with {label} was not refused")
+        except qpr.Refuse:
+            if s4.sent:
+                failures.append(f"a pair with {label} was refused only after sending {s4.sent}")
     s3 = MockSession()
     try:
         s3.states("p", ports, [("x", "k_out")])

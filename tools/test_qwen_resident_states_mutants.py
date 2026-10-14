@@ -26,6 +26,7 @@ M = {
         "no_pair_equality_check": ("                if a[key] != b[key]:", "                if False:"),
         "pair_check_after_send": (
             '            for key in ("shape", "strides", "surface_bytes", "tile_bytes"):\n                if a[key] != b[key]:\n                    raise Refuse(f"{name}: state pair {in_port}->{out_port} differs in {key}: {a[key]} vs {b[key]}")\n', ""),
+        "no_dtype_check": ('                if spec.get("dtype") not in ("fp16", "float16", "f16"):', "                if False:"),
         "reset_states_noop": ('        self._command("RESET")\n        if self._line() != "OK RESET":\n            self._fail("RESET", "", "bad reply")', "        pass"),
     },
     "qwen_m2_decode.py": {

@@ -476,8 +476,27 @@ static struct session_state *state_by_out(struct session_prog *p, uint32_t idx)
 
 #define ANE_SESSION_MAX_RUNS (1ull << 22)
 
-static int cmd_state(struct session *s, const char *name, uint32_t in_idx,
-		     uint32_t out_idx, uint64_t run_bytes, uint64_t nruns)
+/* A decimal u64 and nothing else: no sign, no space, no suffix, no overflow. */
+static int parse_u64(const char *s, uint64_t *out)
+{
+	char *end = NULL;
+	unsigned long long v;
+
+	if (!s || !*s || *s < '0' || *s > '9') {
+		return -1;
+	}
+	errno = 0;
+	v = strtoull(s, &end, 10);
+	if (errno || !end || *end) {
+		return -1;
+	}
+	*out = (uint64_t)v;
+	return 0;
+}
+
+static int cmd_state(struct session *s, const char *name, uint64_t in_idx,
+		     uint64_t out_idx, uint64_t run_bytes, uint64_t nruns,
+		     int fields_ok)
 {
 	struct session_prog *p = session_prog_find(s, name);
 	struct session_state *st;
@@ -502,19 +521,22 @@ static int cmd_state(struct session *s, const char *name, uint32_t in_idx,
 		s->failed = 1;
 		return -1;
 	}
-	if (s->failed) {
+	if (!fields_ok || in_idx > UINT32_MAX || out_idx > UINT32_MAX) {
+		why = "bad-field";
+	} else if (s->failed) {
 		why = "session-failed";
 	} else if (!p) {
 		why = "not-loaded";
 	} else {
 		pr = &p->key->pr;
-		ki = port_at(pr, 0, in_idx);
-		ko = port_at(pr, 1, out_idx);
+		ki = port_at(pr, 0, (uint32_t)in_idx);
+		ko = port_at(pr, 1, (uint32_t)out_idx);
 		if (ki < 0 || ko < 0) {
 			why = "no-such-port";
 		} else if (pr->ports[ki].tile_bytes != pr->ports[ko].tile_bytes) {
 			why = "tile-bytes-differ";
-		} else if (state_by_in(p, in_idx) || state_by_out(p, out_idx)) {
+		} else if (state_by_in(p, (uint32_t)in_idx) ||
+			   state_by_out(p, (uint32_t)out_idx)) {
 			why = "already-resident";
 		} else if (!run_bytes || run_bytes > pr->ports[ki].tile_bytes) {
 			why = "bad-run-bytes";
@@ -544,8 +566,8 @@ static int cmd_state(struct session *s, const char *name, uint32_t in_idx,
 	p->st = st;
 	st = &p->st[p->nst];
 	memset(st, 0, sizeof(*st));
-	st->in_idx = in_idx;
-	st->out_idx = out_idx;
+	st->in_idx = (uint32_t)in_idx;
+	st->out_idx = (uint32_t)out_idx;
 	st->tile_bytes = pr->ports[ki].tile_bytes;
 	st->run_bytes = run_bytes;
 	st->nruns = nruns;
@@ -653,21 +675,9 @@ static int cmd_call(struct session *s, const char *name)
 		off += k->pr.ports[k2].tile_bytes;
 	}
 	free(buf);
-	clock_gettime(CLOCK_MONOTONIC, &t0);
-	if (ane_m2_exec(k->nn) < 0) {
-		replyf("ERR CALL %s exec-failed\n", name);
-		s->failed = 1;
-		return -1;
-	}
-	clock_gettime(CLOCK_MONOTONIC, &t1);
-	replyf("OK CALL %s %lld\n", name,
-	       (long long)((t1.tv_sec - t0.tv_sec) * 1000000ll +
-			   (t1.tv_nsec - t0.tv_nsec) / 1000));
+	/* Every buffer the reply needs is allocated before the device runs, so a
+	 * failure answers ERR CALL with nothing half sent and no state touched. */
 	buf = malloc(p->out_total ? (size_t)p->out_total : 1);
-	if (!buf) {
-		s->failed = 1;
-		return -1;
-	}
 	if (p->nst) {
 		uint64_t big = 0;
 
@@ -677,47 +687,71 @@ static int cmd_call(struct session *s, const char *name)
 			}
 		}
 		scratch = malloc((size_t)big);
-		if (!scratch) {
-			free(buf);
-			s->failed = 1;
-			return -1;
-		}
 	}
+	if (!buf || (p->nst && !scratch)) {
+		free(buf);
+		free(scratch);
+		replyf("ERR CALL %s no-mem\n", name);
+		s->failed = 1;
+		return -1;
+	}
+	clock_gettime(CLOCK_MONOTONIC, &t0);
+	if (ane_m2_exec(k->nn) < 0) {
+		free(buf);
+		free(scratch);
+		replyf("ERR CALL %s exec-failed\n", name);
+		s->failed = 1;
+		return -1;
+	}
+	clock_gettime(CLOCK_MONOTONIC, &t1);
+	replyf("OK CALL %s %lld\n", name,
+	       (long long)((t1.tv_sec - t0.tv_sec) * 1000000ll +
+			   (t1.tv_nsec - t0.tv_nsec) / 1000));
 	off = 0;
 	for (k2 = 0; k2 < k->pr.count; k2++) {
 		if (k->pr.ports[k2].dir != 1) {
 			continue;
 		}
-		rs = state_by_out(p, port_dir_index(&k->pr, k2, 1));
-		if (rs) {
-			/* Only the logical runs enter the state: the device's
-			 * bytes outside them never reach the next input, which
-			 * is what the host-side pack (zeros plus the tensor)
-			 * produces. */
-			uint64_t r;
-
-			ane_m2_read(k->nn, scratch, rs->out_idx);
-			memset(rs->buf, 0, (size_t)rs->tile_bytes);
-			for (r = 0; r < rs->nruns; r++) {
-				memcpy(rs->buf + rs->offs[r],
-				       scratch + rs->offs[r],
-				       (size_t)rs->run_bytes);
-			}
-			continue;
+		if (state_by_out(p, port_dir_index(&k->pr, k2, 1))) {
+			continue;	/* carried after the reply, below */
 		}
 		ane_m2_read(k->nn, buf + off,
 			    port_dir_index(&k->pr, k2, 1));
 		off += k->pr.ports[k2].tile_bytes;
 	}
-	free(scratch);
 	if (out_wire && fwrite(buf, 1, (size_t)out_wire, stdout) !=
 				(size_t)out_wire) {
 		free(buf);
+		free(scratch);
 		s->failed = 1;
 		return -1;
 	}
 	fflush(stdout);
 	free(buf);
+	/* The carry runs after the reply payload is on the pipe, so the decoder
+	 * is not kept waiting for it; the session is single threaded and reads
+	 * the next command only after this returns, so the next CALL always
+	 * sees the carried state. Only the logical runs enter the state: the
+	 * device's bytes outside them never reach the next input, which is what
+	 * the host-side pack (zeros plus the tensor) produces. */
+	for (k2 = 0; k2 < k->pr.count; k2++) {
+		uint64_t r;
+
+		if (k->pr.ports[k2].dir != 1) {
+			continue;
+		}
+		rs = state_by_out(p, port_dir_index(&k->pr, k2, 1));
+		if (!rs) {
+			continue;
+		}
+		ane_m2_read(k->nn, scratch, rs->out_idx);
+		memset(rs->buf, 0, (size_t)rs->tile_bytes);
+		for (r = 0; r < rs->nruns; r++) {
+			memcpy(rs->buf + rs->offs[r], scratch + rs->offs[r],
+			       (size_t)rs->run_bytes);
+		}
+	}
+	free(scratch);
 	return 0;
 }
 
@@ -869,21 +903,27 @@ int main(int argc, char **argv)
 			session_prog_free(&s, p);
 			replyf("OK FREE %s\n", p1);
 		} else if (!strcmp(cmd, "STATE")) {
-			char *name, *a, *b, *c, *d;
+			char *name, *a, *b, *c, *d, *extra;
 			char *save = NULL;
+			uint64_t ia = 0, ib = 0, rb = 0, nr = 0;
+			int ok;
 
 			name = p1 ? strtok_r(p1, " ", &save) : NULL;
 			a = name ? strtok_r(NULL, " ", &save) : NULL;
 			b = a ? strtok_r(NULL, " ", &save) : NULL;
 			c = b ? strtok_r(NULL, " ", &save) : NULL;
 			d = c ? strtok_r(NULL, " ", &save) : NULL;
-			if (!d) {
+			extra = d ? strtok_r(NULL, " ", &save) : NULL;
+			/* The run count sets the length of the offsets that follow: if
+			 * it cannot be read exactly the stream cannot be resynchronised,
+			 * so the session ends like any other malformed command. */
+			if (!d || extra || parse_u64(d, &nr)) {
 				fprintf(stderr, "ane-session: bad STATE\n");
 				return 2;
 			}
-			cmd_state(&s, name, (uint32_t)strtoul(a, NULL, 10),
-				  (uint32_t)strtoul(b, NULL, 10),
-				  strtoull(c, NULL, 10), strtoull(d, NULL, 10));
+			ok = !parse_u64(a, &ia) && !parse_u64(b, &ib) &&
+			     !parse_u64(c, &rb);
+			cmd_state(&s, name, ia, ib, rb, nr, ok);
 		} else if (!strcmp(cmd, "RESET")) {
 			cmd_reset(&s, p1 && *p1 ? p1 : NULL);
 		} else if (!strcmp(cmd, "CALL")) {

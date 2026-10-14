@@ -21,13 +21,12 @@ UAPI = TOOLS.parent / "ane/src/uapi/drm"
 
 MUTANTS = {
     "whole_tile_copy_instead_of_runs": (
-        """			for (r = 0; r < rs->nruns; r++) {
-				memcpy(rs->buf + rs->offs[r],
-				       scratch + rs->offs[r],
-				       (size_t)rs->run_bytes);
-			}""",
-        """			(void)r;
-			memcpy(rs->buf, scratch, (size_t)rs->tile_bytes);"""),
+        """		for (r = 0; r < rs->nruns; r++) {
+			memcpy(rs->buf + rs->offs[r], scratch + rs->offs[r],
+			       (size_t)rs->run_bytes);
+		}""",
+        """		(void)r;
+		memcpy(rs->buf, scratch, (size_t)rs->tile_bytes);"""),
     "run_truncated_by_one": ("(size_t)rs->run_bytes);", "(size_t)rs->run_bytes - 1);"),
     "reset_is_a_noop": ("		memset(p->st[i].buf, 0, (size_t)p->st[i].tile_bytes);", "		(void)p->st[i].buf;"),
     "reset_name_resets_all_but_not_all": (
@@ -47,9 +46,15 @@ MUTANTS = {
     "reply_still_carries_state": ("		out_wire -= p->st[k2].tile_bytes;\n", ""),
     "no_tile_check": ("pr->ports[ki].tile_bytes != pr->ports[ko].tile_bytes", "0"),
     "no_run_range_check": ("run_bytes > pr->ports[ki].tile_bytes - offs[i]", "0"),
-    "no_double_registration_check": ("state_by_in(p, in_idx) || state_by_out(p, out_idx)", "0"),
+    "no_double_registration_check": ("state_by_in(p, (uint32_t)in_idx) ||\n\t\t\t   state_by_out(p, (uint32_t)out_idx)", "0"),
     "no_loaded_check": ("	} else if (!p) {\n		why = \"not-loaded\";", "	} else if (0) {\n		why = \"not-loaded\";"),
     "state_not_zero_initialised": ("st->buf = calloc(1, (size_t)st->tile_bytes);", "st->buf = malloc((size_t)st->tile_bytes); if (st->buf) memset(st->buf, 0xff, (size_t)st->tile_bytes);"),
+    "u64_digit_check_removed": ("if (!s || !*s || *s < '0' || *s > '9') {", "if (!s || !*s) {"),
+    "u64_trailing_check_removed": ("if (errno || !end || *end) {", "if (errno || !end) {"),
+    "u32_range_check_removed": ("if (!fields_ok || in_idx > UINT32_MAX || out_idx > UINT32_MAX) {", "if (!fields_ok) {"),
+    "bad_field_flag_ignored": ("if (!fields_ok || in_idx > UINT32_MAX || out_idx > UINT32_MAX) {", "if (in_idx > UINT32_MAX || out_idx > UINT32_MAX) {"),
+    "run_count_garbage_accepted": ("if (!d || extra || parse_u64(d, &nr)) {", "if (!d || extra) {"),
+    "extra_token_accepted": ("if (!d || extra || parse_u64(d, &nr)) {", "if (!d || parse_u64(d, &nr)) {"),
     "state_sent_from_wrong_buffer": ("ane_m2_send(k->nn, rs->buf, rs->in_idx);", "ane_m2_send(k->nn, buf, rs->in_idx);"),
 }
 
@@ -66,7 +71,7 @@ def build_and_run(src, work):
         capture_output=True, text=True, cwd=TOOLS)
     if cc.returncode:
         return "BUILD-ERROR", cc.stderr[-300:]
-    run = subprocess.run([str(exe)], capture_output=True, text=True, cwd=TOOLS, timeout=120)
+    run = subprocess.run([str(exe)], capture_output=True, text=True, errors="replace", cwd=TOOLS, timeout=120, check=False)
     return ("PASS" if run.returncode == 0 and "FAIL" not in run.stderr + run.stdout else "FAIL"), run.stderr[-300:] + run.stdout[-100:]
 
 

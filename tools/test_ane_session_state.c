@@ -594,6 +594,38 @@ static void refused(const char *what, const char *state_line, size_t nruns, uint
 	free(r.p);
 }
 
+/* A malformed STATE line whose run count cannot be read: the session ends with exit 2 (the stream cannot resynchronise). */
+static void fatal_line(const char *what, const char *line)
+{
+	struct sbuf c = { 0 }, r = { 0 };
+	int rc;
+	char msg[160];
+
+	load(&c, "a");
+	sprintf_buf(&c, "%s\n", line);
+	sprintf_buf(&c, "QUIT\n");
+	rc = run_session_bin(&c, &r);
+	snprintf(msg, sizeof(msg), "malformed STATE (%s): session exit 2", what);
+	check(rc == 2, msg);
+	free(c.p);
+	free(r.p);
+}
+
+static void scenario_bad_fields(void)
+{
+	/* 2^32 + 1 used to wrap to input index 1 through a uint32 cast and register a valid pair. */
+	refused("input index 2^32+1", "STATE a 4294967297 6 6 4", 4, 0, "bad-field", 1);
+	refused("output index 2^32+6", "STATE a 1 4294967302 6 4", 4, 0, "bad-field", 1);
+	refused("input index 1x", "STATE a 1x 6 6 4", 4, 0, "bad-field", 1);
+	refused("input index -1", "STATE a -1 6 6 4", 4, 0, "bad-field", 1);
+	refused("input index +1", "STATE a +1 6 6 4", 4, 0, "bad-field", 1);
+	refused("run bytes 6x", "STATE a 1 6 6x 4", 4, 0, "bad-field", 1);
+	refused("run bytes 2^64", "STATE a 1 6 18446744073709551616 4", 4, 0, "bad-field", 1);
+	fatal_line("run count 4x", "STATE a 1 6 6 4x");
+	fatal_line("trailing token", "STATE a 1 6 6 4 extra");
+	fatal_line("missing run count", "STATE a 1 6 6");
+}
+
 static void scenario_refusals(void)
 {
 	refused("unloaded name", "STATE ghost 1 6 6 4", 4, 0, "not-loaded", 0);
@@ -655,6 +687,7 @@ int main(int argc, char **argv)
 	scenario_chain();
 	scenario_isolation_and_reset();
 	scenario_refusals();
+	scenario_bad_fields();
 	scenario_exec_failure();
 	printf(failures ? "SESSION-STATE FAIL\n" : "SESSION-STATE PASS\n");
 	return failures != 0;

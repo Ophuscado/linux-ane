@@ -72,6 +72,7 @@ def state_runs(shape, strides, tile_bytes):
     its rows are contiguous. Everything outside the runs is padding. The
     strides are in bytes; surface_view refuses a table that does not hold the
     shape in the tile."""
+    # fp16 elements at a 2 B element stride, rows and planes that do not overlap and fit the tile: surface_view refuses anything else
     surface_view(np.zeros(tile_bytes // 2, dtype=np.float16), shape, strides)
     n, c, h, w = shape
     rows = (np.arange(n, dtype=np.int64)[:, None, None] * strides[0] +
@@ -265,6 +266,9 @@ class ResidentSession:
             for key in ("shape", "strides", "surface_bytes", "tile_bytes"):
                 if a[key] != b[key]:
                     raise Refuse(f"{name}: state pair {in_port}->{out_port} differs in {key}: {a[key]} vs {b[key]}")
+            for side, spec in ((in_port, a), (out_port, b)):
+                if spec.get("dtype") not in ("fp16", "float16", "f16"):
+                    raise Refuse(f"{name}: state port {side} has dtype {spec.get('dtype')!r}, the carry is for fp16 only")
             if in_port in self.resident.get(name, {}).get("in", ()) or out_port in self.resident.get(name, {}).get("out", ()):
                 raise Refuse(f"{name}: state pair {in_port}->{out_port} is already resident")
             run_bytes, offsets = state_runs(a["shape"], a["strides"], a["tile_bytes"])
