@@ -3,3 +3,4 @@ ane-session
 ane-selfcheck
 test_libane_ioctl
 test_check_band
+test_ane_timing

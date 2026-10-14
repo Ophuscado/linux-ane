@@ -15,12 +15,12 @@ tools: ane-run ane-session ane-selfcheck
 $(LIB):
 	$(MAKE) -C ../libane libane
 
-ane-run: ane-run.c ane_f16_add.h ane_check_band.h $(LIB) ../libane/ane.h ../libane/ane_m2.h
+ane-run: ane-run.c ane_f16_add.h ane_check_band.h ane_timing.h $(LIB) ../libane/ane.h ../libane/ane_m2.h
 	$(CC) $(CFLAGS) -o $@ ane-run.c $(LIB) -lm
 
 # Resident session (qwen_m2_decode --resident): includes ane-run.c for the
 # strict port-table reader, so it rebuilds whenever ane-run.c changes.
-ane-session: ane-session.c ane-run.c ane_f16_add.h ane_check_band.h $(LIB) ../libane/ane.h \
+ane-session: ane-session.c ane-run.c ane_f16_add.h ane_check_band.h ane_timing.h $(LIB) ../libane/ane.h \
 	../libane/ane_m2.h
 	$(CC) $(CFLAGS) -o $@ ane-session.c $(LIB) -lm
 
@@ -31,6 +31,10 @@ ane-selfcheck: ane-selfcheck.c ane_f16_add.h $(LIB) ../libane/ane.h \
 # Lane acceptance of ane-run --check matvec and rms, host only (no device).
 test_check_band: test_check_band.c ane_check_band.h
 	$(CC) $(CFLAGS) -o $@ test_check_band.c -lm
+
+# Mean and raw per-call output of ane-run --time-raw, host only (no device).
+test_ane_timing: test_ane_timing.c ane_timing.h
+	$(CC) $(CFLAGS) -o $@ test_ane_timing.c -lm
 
 # libane sources rebuilt with every unset stack variable filled with 0xfe,
 # and linked against the fake DRM node in test_libane_ioctl.c.
@@ -111,7 +115,7 @@ test_ane_session_cache_lsan: test_ane_session_cache.c ane-session.c ane-run.c \
 		-o $@ test_ane_session_cache.c $(LIBANE_SRC) -lm
 
 check: ane-run ane-selfcheck ane-session test_libane_ioctl test_ane_stats test_t6021_pool \
-	test_ane_session_cache test_ane_bo_probe test_t6021_prog_lookup test_check_band
+	test_ane_session_cache test_ane_bo_probe test_t6021_prog_lookup test_check_band test_ane_timing
 	sh test_ane_run_tile_shift.sh ./ane-run
 	./ane-selfcheck ../fixtures/h14-anec
 	./test_libane_ioctl ../fixtures/h14-anec
@@ -121,6 +125,7 @@ check: ane-run ane-selfcheck ane-session test_libane_ioctl test_ane_stats test_t
 	./test_ane_bo_probe
 	./test_t6021_prog_lookup
 	./test_check_band
+	./test_ane_timing
 ifeq ($(NUMPY_OK),yes)
 	$(PYTHON) test_qwen_resident.py
 	$(PYTHON) test_qwen_resident_ab.py
@@ -163,4 +168,4 @@ else
 endif
 
 clean:
-	rm -f ane-run ane-session ane-selfcheck test_libane_ioctl test_ane_stats test_t6021_pool test_ane_session_cache test_ane_session_cache_lsan test_ane_bo_probe test_t6021_prog_lookup test_t6021_prog_lookup_a64 test_sha256_a64.log test_check_band
+	rm -f ane-run ane-session ane-selfcheck test_libane_ioctl test_ane_stats test_t6021_pool test_ane_session_cache test_ane_session_cache_lsan test_ane_bo_probe test_t6021_prog_lookup test_t6021_prog_lookup_a64 test_sha256_a64.log test_check_band test_ane_timing
