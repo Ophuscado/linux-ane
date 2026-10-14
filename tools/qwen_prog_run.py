@@ -66,6 +66,23 @@ def unpack_surface(raw, shape, strides):
     return surface_view(np.frombuffer(raw, dtype=np.float16), shape, strides).copy()
 
 
+def state_runs(shape, strides, tile_bytes):
+    """(run_bytes, byte offsets) of the logical elements of a surface: one run
+    per row of the innermost dimension, or one run for the whole tensor when
+    its rows are contiguous. Everything outside the runs is padding. The
+    strides are in bytes; surface_view refuses a table that does not hold the
+    shape in the tile."""
+    surface_view(np.zeros(tile_bytes // 2, dtype=np.float16), shape, strides)
+    n, c, h, w = shape
+    rows = (np.arange(n, dtype=np.int64)[:, None, None] * strides[0] +
+            np.arange(c, dtype=np.int64)[None, :, None] * strides[1] +
+            np.arange(h, dtype=np.int64)[None, None, :] * strides[2]).reshape(-1)
+    run = 2 * w
+    if len(rows) and np.all(np.diff(rows) == run):
+        return run * len(rows), rows[:1].astype(np.uint64)
+    return run, rows.astype(np.uint64)
+
+
 # --------------------------------------------------------------------------
 # main
 # --------------------------------------------------------------------------
@@ -164,6 +181,7 @@ class ResidentSession:
             bufsize=0)
         self.timeout = timeout
         self.names = []
+        self.resident = {}   # name -> {"in": {port names}, "out": {port names}}
 
     def _line(self):
         ready, _, _ = select.select([self.proc.stdout], [], [], self.timeout)
@@ -228,6 +246,42 @@ class ResidentSession:
         if not line.startswith("OK FREE "):
             raise Refuse(f"{name}: session refused FREE: {line}")
         self.names.remove(name)
+        self.resident.pop(name, None)
+
+    def states(self, name, ports, pairs):
+        """Keep the (in_port, out_port) state pairs of a LOADed program inside
+        the session. Each pair must agree in shape, strides, surface_bytes
+        and tile_bytes, or this refuses before anything is sent. The session
+        copies only the logical elements (the runs below) of the output into
+        the state after every CALL, so the input surface is zeros plus the
+        tensor, as pack_surface builds it; the device's bytes outside the
+        runs never reach the next input."""
+        ins = [n for n, p in ports.items() if p["direction"] == "input"]
+        outs = [n for n, p in ports.items() if p["direction"] == "output"]
+        for in_port, out_port in pairs:
+            if in_port not in ins or out_port not in outs:
+                raise Refuse(f"{name}: state pair {in_port}->{out_port} is not an input and an output of the table")
+            a, b = ports[in_port], ports[out_port]
+            for key in ("shape", "strides", "surface_bytes", "tile_bytes"):
+                if a[key] != b[key]:
+                    raise Refuse(f"{name}: state pair {in_port}->{out_port} differs in {key}: {a[key]} vs {b[key]}")
+            if in_port in self.resident.get(name, {}).get("in", ()) or out_port in self.resident.get(name, {}).get("out", ()):
+                raise Refuse(f"{name}: state pair {in_port}->{out_port} is already resident")
+            run_bytes, offsets = state_runs(a["shape"], a["strides"], a["tile_bytes"])
+            self._command(f"STATE {name} {ins.index(in_port)} {outs.index(out_port)} {run_bytes} {len(offsets)}")
+            self._write_all(offsets.astype("<u8").tobytes())
+            line = self._line()
+            if line != f"OK STATE {name}":
+                raise Refuse(f"{name}: session refused STATE {in_port}->{out_port}: {line}")
+            res = self.resident.setdefault(name, {"in": set(), "out": set()})
+            res["in"].add(in_port)
+            res["out"].add(out_port)
+
+    def reset_states(self):
+        """Zero every resident state of every program (the start of a prompt)."""
+        self._command("RESET")
+        if self._line() != "OK RESET":
+            self._fail("RESET", "", "bad reply")
 
     def lock(self):
         self._command("LOCK")
@@ -241,8 +295,9 @@ class ResidentSession:
 
     def call(self, name, ports, arrays):
         """Pack arrays into the CALL payload; returns (outputs, exec_ms)."""
-        ins = [(n, p) for n, p in ports.items() if p["direction"] == "input"]
-        outs = [(n, p) for n, p in ports.items() if p["direction"] == "output"]
+        res = self.resident.get(name, {"in": (), "out": ()})
+        ins = [(n, p) for n, p in ports.items() if p["direction"] == "input" and n not in res["in"]]
+        outs = [(n, p) for n, p in ports.items() if p["direction"] == "output" and n not in res["out"]]
         payload = b"".join(
             pack_surface(arrays[n].reshape(p["shape"]), p["strides"],
                          p["tile_bytes"]).tobytes() for n, p in ins)

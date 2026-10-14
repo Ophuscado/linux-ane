@@ -172,6 +172,10 @@ def manifest_at(manifest, m):
 class Decoder:
     def __init__(self, args, manifest):
         self.args = args
+        self.resident_states = bool(getattr(args, "resident_states", False))
+        if self.resident_states and (not args.resident or getattr(args, "dump", None)):
+            # The dump check compares every state port; the states are not on the wire here.
+            raise Refuse("--resident-states needs --resident and does not apply to --dump")
         self.manifest = manifest
         self.work = Path(args.out) / "surf"
         self.work.mkdir(parents=True, exist_ok=True)
@@ -223,9 +227,18 @@ class Decoder:
                 if got != (n_in, n_out):
                     raise Refuse(f"prog_{i:03d}: session reports {got}, "
                                  f"table holds ({n_in}, {n_out})")
+                if self.resident_states:
+                    self.session.states(f"prog_{i:03d}", ports,
+                                        [(s["in_port"], s["out_port"]) for s in self.progs[i]["states"]])
         self.reset()
 
     def reset(self):
+        if self.session is not None and self.resident_states:
+            # The state buffers live in the session, per program name; the
+            # host holds none and sends zeros nowhere.
+            self.states = [{} for _ in self.progs]
+            self.session.reset_states()
+            return
         self.states = [{s["in_port"]: np.zeros(s["in_shape"], f16) for s in pr["states"]}
                        for pr in self.progs]
 
@@ -264,9 +277,10 @@ class Decoder:
         for i, pr in enumerate(self.progs):
             if pr["group_start"]:
                 lanes["x"] = hidden
+            resident = self.session is not None and self.resident_states
             arrays = {s["port"]: self.states[i][s["port"]] if s["kind"] == "state_in"
                       else vals[s["lane"]] if s["kind"] == "ctx" else lanes[s["lane"]]
-                      for s in pr["srcs"]}
+                      for s in pr["srcs"] if not (resident and s["kind"] == "state_in")}
             start = time.monotonic()
             outs, exec_ms = self.call(i, arrays)
             timing.append((time.monotonic() - start, exec_ms))
@@ -274,8 +288,9 @@ class Decoder:
                 check(i, arrays, outs)
             for d in pr["dsts"]:
                 lanes[d["lane"]] = outs[d["port"]]
-            for s in pr["states"]:
-                self.states[i][s["in_port"]] = outs[s["out_port"]].reshape(s["in_shape"])
+            if not resident:
+                for s in pr["states"]:
+                    self.states[i][s["in_port"]] = outs[s["out_port"]].reshape(s["in_shape"])
             if pr["group_end"]:
                 hidden = lanes["h"]
         if step_lock:
@@ -488,6 +503,10 @@ def main(argv=None):
     ap.add_argument("--resident-lock", choices=("call", "step"), default="call",
                     help="hold /var/tmp/ane-run.lock per CALL or per step; "
                          "always released between steps")
+    ap.add_argument("--resident-states", action="store_true",
+                    help="with --resident: keep every state (DeltaNet, conv, KV) inside the "
+                         "session instead of sending it out and back on every CALL; the "
+                         "logits and tokens must stay bit-identical (default off)")
     ap.add_argument("--summary", action="store_true")
     ap.add_argument("--m-per-prompt", action="store_true",
                     help="max_len = len(prompt) + new tokens per prompt (ANEForge generate without max_len)")
@@ -496,6 +515,10 @@ def main(argv=None):
     args = ap.parse_args(argv)
     if args.m_per_prompt and args.dump:
         ap.error("--dump holds max_len 50 executions; it does not apply to --m-per-prompt")
+    if args.resident_states and not args.resident:
+        ap.error("--resident-states needs --resident")
+    if args.resident_states and args.dump:
+        ap.error("--dump compares every state port; it does not apply to --resident-states")
     if args.summary:
         summary(args.out)
         return 0

@@ -18,6 +18,16 @@
  *   CALL <name> + <in_total> raw bytes
  *                                 -> OK CALL <name> <exec_us> + <out_total> raw bytes
  *                                  | ERR CALL <name> <reason>
+ *   STATE <name> <in_idx> <out_idx> <run_bytes> <n_runs> + n_runs raw u64 (LE) offsets
+ *                                 -> OK STATE <name> | ERR STATE <name> <reason>
+ *       Makes input <in_idx> of <name> a state that stays in the session: after
+ *       every CALL the <run_bytes> bytes at each offset of output <out_idx> are
+ *       copied into the state (zero everywhere else), and the next CALL sends
+ *       the state as that input. Both ports are then left out of the CALL
+ *       payload and the reply. The state belongs to the NAME, never to the
+ *       cached program, so names that share one cached program stay isolated.
+ *       Indices are positions among the inputs and among the outputs.
+ *   RESET [<name>]                -> OK RESET   (zero the states of one or all names)
  *   LOCK | UNLOCK                 -> OK LOCK | OK UNLOCK   (flock the lock file)
  *   QUIT                          -> OK QUIT, exit 0 (1 if a CALL failed)
  *
@@ -54,11 +64,25 @@
  * projection matches what bo_alloc will actually request. */
 #define ANE_SESSION_GUARD_DEFAULT 0x4000ull
 
+/* One resident state pair of a name: the logical bytes of output out_idx
+ * (the runs) become input in_idx of the next CALL, zero elsewhere. */
+struct session_state {
+	uint32_t in_idx;
+	uint32_t out_idx;
+	uint64_t tile_bytes;
+	uint64_t run_bytes;
+	uint64_t nruns;
+	uint64_t *offs;
+	uint8_t *buf;		/* tile_bytes, zero outside the runs */
+};
+
 struct session_prog {
 	char *name;
 	struct session_key *key;	/* shared, owned by the key cache */
 	uint64_t in_total;
 	uint64_t out_total;
+	struct session_state *st;	/* per NAME, never shared through the key */
+	uint32_t nst;
 };
 
 /* One loaded program per DISTINCT (anec bytes, ports bytes) pair. A
@@ -255,6 +279,13 @@ static void session_prog_free(struct session *s, struct session_prog *p)
 	/* The key cache owns the program: FREE drops the name binding
 	 * only, so a configure pass that FREEs and re-LOADs the same
 	 * table does no device work at all. */
+	uint32_t i;
+
+	for (i = 0; i < p->nst; i++) {
+		free(p->st[i].offs);
+		free(p->st[i].buf);
+	}
+	free(p->st);
 	free(p->name);
 	s->nprogs--;
 	memset(p, 0, sizeof(*p));
@@ -402,6 +433,168 @@ static int cmd_load(struct session *s, const char *name, const char *anec,
 	return 0;
 }
 
+/* Index into key->pr.ports of the idx-th port of a direction, or -1. */
+static int port_at(const struct port_read *pr, uint32_t dir, uint32_t idx)
+{
+	uint32_t k, pos = 0;
+
+	for (k = 0; k < pr->count; k++) {
+		if (pr->ports[k].dir != dir) {
+			continue;
+		}
+		if (pos == idx) {
+			return (int)k;
+		}
+		pos++;
+	}
+	return -1;
+}
+
+static struct session_state *state_by_in(struct session_prog *p, uint32_t idx)
+{
+	uint32_t i;
+
+	for (i = 0; i < p->nst; i++) {
+		if (p->st[i].in_idx == idx) {
+			return &p->st[i];
+		}
+	}
+	return NULL;
+}
+
+static struct session_state *state_by_out(struct session_prog *p, uint32_t idx)
+{
+	uint32_t i;
+
+	for (i = 0; i < p->nst; i++) {
+		if (p->st[i].out_idx == idx) {
+			return &p->st[i];
+		}
+	}
+	return NULL;
+}
+
+#define ANE_SESSION_MAX_RUNS (1ull << 22)
+
+static int cmd_state(struct session *s, const char *name, uint32_t in_idx,
+		     uint32_t out_idx, uint64_t run_bytes, uint64_t nruns)
+{
+	struct session_prog *p = session_prog_find(s, name);
+	struct session_state *st;
+	const struct port_read *pr;
+	uint64_t *offs = NULL;
+	uint64_t i;
+	int ki, ko;
+	const char *why = NULL;
+
+	/* The offsets follow the command: consume them first, so a refusal
+	 * leaves the stream in step. A count that cannot be consumed safely
+	 * is protocol death. */
+	if (!nruns || nruns > ANE_SESSION_MAX_RUNS) {
+		replyf("ERR STATE %s bad-run-count\n", name);
+		s->failed = 1;
+		return -1;
+	}
+	offs = malloc((size_t)nruns * sizeof(*offs));
+	if (!offs || read_stream(offs, nruns * sizeof(*offs))) {
+		free(offs);
+		replyf("ERR STATE %s short-input\n", name);
+		s->failed = 1;
+		return -1;
+	}
+	if (s->failed) {
+		why = "session-failed";
+	} else if (!p) {
+		why = "not-loaded";
+	} else {
+		pr = &p->key->pr;
+		ki = port_at(pr, 0, in_idx);
+		ko = port_at(pr, 1, out_idx);
+		if (ki < 0 || ko < 0) {
+			why = "no-such-port";
+		} else if (pr->ports[ki].tile_bytes != pr->ports[ko].tile_bytes) {
+			why = "tile-bytes-differ";
+		} else if (state_by_in(p, in_idx) || state_by_out(p, out_idx)) {
+			why = "already-resident";
+		} else if (!run_bytes || run_bytes > pr->ports[ki].tile_bytes) {
+			why = "bad-run-bytes";
+		} else {
+			for (i = 0; i < nruns; i++) {
+				if (offs[i] > pr->ports[ki].tile_bytes ||
+				    run_bytes > pr->ports[ki].tile_bytes - offs[i]) {
+					why = "run-out-of-tile";
+					break;
+				}
+			}
+		}
+	}
+	if (why) {
+		free(offs);
+		replyf("ERR STATE %s %s\n", name, why);
+		s->failed = 1;
+		return -1;
+	}
+	st = realloc(p->st, (p->nst + 1) * sizeof(*st));
+	if (!st) {
+		free(offs);
+		replyf("ERR STATE %s no-mem\n", name);
+		s->failed = 1;
+		return -1;
+	}
+	p->st = st;
+	st = &p->st[p->nst];
+	memset(st, 0, sizeof(*st));
+	st->in_idx = in_idx;
+	st->out_idx = out_idx;
+	st->tile_bytes = pr->ports[ki].tile_bytes;
+	st->run_bytes = run_bytes;
+	st->nruns = nruns;
+	st->offs = offs;
+	st->buf = calloc(1, (size_t)st->tile_bytes);
+	if (!st->buf) {
+		free(offs);
+		replyf("ERR STATE %s no-mem\n", name);
+		s->failed = 1;
+		return -1;
+	}
+	p->nst++;
+	replyf("OK STATE %s\n", name);
+	return 0;
+}
+
+static void state_zero(struct session_prog *p)
+{
+	uint32_t i;
+
+	for (i = 0; i < p->nst; i++) {
+		memset(p->st[i].buf, 0, (size_t)p->st[i].tile_bytes);
+	}
+}
+
+static int cmd_reset(struct session *s, const char *name)
+{
+	uint32_t i;
+
+	if (name) {
+		struct session_prog *p = session_prog_find(s, name);
+
+		if (!p) {
+			replyf("ERR RESET %s not-loaded\n", name);
+			s->failed = 1;
+			return -1;
+		}
+		state_zero(p);
+	} else {
+		for (i = 0; i < ANE_SESSION_MAX_PROGS; i++) {
+			if (s->progs[i].name) {
+				state_zero(&s->progs[i]);
+			}
+		}
+	}
+	replyf("OK RESET\n");
+	return 0;
+}
+
 static int cmd_call(struct session *s, const char *name)
 {
 	struct session_prog *p = session_prog_find(s, name);
@@ -410,6 +603,9 @@ static int cmd_call(struct session *s, const char *name)
 	uint32_t k2;
 	struct timespec t0, t1;
 	uint8_t *buf;
+	uint64_t in_wire, out_wire;
+	struct session_state *rs;
+	uint8_t *scratch = NULL;
 
 	if (!p) {
 		/* The payload length is unknown for an unknown program, so
@@ -423,13 +619,20 @@ static int cmd_call(struct session *s, const char *name)
 		return -1;
 	}
 	k = p->key;
-	buf = malloc(p->in_total ? (size_t)p->in_total : 1);
+	/* Resident state inputs and outputs are not on the stream. */
+	in_wire = p->in_total;
+	out_wire = p->out_total;
+	for (k2 = 0; k2 < p->nst; k2++) {
+		in_wire -= p->st[k2].tile_bytes;
+		out_wire -= p->st[k2].tile_bytes;
+	}
+	buf = malloc(in_wire ? (size_t)in_wire : 1);
 	if (!buf) {
 		replyf("ERR CALL %s no-mem\n", name);
 		s->failed = 1;
 		return -1;
 	}
-	if (read_stream(buf, p->in_total)) {
+	if (read_stream(buf, in_wire)) {
 		replyf("ERR CALL %s short-input\n", name);
 		free(buf);
 		s->failed = 1;
@@ -438,6 +641,11 @@ static int cmd_call(struct session *s, const char *name)
 	off = 0;
 	for (k2 = 0; k2 < k->pr.count; k2++) {
 		if (k->pr.ports[k2].dir != 0) {
+			continue;
+		}
+		rs = state_by_in(p, port_dir_index(&k->pr, k2, 0));
+		if (rs) {
+			ane_m2_send(k->nn, rs->buf, rs->in_idx);
 			continue;
 		}
 		ane_m2_send(k->nn, buf + off,
@@ -460,17 +668,50 @@ static int cmd_call(struct session *s, const char *name)
 		s->failed = 1;
 		return -1;
 	}
+	if (p->nst) {
+		uint64_t big = 0;
+
+		for (k2 = 0; k2 < p->nst; k2++) {
+			if (p->st[k2].tile_bytes > big) {
+				big = p->st[k2].tile_bytes;
+			}
+		}
+		scratch = malloc((size_t)big);
+		if (!scratch) {
+			free(buf);
+			s->failed = 1;
+			return -1;
+		}
+	}
 	off = 0;
 	for (k2 = 0; k2 < k->pr.count; k2++) {
 		if (k->pr.ports[k2].dir != 1) {
+			continue;
+		}
+		rs = state_by_out(p, port_dir_index(&k->pr, k2, 1));
+		if (rs) {
+			/* Only the logical runs enter the state: the device's
+			 * bytes outside them never reach the next input, which
+			 * is what the host-side pack (zeros plus the tensor)
+			 * produces. */
+			uint64_t r;
+
+			ane_m2_read(k->nn, scratch, rs->out_idx);
+			memset(rs->buf, 0, (size_t)rs->tile_bytes);
+			for (r = 0; r < rs->nruns; r++) {
+				memcpy(rs->buf + rs->offs[r],
+				       scratch + rs->offs[r],
+				       (size_t)rs->run_bytes);
+			}
 			continue;
 		}
 		ane_m2_read(k->nn, buf + off,
 			    port_dir_index(&k->pr, k2, 1));
 		off += k->pr.ports[k2].tile_bytes;
 	}
-	if (p->out_total && fwrite(buf, 1, (size_t)p->out_total, stdout) !=
-				    (size_t)p->out_total) {
+	free(scratch);
+	if (out_wire && fwrite(buf, 1, (size_t)out_wire, stdout) !=
+				(size_t)out_wire) {
 		free(buf);
 		s->failed = 1;
 		return -1;
@@ -627,6 +868,24 @@ int main(int argc, char **argv)
 			}
 			session_prog_free(&s, p);
 			replyf("OK FREE %s\n", p1);
+		} else if (!strcmp(cmd, "STATE")) {
+			char *name, *a, *b, *c, *d;
+			char *save = NULL;
+
+			name = p1 ? strtok_r(p1, " ", &save) : NULL;
+			a = name ? strtok_r(NULL, " ", &save) : NULL;
+			b = a ? strtok_r(NULL, " ", &save) : NULL;
+			c = b ? strtok_r(NULL, " ", &save) : NULL;
+			d = c ? strtok_r(NULL, " ", &save) : NULL;
+			if (!d) {
+				fprintf(stderr, "ane-session: bad STATE\n");
+				return 2;
+			}
+			cmd_state(&s, name, (uint32_t)strtoul(a, NULL, 10),
+				  (uint32_t)strtoul(b, NULL, 10),
+				  strtoull(c, NULL, 10), strtoull(d, NULL, 10));
+		} else if (!strcmp(cmd, "RESET")) {
+			cmd_reset(&s, p1 && *p1 ? p1 : NULL);
 		} else if (!strcmp(cmd, "CALL")) {
 			if (!p1) {
 				fprintf(stderr, "ane-session: bad CALL\n");

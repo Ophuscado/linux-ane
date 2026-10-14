@@ -80,6 +80,16 @@ test_ane_session_cache: test_ane_session_cache.c ane-session.c ane-run.c \
 		-Wl,--wrap=open,--wrap=ioctl,--wrap=mmap \
 		-o $@ test_ane_session_cache.c $(LIBANE_SRC) -lm
 
+# ane-session STATE and RESET (resident states): the real session over the fake DRM node with a
+# fake device that writes nonzero padding; no argument runs the checks, any argument serves the
+# session protocol for test_qwen_resident_states.py. Mutation proof: test_ane_session_state_mutants.py.
+test_ane_session_state: test_ane_session_state.c ane-session.c ane-run.c \
+	$(LIBANE_SRC) ../libane/ane.h ../libane/ane_m2.h ../libane/ane_bind.h \
+	../ane/src/uapi/drm/ane_accel.h
+	$(CC) $(CFLAGS) -Wno-error=maybe-uninitialized -I../libane -I../ane/src/uapi/drm -I/usr/include/libdrm \
+		-Wl,--wrap=open,--wrap=ioctl,--wrap=mmap \
+		-o $@ test_ane_session_state.c $(LIBANE_SRC) -lm
+
 # ane-bo-probe net check: parked vs leaked, over a fake sysfs.
 test_ane_bo_probe: test_ane_bo_probe.c ane-bo-probe.c \
 	../ane/src/uapi/drm/ane_accel.h
@@ -115,13 +125,15 @@ test_ane_session_cache_lsan: test_ane_session_cache.c ane-session.c ane-run.c \
 		-o $@ test_ane_session_cache.c $(LIBANE_SRC) -lm
 
 check: ane-run ane-selfcheck ane-session test_libane_ioctl test_ane_stats test_t6021_pool \
-	test_ane_session_cache test_ane_bo_probe test_t6021_prog_lookup test_check_band test_ane_timing
+	test_ane_session_cache test_ane_session_state test_ane_bo_probe test_t6021_prog_lookup test_check_band test_ane_timing
 	sh test_ane_run_tile_shift.sh ./ane-run
 	./ane-selfcheck ../fixtures/h14-anec
 	./test_libane_ioctl ../fixtures/h14-anec
 	./test_ane_stats
 	./test_t6021_pool
 	./test_ane_session_cache
+	./test_ane_session_state
+	python3 test_qwen_resident_states.py
 	./test_ane_bo_probe
 	./test_t6021_prog_lookup
 	./test_check_band
@@ -168,4 +180,4 @@ else
 endif
 
 clean:
-	rm -f ane-run ane-session ane-selfcheck test_libane_ioctl test_ane_stats test_t6021_pool test_ane_session_cache test_ane_session_cache_lsan test_ane_bo_probe test_t6021_prog_lookup test_t6021_prog_lookup_a64 test_sha256_a64.log test_check_band test_ane_timing
+	rm -f ane-run ane-session ane-selfcheck test_libane_ioctl test_ane_stats test_t6021_pool test_ane_session_cache test_ane_session_cache_lsan test_ane_session_state test_ane_bo_probe test_t6021_prog_lookup test_t6021_prog_lookup_a64 test_sha256_a64.log test_check_band test_ane_timing
