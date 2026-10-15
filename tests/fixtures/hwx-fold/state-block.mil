@@ -1,0 +1,23 @@
+program(1.3)
+[buildInfo = dict<string, string>({{"coremlc-component-MIL", "3520.4.1"}, {"coremlc-version", "3520.5.1"}})]
+{
+    func main<ios18>(tensor<fp16, [16, 128]> t14, tensor<fp16, [16, 128]> t4, tensor<fp16, [16, 128]> t7, tensor<fp16, [16, 1, 1]> t0, tensor<fp16, [16, 1, 1]> t1, tensor<fp16, [16, 128, 128]> t2) {
+        tensor<fp16, [16, 128, 128]> t3 = mul(x = t2, y = t1)[name = string("t3")];
+        tensor<int32, [3]> t5_sh = const()[name = string("t5_sh"), val = tensor<int32, [3]>([16, 1, 128])];
+        tensor<fp16, [16, 1, 128]> t5 = reshape(shape = t5_sh, x = t4)[name = string("t5")];
+        tensor<fp16, [16, 1, 128]> t6 = matmul(transpose_x = bool(false), transpose_y = bool(false), x = t5, y = t3)[name = string("t6")];
+        tensor<int32, [3]> t8_sh = const()[name = string("t8_sh"), val = tensor<int32, [3]>([16, 1, 128])];
+        tensor<fp16, [16, 1, 128]> t8 = reshape(shape = t8_sh, x = t7)[name = string("t8")];
+        tensor<fp16, [16, 1, 128]> t9 = sub(x = t8, y = t6)[name = string("t9")];
+        tensor<fp16, [16, 1, 128]> t10 = mul(x = t9, y = t0)[name = string("t10")];
+        tensor<int32, [3]> t11_p = const()[name = string("t11_p"), val = tensor<int32, [3]>([0, 2, 1])];
+        tensor<fp16, [16, 128, 1]> t11 = transpose(perm = t11_p, x = t5)[name = string("t11")];
+        tensor<fp16, [16, 128, 128]> t12 = matmul(transpose_x = bool(false), transpose_y = bool(false), x = t11, y = t10)[name = string("t12")];
+        tensor<fp16, [16, 128, 128]> t13 = add(x = t3, y = t12)[name = string("t13")];
+        tensor<int32, [3]> t15_sh = const()[name = string("t15_sh"), val = tensor<int32, [3]>([16, 1, 128])];
+        tensor<fp16, [16, 1, 128]> t15 = reshape(shape = t15_sh, x = t14)[name = string("t15")];
+        tensor<fp16, [16, 1, 128]> t16 = matmul(transpose_x = bool(false), transpose_y = bool(false), x = t15, y = t13)[name = string("t16")];
+        tensor<int32, [2]> t17_sh = const()[name = string("t17_sh"), val = tensor<int32, [2]>([16, 128])];
+        tensor<fp16, [16, 128]> t17 = reshape(shape = t17_sh, x = t16)[name = string("t17")];
+    } -> (t17, t13);
+}
