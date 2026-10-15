@@ -56,15 +56,25 @@ new kernel line matching 'EXCH ... failed' (checked once per step).
 """
 
 import argparse
+import ctypes
 import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
 import time
 from pathlib import Path
 
-import numpy as np
+import pcore_mask
+
+# Launcher only: a script run keeps the decode process and its ane-session child on the performance cores (see pcore_mask.py). It must come before numpy
+# starts its BLAS threads, which inherit the mask. A harness that imports this module is not pinned and sets its own mask. OMARCHY_ANE_NO_PIN=1 turns both lines off.
+PINNED = pcore_mask.pin_self() if __name__ == "__main__" else None
+if PINNED is not None:
+    os.environ.setdefault("OPENBLAS_NUM_THREADS", "4")
+
+import numpy as np  # noqa: E402
 
 from qwen_m2_conform import (BAND_FACTOR, FLOOR, KERNEL_TS, STOP_KERNEL, STOP_LOG,
                              compare)
@@ -169,8 +179,48 @@ def manifest_at(manifest, m):
     return out
 
 
+try:
+    _SCHED_GETCPU = ctypes.CDLL(None).sched_getcpu
+except (AttributeError, OSError):
+    _SCHED_GETCPU = None
+
+
+def sched_getcpu():
+    """The CPU the calling thread runs on now (glibc sched_getcpu, looked up once; os has no such call); -1 when unavailable."""
+    return _SCHED_GETCPU() if _SCHED_GETCPU is not None else -1
+
+
+def task_masks(pid):
+    """The distinct Cpus_allowed_list strings of every task of a process, from /proc (the proof of a mask; the CPU a thread last ran on is only a hint). A process that is gone has none."""
+    try:
+        tids = os.listdir(f"/proc/{pid}/task")
+    except OSError:
+        return []
+    out = set()
+    for tid in tids:
+        try:
+            for line in Path(f"/proc/{pid}/task/{tid}/status").read_text().splitlines():
+                if line.startswith("Cpus_allowed_list:"):
+                    out.add(line.split(":", 1)[1].strip())
+        except OSError:
+            continue
+    return sorted(out)
+
+
+def placement(decoder):
+    """The always-on placement record: the pin applied, the mask of every task of the decode process and of the ane-session child, and the calls so far by CPU,
+    with how many ran off the performance cores (None when the chip has no efficiency cores)."""
+    p = pcore_mask.p_core_cpus()
+    return {"pinned": PINNED, "openblas_threads_env": os.environ.get("OPENBLAS_NUM_THREADS"), "p_cores": p,
+            "decode_masks": task_masks(os.getpid()), "child_masks": task_masks(decoder.session.proc.pid) if decoder.session is not None else None,
+            "calls": sum(decoder.cpu_hist.values()), "calls_by_cpu": {str(c): n for c, n in sorted(decoder.cpu_hist.items())},
+            "calls_off_p_cores": None if p is None else sum(n for c, n in decoder.cpu_hist.items() if c not in p)}
+
+
 class Decoder:
     def __init__(self, args, manifest):
+        self.cpu_hist = {}      # CPU of the decode thread after every call -> number of calls
+        self.step_cpus = []     # the same, for the step in progress
         self.args = args
         self.resident_states = bool(getattr(args, "resident_states", False))
         if self.resident_states and (not args.resident or getattr(args, "dump", None)):
@@ -271,6 +321,7 @@ class Decoder:
         [wall s, exec ms]). check(i, arrays, outputs) sees every execution."""
         vals = ctx_vals(pos, self.max_len, cos, sin)
         lanes, hidden, timing = {}, embed[token][None], []
+        self.step_cpus = []
         step_lock = self.session is not None and self.args.resident_lock == "step"
         if step_lock:
             self.session.lock()
@@ -283,7 +334,11 @@ class Decoder:
                       for s in pr["srcs"] if not (resident and s["kind"] == "state_in")}
             start = time.monotonic()
             outs, exec_ms = self.call(i, arrays)
-            timing.append((time.monotonic() - start, exec_ms))
+            wall = time.monotonic() - start
+            cpu = sched_getcpu()
+            self.step_cpus.append(cpu)
+            self.cpu_hist[cpu] = self.cpu_hist.get(cpu, 0) + 1
+            timing.append((wall, exec_ms))
             if check:
                 check(i, arrays, outs)
             for d in pr["dsts"]:
@@ -354,6 +409,17 @@ class DumpCheck:
         return check if prompt == self.prompt and step in self.steps else None
 
 
+def finish_placement(decoder, record):
+    """Record and print where the calls ran; a call off the performance cores is flagged on stderr so it is never missed."""
+    rec = placement(decoder)
+    record({"type": "placement", **rec})
+    off = rec["calls_off_p_cores"]
+    print(f"placement: {rec['calls']} calls, {'unknown' if off is None else off} off the performance cores, pinned {rec['pinned']}, decode masks {rec['decode_masks']}, "
+          f"child masks {rec['child_masks']}", flush=True)
+    if off:
+        print(f"WARNING: {off} of {rec['calls']} calls ran on an efficiency core (about +0.7 ms per call); see tools/pcore_mask.py", file=sys.stderr)
+
+
 def run(args):
     if reference_blas():
         print(REFERENCE_BLAS_WARNING, file=sys.stderr)
@@ -389,7 +455,7 @@ def run(args):
             if args.resident else None,
             "ref_sha256": sha(args.ref), "manifest_sha256": sha(args.manifest),
             "boot_id": Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
-            "head_load_s": round(time.monotonic() - start, 2), "rope": f"dh={dh} rotary={rotary} base={base}"})
+            "head_load_s": round(time.monotonic() - start, 2), "rope": f"dh={dh} rotary={rotary} base={base}", "placement": placement(decoder)})
     dump = DumpCheck(args.dump, args.band, record, out / "m2-dump") if args.dump else None
     for n, prompt in prompts:
         pid = prompt["id"]
@@ -406,15 +472,19 @@ def run(args):
             mark = max((t for t, _ in kernel_marks()), default=0.0)
             check = dump(pid, pos) if dump else None
             step_start = time.monotonic()
-            hidden, timing = decoder.step(token, pos, cos, sin, embed, check)
+            try:
+                hidden, timing = decoder.step(token, pos, cos, sin, embed, check)
+            except SystemExit:
+                finish_placement(decoder, record)   # a failed CALL: the session is dead or dying, the masks and the calls so far are still the record that matters
+                raise
             ane_s = time.monotonic() - step_start
             new = [line for t, line in kernel_marks() if t > mark]
             stop = [line for line in new if STOP_KERNEL.search(line)]
             for i, (wall, exec_ms) in enumerate(timing):
-                timings.write(f"{pid}\t{pos}\t{i}\t{wall * 1e3:.2f}\t{exec_ms}\n")
+                timings.write(f"{pid}\t{pos}\t{i}\t{wall * 1e3:.2f}\t{exec_ms}\t{decoder.step_cpus[i]}\n")
             timings.flush()
             rec = {"type": "step", "prompt": pid, "step": pos, "token_in": token,
-                   "ane_wall_s": round(ane_s, 3), "kernel_lines": len(new)}
+                   "ane_wall_s": round(ane_s, 3), "kernel_lines": len(new), "calls_cpu": ",".join(map(str, decoder.step_cpus))}
             if pos >= len(ids) - 1:
                 host_start = time.monotonic()
                 logits = head @ hidden
@@ -443,9 +513,11 @@ def run(args):
             print(" ".join(f"{k}={v}" for k, v in rec.items() if k != "type"), flush=True)
             if stop:
                 record({"type": "stop", "prompt": pid, "step": pos, "reason": " | ".join(stop)})
+                finish_placement(decoder, record)
                 raise SystemExit(f"STOP kernel: {stop[0]}")
             pos += 1
         if args.max_steps is not None:
+            finish_placement(decoder, record)
             decoder.close_session()
             return 1 if dump and dump.failed else 0
         div = first_divergence(gen, want)
@@ -464,6 +536,7 @@ def run(args):
               f"wall={rec['wall_s']}s min_margin={rec['min_margin']:.4f}", flush=True)
     if dump:
         print(f"dump ports failing: {dump.failed}")
+    finish_placement(decoder, record)
     decoder.close_session()
     return 0
 

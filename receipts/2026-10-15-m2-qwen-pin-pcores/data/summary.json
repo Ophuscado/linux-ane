@@ -1,0 +1,1637 @@
+{
+ "arms": [
+  {
+   "arm": "U",
+   "steps": 16,
+   "mean_s": 0.17185659987499946,
+   "p10_s": 0.17084081899997727,
+   "p50_s": 0.17194067100001575,
+   "p90_s": 0.17253286800001888,
+   "max_s": 0.17270547600008967,
+   "frac_above_190ms": 0.0,
+   "ane_mean_s": 0.14631043237500663,
+   "steps_above_cut": {
+    "185": 0,
+    "190": 0,
+    "195": 0,
+    "200": 0,
+    "205": 0,
+    "210": 0
+   },
+   "between_calls_mean_ms": 0.12445324996335216,
+   "exec_sum_mean_ms": 130.7253125,
+   "call_wall_sum_mean_ms": 146.18597912504327,
+   "steps_any_thread_on_E": 16,
+   "threads_per_step_min_max": [
+    13,
+    13
+   ],
+   "busy_ticks_on_E_mean": 10.25,
+   "busy_ticks_on_P_mean": 16.8125,
+   "schedstat_ane_ms": {
+    "decode": {
+     "on_cpu_ms": 9.4249585,
+     "run_queue_wait_ms": 0.0009061875000000001
+    },
+    "child": {
+     "on_cpu_ms": 16.944625187499998,
+     "run_queue_wait_ms": 0.023731625
+    }
+   },
+   "head_mean_s": 0.025546167499992833,
+   "outside_exec_mean_ms": 15.585119875006635,
+   "call_wall_mean_ms": 3.8469994506590335,
+   "exec_mean_ms": 3.4401398026315784,
+   "steps_decode_cpu_on_E": 0,
+   "steps_child_cpu_on_E": 0,
+   "calls_on_E": 0,
+   "calls": 608,
+   "slow_steps_by_core": {
+    "decode_E": 0,
+    "child_E": 0,
+    "both_P": 0
+   }
+  },
+  {
+   "arm": "P",
+   "steps": 16,
+   "mean_s": 0.1684109640000031,
+   "p10_s": 0.1667943520000108,
+   "p50_s": 0.16852179100004605,
+   "p90_s": 0.170742802999996,
+   "max_s": 0.1708187219999786,
+   "frac_above_190ms": 0.0,
+   "ane_mean_s": 0.14675666006250765,
+   "steps_above_cut": {
+    "185": 0,
+    "190": 0,
+    "195": 0,
+    "200": 0,
+    "205": 0,
+    "210": 0
+   },
+   "between_calls_mean_ms": 0.12053812500667505,
+   "exec_sum_mean_ms": 130.729125,
+   "call_wall_sum_mean_ms": 146.63612193750097,
+   "steps_any_thread_on_E": 0,
+   "threads_per_step_min_max": [
+    13,
+    13
+   ],
+   "busy_ticks_on_E_mean": 0.25,
+   "busy_ticks_on_P_mean": 17.9375,
+   "schedstat_ane_ms": {
+    "decode": {
+     "on_cpu_ms": 9.605024375,
+     "run_queue_wait_ms": 0.00083075
+    },
+    "child": {
+     "on_cpu_ms": 17.29846375,
+     "run_queue_wait_ms": 0.0096224375
+    }
+   },
+   "head_mean_s": 0.021654303937495456,
+   "outside_exec_mean_ms": 16.027535062507646,
+   "call_wall_mean_ms": 3.8588453141447623,
+   "exec_mean_ms": 3.4402401315789475,
+   "steps_decode_cpu_on_E": 0,
+   "steps_child_cpu_on_E": 0,
+   "calls_on_E": 0,
+   "calls": 608,
+   "slow_steps_by_core": {
+    "decode_E": 0,
+    "child_E": 0,
+    "both_P": 0
+   }
+  },
+  {
+   "arm": "U",
+   "steps": 16,
+   "mean_s": 0.19099397025000187,
+   "p10_s": 0.17194073600001047,
+   "p50_s": 0.1994981619999976,
+   "p90_s": 0.20155885299999454,
+   "max_s": 0.20204722799996944,
+   "frac_above_190ms": 0.6875,
+   "ane_mean_s": 0.16493876387499995,
+   "steps_above_cut": {
+    "185": 11,
+    "190": 11,
+    "195": 11,
+    "200": 5,
+    "205": 0,
+    "210": 0
+   },
+   "between_calls_mean_ms": 0.36405781256831915,
+   "exec_sum_mean_ms": 130.6475,
+   "call_wall_sum_mean_ms": 164.57470606243163,
+   "steps_any_thread_on_E": 16,
+   "threads_per_step_min_max": [
+    13,
+    13
+   ],
+   "busy_ticks_on_E_mean": 14.625,
+   "busy_ticks_on_P_mean": 14.5,
+   "schedstat_ane_ms": {
+    "decode": {
+     "on_cpu_ms": 22.15887925,
+     "run_queue_wait_ms": 0.0014974375
+    },
+    "child": {
+     "on_cpu_ms": 26.268040437499998,
+     "run_queue_wait_ms": 0.022354
+    }
+   },
+   "head_mean_s": 0.026055206375001916,
+   "outside_exec_mean_ms": 34.291263874999956,
+   "call_wall_mean_ms": 4.330913317432412,
+   "exec_mean_ms": 3.438092105263158,
+   "steps_decode_cpu_on_E": 11,
+   "steps_child_cpu_on_E": 11,
+   "calls_on_E": 408,
+   "calls": 608,
+   "slow_steps_by_core": {
+    "decode_E": 11,
+    "child_E": 11,
+    "both_P": 0
+   }
+  },
+  {
+   "arm": "P",
+   "steps": 16,
+   "mean_s": 0.16782278018749608,
+   "p10_s": 0.16717317899997397,
+   "p50_s": 0.16788325899995016,
+   "p90_s": 0.16839780300000484,
+   "max_s": 0.1688886330000514,
+   "frac_above_190ms": 0.0,
+   "ane_mean_s": 0.14615869931249748,
+   "steps_above_cut": {
+    "185": 0,
+    "190": 0,
+    "195": 0,
+    "200": 0,
+    "205": 0,
+    "210": 0
+   },
+   "between_calls_mean_ms": 0.12056750000155603,
+   "exec_sum_mean_ms": 130.70425,
+   "call_wall_sum_mean_ms": 146.03813181249592,
+   "steps_any_thread_on_E": 0,
+   "threads_per_step_min_max": [
+    13,
+    13
+   ],
+   "busy_ticks_on_E_mean": 0.3125,
+   "busy_ticks_on_P_mean": 18.0625,
+   "schedstat_ane_ms": {
+    "decode": {
+     "on_cpu_ms": 9.2771888125,
+     "run_queue_wait_ms": 0.0015833125
+    },
+    "child": {
+     "on_cpu_ms": 16.8708118125,
+     "run_queue_wait_ms": 0.008137937500000001
+    }
+   },
+   "head_mean_s": 0.021664080874998604,
+   "outside_exec_mean_ms": 15.454449312497479,
+   "call_wall_mean_ms": 3.8431087319077872,
+   "exec_mean_ms": 3.4395855263157897,
+   "steps_decode_cpu_on_E": 0,
+   "steps_child_cpu_on_E": 0,
+   "calls_on_E": 0,
+   "calls": 608,
+   "slow_steps_by_core": {
+    "decode_E": 0,
+    "child_E": 0,
+    "both_P": 0
+   }
+  }
+ ],
+ "pooled_mean_P_over_U": 0.9266452139558918,
+ "bar": 0.95,
+ "AA_spread_U_s": 0.019137370375002405,
+ "AA_spread_P_s": 0.000588183812507026,
+ "pooled_difference_s": 0.013308412968751071,
+ "P_over_slower_U": 0.8802208356300083,
+ "P_over_faster_U": 0.9782392542156079,
+ "prediction": {
+  "pooled_ratio": [
+   0.93,
+   0.96
+  ],
+  "vs_slow_arm": [
+   0.84,
+   0.86
+  ]
+ },
+ "logits_equal_sealed_hash": true,
+ "failures": [
+  "pooled difference 0.01331 s does not exceed the A/A spread 0.01914 s"
+ ],
+ "frozen": true,
+ "run": {
+  "boot_id_pre": "b010a7cd-0305-4ef9-b0b5-9e31d2fb9edc",
+  "bo_loaded": 2805055488,
+  "kernel_stop": [],
+  "exch_new": 0,
+  "bo_start": 0,
+  "bo_cap_mb": 12288
+ },
+ "environment": {
+  "numpy": "2.5.3",
+  "python": "3.14.7",
+  "blas": [
+   {
+    "path": "/usr/lib/libopenblas.so.0.3",
+    "realpath": "/usr/lib/libopenblas.so.0.3",
+    "sha256": "e8d3c464575bc051e28fc9d313f251f4685b3686a6f91092c5649c4c9258b5be"
+   }
+  ],
+  "reference_blas": false,
+  "threads_env": {
+   "OPENBLAS_NUM_THREADS": "4",
+   "OMP_NUM_THREADS": null,
+   "MKL_NUM_THREADS": null,
+   "GOTO_NUM_THREADS": null,
+   "OPENBLAS_CORETYPE": null,
+   "VECLIB_MAXIMUM_THREADS": null
+  },
+  "cpu_count": 12
+ },
+ "raw_walls_s": {
+  "1U": [
+   0.17120547199994007,
+   0.17060687100001815,
+   0.17084081899997727,
+   0.17172382699993705,
+   0.17208714700001337,
+   0.17175063399997725,
+   0.17170919199998025,
+   0.17253286800001888,
+   0.17227096200008418,
+   0.17167115199998761,
+   0.17174985699995204,
+   0.17219342300001017,
+   0.17270547600008967,
+   0.17244090200000528,
+   0.17227632499998435,
+   0.17194067100001575
+  ],
+  "2P": [
+   0.1677139239999974,
+   0.1667943520000108,
+   0.16852179100004605,
+   0.16735301299996763,
+   0.16801440300002923,
+   0.16676689000001943,
+   0.16720642699999644,
+   0.16912428099999488,
+   0.1708187219999786,
+   0.1687240780000252,
+   0.1690043500000229,
+   0.1702449750000028,
+   0.16890048799996293,
+   0.1669948009999871,
+   0.16765012600001228,
+   0.170742802999996
+  ],
+  "3U": [
+   0.17120723599998655,
+   0.17229531899999984,
+   0.17194073600001047,
+   0.17236991300001137,
+   0.17211979100000008,
+   0.1956030970000029,
+   0.19960184100000333,
+   0.2003730900000278,
+   0.20121180600000343,
+   0.20204722799996944,
+   0.20155885299999454,
+   0.198700357000007,
+   0.19767427599998655,
+   0.19969711499993537,
+   0.1994981619999976,
+   0.20000470400009362
+  ],
+  "4P": [
+   0.1683749639999519,
+   0.16718383800002812,
+   0.16745996299999888,
+   0.1688886330000514,
+   0.16793446399998402,
+   0.1676766730000736,
+   0.16788325899995016,
+   0.16837651200000892,
+   0.1672116340000116,
+   0.16839780300000484,
+   0.16838509499996235,
+   0.16755830099998548,
+   0.16764472199997726,
+   0.16717317899997397,
+   0.1671258460000331,
+   0.16788959699994166
+  ]
+ },
+ "arms_meta": [
+  {
+   "arm": "U",
+   "tokens": [
+    271,
+    248068,
+    271,
+    248069,
+    271,
+    33704,
+    82,
+    2222,
+    383,
+    8964,
+    1521,
+    279,
+    35003,
+    314,
+    279,
+    8964
+   ],
+   "affinity": {
+    "set": [
+     0,
+     1,
+     2,
+     3,
+     4,
+     5,
+     6,
+     7,
+     8,
+     9,
+     10,
+     11
+    ],
+    "readback": {
+     "4882:4882": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ],
+     "4885:4885": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ]
+    },
+    "readback_end": {
+     "4882:4882": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ],
+     "4882:8740": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ],
+     "4882:8741": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ],
+     "4882:8742": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ],
+     "4882:8743": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ],
+     "4882:8744": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ],
+     "4882:8745": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ],
+     "4882:8746": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ],
+     "4882:8747": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ],
+     "4882:8748": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ],
+     "4882:8749": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ],
+     "4882:8750": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ],
+     "4885:4885": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ]
+    }
+   },
+   "interrupts": {
+    "before": "           CPU0       CPU1       CPU2       CPU3       CPU4       CPU5       CPU6       CPU7       CPU8       CPU9       CPU10      CPU11      \n 33:          0          0          0          0          0          0          0          0          0          0          0          0  AIC-FIQ   6 Level     vgic\n 34:          0          0          0          0          0          0          0          0          0          0          0          0      KVM   0 Level     kvm guest ptimer\n 35:          0          0          0          0          0          0          0          0          0          0          0          0      KVM   1 Level     kvm guest vtimer\n 36:      13284      14256      14082      15518      28607      21235      18871      24532      18893      17134      16495      17992  AIC-FIQ   0 Level     arch_timer\n 53:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66420 Level     285408000.mailbox-recv\n 54:         13         45         68         11        239        223        132        155        233        200        202        833     AIC2 66401 Level     2a2408000.mbox-recv\n 55:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66398 Level     2a2408000.mbox-send\n 56:         37         53         15         11        250        253        136        143        323        236        137         85     AIC2 66152 Level     2a6408000.mbox-recv\n 57:          1          0          0          0          0          0          0          0          0          0          0          0     AIC2 66149 Level     2a6408000.mbox-send\n 58:          0          1          3          2          3          2          1          0          4          7         12          1     AIC2 66232 Level     2a9408000.mbox-recv\n 59:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66229 Level     2a9408000.mbox-send\n 60:         21         26          1         13         32         12         27          8         34          3         11          5     AIC2 66115 Level     396408000.mbox-recv\n 61:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66112 Level     396408000.mbox-send\n 62:          3          2          5          0         50         35         34         31         20         28         23         20     AIC2 66682 Level     406408000.mbox-recv\n 63:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66679 Level     406408000.mbox-send\n 64:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66361 Level     701108000.mailbox-recv\n 65:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66358 Level     701108000.mailbox-send\n 66:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66365 Level     b01108000.mailbox-recv\n 67:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66362 Level     b01108000.mailbox-send\n 68:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66369 Level     f01108000.mailbox-recv\n 69:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66366 Level     f01108000.mailbox-send\n 71:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66421 Level     apple-dart fault handler, apple-dart fault handler, apple-dart fault handler\n 72:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66623 Level     apple-dart fault handler\n 73:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66164 Level     apple-dart fault handler\n 74:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66212 Level     apple-dart fault handler\n 75:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66110 Level     apple-dart fault handler, apple-dart fault handler, apple-dart fault handler\n 76:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66447 Level     apple-dart fault handler, apple-dart fault handler\n 77:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66877 Level     apple-dart fault handler\n 78:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66881 Level     apple-dart fault handler\n 79:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66631 Level     apple-dart fault handler\n 80:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66522 Level     apple-dart fault handler, apple-dart fault handler\n 81:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66767 Level     apple-dart fault handler\n 82:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66796 Level     apple-dart fault handler, apple-dart fault handler\n 83:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66814 Level     apple-dart fault handler, apple-dart fault handler\n 84:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66832 Level     apple-dart fault handler, apple-dart fault handler\n 85:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66558 Level     apple-dart fault handler, apple-dart fault handler\n 86:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66594 Level     apple-dart fault handler, apple-dart fault handler\n 87:          0          0          0          0          0          0          0          0          0          0          0          0  AIC-FIQ   5 Level     arm-pmu, arm-pmu\n 95:          2          4          2          3        121         29         23         18         26         14          4         17     AIC2 66167 Level     2a6980000.dma-controller\n 96:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66622 Level     28ec08000.mbox-recv\n 97:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66619 Level     28ec08000.mbox-send\n 98:          6         29         12         11        231        137        112        120        137        131         64         66     AIC2 66471 Level     389c08000.mbox-recv\n 99:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66468 Level     389c08000.mbox-send\n100:          1          8          0          8        132          1         26          3         26          9          2          2     AIC2 66546 Level     315c08000.mbox-recv\n101:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66543 Level     315c08000.mbox-send\n102:          0          0          0          0          0          0          1          0          3         17         56          0     AIC2 66708 Level     347408000.mbox-recv\n103:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66705 Level     347408000.mbox-send\n104:          0          2          0          0          6          7         11        182          5          6          0          0     AIC2 66582 Level     48dc08000.mbox-recv\n105:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66579 Level     48dc08000.mbox-send\n106:          0          5          0          0          0          1        169         13         14          6          1          9     AIC2 66618 Level     50dc08000.mbox-recv\n107:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66615 Level     50dc08000.mbox-send\n108:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66486 Level     apple-dart fault handler, apple-dart fault handler\n109:        268        254        145        145       2869       2346       2134       2349       1607       1968        856       1402     AIC2 67368 Level     nvme-apple\n118:          0          0          0          0          0          0          0          0          0          0          0          0     PCIe  12 Edge      Link up\n119:          0          0          0          0          0          0          0          0          0          0          0          0     PCIe  14 Edge      Link down\n121:          0          0          0          0          0          0          0          0          0          0          0          0     PCIe  12 Edge      Link up\n122:          0          0          0          0          0          0          0          0          0          0          0          0     PCIe  14 Edge      Link down\n124:          0          0          0          0          0          0          0          0          0          0          0          0 PCI-MSI-0000:00:00.0   0 Edge      PCIe PME, aerdrv, PCIe bwctrl\n126:          0          0          0          0          0          0          0          0          0          0          0          0 PCI-MSI-0000:00:01.0   0 Edge      PCIe PME, aerdrv, PCIe bwctrl\n127:          3          1          0          1         39         13         24          6          6          7          4          0     AIC2 66754 Level     39b400000.dma-controller\n128:          4          7         10          9         22         23         36         38         16         40         17          6     AIC2 66510 Level     289c08000.mbox-recv\n129:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66507 Level     289c08000.mbox-send\n130:          1          2          0          0          5          7          6         13          1          2          0          1     AIC2 66787 Level     39bc08000.mbox-recv\n131:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66784 Level     39bc08000.mbox-send\n132:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66742 Level     39b104000.spi\n133:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66743 Level     39b108000.spi\n134:          6          0          2          1         17         61          5          4          1         15          0          2     AIC2 66755 Level     pasemi_apple_i2c\n135:          2          0          0          0         90         33        100         18          6          4          4         11     AIC2 66756 Level     pasemi_apple_i2c\n136:          2          4          1          1         39          9         30         13          7          6          5          6     AIC2 66757 Level     pasemi_apple_i2c\n137:          0          6          1          3         91         44         82         36          2          4          1          0     AIC2 66758 Level     pasemi_apple_i2c\n138:          0          0          0          0          0          0          0          0          0          0          0          0 dockchannel-irqc   2 Edge      apple-dockchannel-tx\n139:          0          0          0          0          7          1          1          3          5          7          2          3 dockchannel-irqc   3 Edge      apple-dockchannel-rx\n140:          0          0          0          0          0          0          0          0          0          0          0          0 Apple-GPIO  25 Edge      dp2hdmi-hpd-irq\n141:          0          0          0          0          0          0          0          0          0          0          0          0 Apple-GPIO  44 Level     0-003a, 0-0038, 0-003f, 0-003b\n143:         99        213         24         18         77         52         61         63         71         78         20        102 PCI-MSI-0000:02:00.0   0 Edge      mmc0\n144:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66625 Level     287080000.avd\n146:          0          0          0          0          0          0          0          0          0          0          0          0 Apple-GPIO  58 Level     tas2764, tas2764, tas2764, tas2764, tas2764, tas2764\n147:          0          0          0          0          0          0          1          1          0          0          0          0 Apple-GPIO  59 Level     cs42l84\n149:         37         58         46         27        749        478        559       1384        319        251        147        232 PCI-MSI-0000:01:00.0   0 Edge      brcmf_pcie_intr\n150:         18          3          9         12         10         11         42         83        124         20         21          5 PCI-MSI-0000:01:00.1   0 Edge      bcm4377\n151:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66118 Level     apple-dart fault handler\n153:         95         95         98         86       1529        947        726        793        607        524        312        300     AIC2 66828 Level     xhci-hcd:usb1\nIPI0:       625        614        527        893        833        644        604        910        751        619        679        755       Rescheduling interrupts\nIPI1:     14180      15149      13216      11062      18472      17168      16167      17396      17345      16443      16494      15965       Function call interrupts\nIPI2:         0          0          0          0          0          0          0          0          0          0          0          0       CPU stop interrupts\nIPI3:         0          0          0          0          0          0          0          0          0          0          0          0       CPU stop NMIs\nIPI4:         0          0          0          0          0          0          0          0          0          0          0          0       Timer broadcast interrupts\nIPI5:        21         22         36         24         23         57         51         37         46         22         31         29       IRQ work interrupts\nIPI6:         0          0          0          0          0          0          0          0          0          0          0          0       CPU backtrace interrupts\nIPI7:         0          0          0          0          0          0          0          0          0          0          0          0       KGDB roundup interrupts\nErr:          0\n",
+    "after": "           CPU0       CPU1       CPU2       CPU3       CPU4       CPU5       CPU6       CPU7       CPU8       CPU9       CPU10      CPU11      \n 33:          0          0          0          0          0          0          0          0          0          0          0          0  AIC-FIQ   6 Level     vgic\n 34:          0          0          0          0          0          0          0          0          0          0          0          0      KVM   0 Level     kvm guest ptimer\n 35:          0          0          0          0          0          0          0          0          0          0          0          0      KVM   1 Level     kvm guest vtimer\n 36:      13966      14911      15107      16157      41662      26617      20599      43293      20065      18086      17607      19071  AIC-FIQ   0 Level     arch_timer\n 53:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66420 Level     285408000.mailbox-recv\n 54:         18         46         68         11        251        239        134        197        234        214        212        842     AIC2 66401 Level     2a2408000.mbox-recv\n 55:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66398 Level     2a2408000.mbox-send\n 56:         37         53         16         12        261        258        146        155        325        240        140         86     AIC2 66152 Level     2a6408000.mbox-recv\n 57:          1          0          0          0          0          0          0          0          0          0          0          0     AIC2 66149 Level     2a6408000.mbox-send\n 58:          0          1          3          2          3          2          1          0          4          7         12          1     AIC2 66232 Level     2a9408000.mbox-recv\n 59:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66229 Level     2a9408000.mbox-send\n 60:         21         26          1         13         32         12         27          8         34          3         11          5     AIC2 66115 Level     396408000.mbox-recv\n 61:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66112 Level     396408000.mbox-send\n 62:          3          2          5          0         50         35         34         32         20         28         23         21     AIC2 66682 Level     406408000.mbox-recv\n 63:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66679 Level     406408000.mbox-send\n 64:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66361 Level     701108000.mailbox-recv\n 65:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66358 Level     701108000.mailbox-send\n 66:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66365 Level     b01108000.mailbox-recv\n 67:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66362 Level     b01108000.mailbox-send\n 68:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66369 Level     f01108000.mailbox-recv\n 69:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66366 Level     f01108000.mailbox-send\n 71:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66421 Level     apple-dart fault handler, apple-dart fault handler, apple-dart fault handler\n 72:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66623 Level     apple-dart fault handler\n 73:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66164 Level     apple-dart fault handler\n 74:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66212 Level     apple-dart fault handler\n 75:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66110 Level     apple-dart fault handler, apple-dart fault handler, apple-dart fault handler\n 76:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66447 Level     apple-dart fault handler, apple-dart fault handler\n 77:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66877 Level     apple-dart fault handler\n 78:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66881 Level     apple-dart fault handler\n 79:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66631 Level     apple-dart fault handler\n 80:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66522 Level     apple-dart fault handler, apple-dart fault handler\n 81:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66767 Level     apple-dart fault handler\n 82:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66796 Level     apple-dart fault handler, apple-dart fault handler\n 83:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66814 Level     apple-dart fault handler, apple-dart fault handler\n 84:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66832 Level     apple-dart fault handler, apple-dart fault handler\n 85:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66558 Level     apple-dart fault handler, apple-dart fault handler\n 86:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66594 Level     apple-dart fault handler, apple-dart fault handler\n 87:          0          0          0          0          0          0          0          0          0          0          0          0  AIC-FIQ   5 Level     arm-pmu, arm-pmu\n 95:          2          4          2          3        121         29         23         18         26         14          4         17     AIC2 66167 Level     2a6980000.dma-controller\n 96:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66622 Level     28ec08000.mbox-recv\n 97:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66619 Level     28ec08000.mbox-send\n 98:          6         29         12         11        233        137        113        121        137        131         64         66     AIC2 66471 Level     389c08000.mbox-recv\n 99:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66468 Level     389c08000.mbox-send\n100:          1          8          0          8        132          1         26          3         26          9          2          2     AIC2 66546 Level     315c08000.mbox-recv\n101:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66543 Level     315c08000.mbox-send\n102:          0          0          0          0          0          0          1          0          3         17         56          0     AIC2 66708 Level     347408000.mbox-recv\n103:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66705 Level     347408000.mbox-send\n104:          0          2          0          0          6          7         11        182          5          6          0          0     AIC2 66582 Level     48dc08000.mbox-recv\n105:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66579 Level     48dc08000.mbox-send\n106:          0          5          0          0          0          1        169         13         14          6          1          9     AIC2 66618 Level     50dc08000.mbox-recv\n107:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66615 Level     50dc08000.mbox-send\n108:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66486 Level     apple-dart fault handler, apple-dart fault handler\n109:        268        254        145        145       2869       2346       2134       2349       1610       1968        883       1403     AIC2 67368 Level     nvme-apple\n118:          0          0          0          0          0          0          0          0          0          0          0          0     PCIe  12 Edge      Link up\n119:          0          0          0          0          0          0          0          0          0          0          0          0     PCIe  14 Edge      Link down\n121:          0          0          0          0          0          0          0          0          0          0          0          0     PCIe  12 Edge      Link up\n122:          0          0          0          0          0          0          0          0          0          0          0          0     PCIe  14 Edge      Link down\n124:          0          0          0          0          0          0          0          0          0          0          0          0 PCI-MSI-0000:00:00.0   0 Edge      PCIe PME, aerdrv, PCIe bwctrl\n126:          0          0          0          0          0          0          0          0          0          0          0          0 PCI-MSI-0000:00:01.0   0 Edge      PCIe PME, aerdrv, PCIe bwctrl\n127:          3          1          0          1         39         13         24          6          6          7          4          0     AIC2 66754 Level     39b400000.dma-controller\n128:          4          7         10          9         22         23         36         38         16         40         17          6     AIC2 66510 Level     289c08000.mbox-recv\n129:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66507 Level     289c08000.mbox-send\n130:          1          2          0          0          5          7          6         13          1          2          0          1     AIC2 66787 Level     39bc08000.mbox-recv\n131:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66784 Level     39bc08000.mbox-send\n132:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66742 Level     39b104000.spi\n133:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66743 Level     39b108000.spi\n134:          6          0          2          1         17         61          5          4          1         15          0          2     AIC2 66755 Level     pasemi_apple_i2c\n135:          2          0          0          0         90         33        100         18          6          4          4         11     AIC2 66756 Level     pasemi_apple_i2c\n136:          2          4          1          1         39          9         30         13          7          6          5          6     AIC2 66757 Level     pasemi_apple_i2c\n137:          0          6          1          3         91         44         82         36          2          4          1          0     AIC2 66758 Level     pasemi_apple_i2c\n138:          0          0          0          0          0          0          0          0          0          0          0          0 dockchannel-irqc   2 Edge      apple-dockchannel-tx\n139:          0          0          0          0          7          1          1          3          5          7          2          3 dockchannel-irqc   3 Edge      apple-dockchannel-rx\n140:          0          0          0          0          0          0          0          0          0          0          0          0 Apple-GPIO  25 Edge      dp2hdmi-hpd-irq\n141:          0          0          0          0          0          0          0          0          0          0          0          0 Apple-GPIO  44 Level     0-003a, 0-0038, 0-003f, 0-003b\n143:         99        213         24         18         77         52         61         63         71         78         20        102 PCI-MSI-0000:02:00.0   0 Edge      mmc0\n144:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66625 Level     287080000.avd\n146:          0          0          0          0          0          0          0          0          0          0          0          0 Apple-GPIO  58 Level     tas2764, tas2764, tas2764, tas2764, tas2764, tas2764\n147:          0          0          0          0          0          0          1          1          0          0          0          0 Apple-GPIO  59 Level     cs42l84\n149:         39         58         48         27        754        488        559       1400        319        255        151        236 PCI-MSI-0000:01:00.0   0 Edge      brcmf_pcie_intr\n150:         18          3          9         12         10         11         42         83        124         20         21          5 PCI-MSI-0000:01:00.1   0 Edge      bcm4377\n151:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66118 Level     apple-dart fault handler\n153:         96         97        101         86       1559        973        740        841        617        537        326        301     AIC2 66828 Level     xhci-hcd:usb1\nIPI0:       638        622        542        907        846        647        605        920        760        626        691        769       Rescheduling interrupts\nIPI1:     15071      15381      13367      11122      20665      21729      18245      20325      17493      16583      16624      16182       Function call interrupts\nIPI2:         0          0          0          0          0          0          0          0          0          0          0          0       CPU stop interrupts\nIPI3:         0          0          0          0          0          0          0          0          0          0          0          0       CPU stop NMIs\nIPI4:         0          0          0          0          0          0          0          0          0          0          0          0       Timer broadcast interrupts\nIPI5:        21         22         36         24         23         57         51         37         46         23         32         29       IRQ work interrupts\nIPI6:         0          0          0          0          0          0          0          0          0          0          0          0       CPU backtrace interrupts\nIPI7:         0          0          0          0          0          0          0          0          0          0          0          0       KGDB roundup interrupts\nErr:          0\n"
+   },
+   "logits_sha256": "5c359d366ad883ea911e2bfba5f2e600dc6b22fd34eaad5c12059ef5c35ab37a",
+   "logits_bytes": 15892480,
+   "kernel_stop": [],
+   "boot_id_start": "b010a7cd-0305-4ef9-b0b5-9e31d2fb9edc",
+   "boot_id_end": "b010a7cd-0305-4ef9-b0b5-9e31d2fb9edc",
+   "bo_total_before": 2805055488,
+   "bo_total_after": 2805055488,
+   "exch_new": 0
+  },
+  {
+   "arm": "P",
+   "tokens": [
+    271,
+    248068,
+    271,
+    248069,
+    271,
+    33704,
+    82,
+    2222,
+    383,
+    8964,
+    1521,
+    279,
+    35003,
+    314,
+    279,
+    8964
+   ],
+   "affinity": {
+    "set": [
+     4,
+     5,
+     6,
+     7,
+     8,
+     9,
+     10,
+     11
+    ],
+    "readback": {
+     "4882:4882": [
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ],
+     "4882:8740": [
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ],
+     "4882:8741": [
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ],
+     "4882:8742": [
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ],
+     "4882:8743": [
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ],
+     "4882:8744": [
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ],
+     "4882:8745": [
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ],
+     "4882:8746": [
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ],
+     "4882:8747": [
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ],
+     "4882:8748": [
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ],
+     "4882:8749": [
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ],
+     "4882:8750": [
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ],
+     "4885:4885": [
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ]
+    },
+    "readback_end": {
+     "4882:4882": [
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ],
+     "4882:8740": [
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ],
+     "4882:8741": [
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ],
+     "4882:8742": [
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ],
+     "4882:8743": [
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ],
+     "4882:8744": [
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ],
+     "4882:8745": [
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ],
+     "4882:8746": [
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ],
+     "4882:8747": [
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ],
+     "4882:8748": [
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ],
+     "4882:8749": [
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ],
+     "4882:8750": [
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ],
+     "4885:4885": [
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ]
+    }
+   },
+   "interrupts": {
+    "before": "           CPU0       CPU1       CPU2       CPU3       CPU4       CPU5       CPU6       CPU7       CPU8       CPU9       CPU10      CPU11      \n 33:          0          0          0          0          0          0          0          0          0          0          0          0  AIC-FIQ   6 Level     vgic\n 34:          0          0          0          0          0          0          0          0          0          0          0          0      KVM   0 Level     kvm guest ptimer\n 35:          0          0          0          0          0          0          0          0          0          0          0          0      KVM   1 Level     kvm guest vtimer\n 36:      15906      16518      17166      18443      44517      28765      23997      47348      22454      20749      19542      23593  AIC-FIQ   0 Level     arch_timer\n 53:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66420 Level     285408000.mailbox-recv\n 54:         18         53         69         11        274        240        138        232        245        219        214       1617     AIC2 66401 Level     2a2408000.mbox-recv\n 55:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66398 Level     2a2408000.mbox-send\n 56:         40         61         19         16        298        308        175        186        394        299        174        117     AIC2 66152 Level     2a6408000.mbox-recv\n 57:          1          0          0          0          0          0          0          0          0          0          0          0     AIC2 66149 Level     2a6408000.mbox-send\n 58:          0          1          3          2          3          2          1          0          4          7         12          1     AIC2 66232 Level     2a9408000.mbox-recv\n 59:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66229 Level     2a9408000.mbox-send\n 60:         21         26          4         26         32         12         27          8         34          3         11          5     AIC2 66115 Level     396408000.mbox-recv\n 61:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66112 Level     396408000.mbox-send\n 62:          3          2          5          0         50         36         38         33         29         51         23         21     AIC2 66682 Level     406408000.mbox-recv\n 63:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66679 Level     406408000.mbox-send\n 64:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66361 Level     701108000.mailbox-recv\n 65:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66358 Level     701108000.mailbox-send\n 66:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66365 Level     b01108000.mailbox-recv\n 67:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66362 Level     b01108000.mailbox-send\n 68:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66369 Level     f01108000.mailbox-recv\n 69:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66366 Level     f01108000.mailbox-send\n 71:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66421 Level     apple-dart fault handler, apple-dart fault handler, apple-dart fault handler\n 72:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66623 Level     apple-dart fault handler\n 73:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66164 Level     apple-dart fault handler\n 74:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66212 Level     apple-dart fault handler\n 75:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66110 Level     apple-dart fault handler, apple-dart fault handler, apple-dart fault handler\n 76:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66447 Level     apple-dart fault handler, apple-dart fault handler\n 77:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66877 Level     apple-dart fault handler\n 78:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66881 Level     apple-dart fault handler\n 79:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66631 Level     apple-dart fault handler\n 80:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66522 Level     apple-dart fault handler, apple-dart fault handler\n 81:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66767 Level     apple-dart fault handler\n 82:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66796 Level     apple-dart fault handler, apple-dart fault handler\n 83:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66814 Level     apple-dart fault handler, apple-dart fault handler\n 84:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66832 Level     apple-dart fault handler, apple-dart fault handler\n 85:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66558 Level     apple-dart fault handler, apple-dart fault handler\n 86:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66594 Level     apple-dart fault handler, apple-dart fault handler\n 87:          0          0          0          0          0          0          0          0          0          0          0          0  AIC-FIQ   5 Level     arm-pmu, arm-pmu\n 95:          2          4          2          3        121         29         23         18         26         14          4         17     AIC2 66167 Level     2a6980000.dma-controller\n 96:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66622 Level     28ec08000.mbox-recv\n 97:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66619 Level     28ec08000.mbox-send\n 98:          6         29         12         16        237        148        118        125        193        195         84         95     AIC2 66471 Level     389c08000.mbox-recv\n 99:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66468 Level     389c08000.mbox-send\n100:          1          8          0          8        132          1         26          3         26          9          2          2     AIC2 66546 Level     315c08000.mbox-recv\n101:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66543 Level     315c08000.mbox-send\n102:          0          0          0          0          0          0          1          0          3         17         56          0     AIC2 66708 Level     347408000.mbox-recv\n103:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66705 Level     347408000.mbox-send\n104:          0          2          0          0          6          7         11        182          5          6          0          0     AIC2 66582 Level     48dc08000.mbox-recv\n105:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66579 Level     48dc08000.mbox-send\n106:          0          5          0          0          0          1        169         13         14          6          1          9     AIC2 66618 Level     50dc08000.mbox-recv\n107:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66615 Level     50dc08000.mbox-send\n108:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66486 Level     apple-dart fault handler, apple-dart fault handler\n109:        276        277        149        150       2891       2389       2166       2362       1634       1980        923       1417     AIC2 67368 Level     nvme-apple\n118:          0          0          0          0          0          0          0          0          0          0          0          0     PCIe  12 Edge      Link up\n119:          0          0          0          0          0          0          0          0          0          0          0          0     PCIe  14 Edge      Link down\n121:          0          0          0          0          0          0          0          0          0          0          0          0     PCIe  12 Edge      Link up\n122:          0          0          0          0          0          0          0          0          0          0          0          0     PCIe  14 Edge      Link down\n124:          0          0          0          0          0          0          0          0          0          0          0          0 PCI-MSI-0000:00:00.0   0 Edge      PCIe PME, aerdrv, PCIe bwctrl\n126:          0          0          0          0          0          0          0          0          0          0          0          0 PCI-MSI-0000:00:01.0   0 Edge      PCIe PME, aerdrv, PCIe bwctrl\n127:          3          1          0          1         39         13         24          6          6          7          4          0     AIC2 66754 Level     39b400000.dma-controller\n128:          4          7         10          9         22         23         36         38         16         40         17          6     AIC2 66510 Level     289c08000.mbox-recv\n129:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66507 Level     289c08000.mbox-send\n130:          1          2          0          0          5          7          6         13          1          2          0          1     AIC2 66787 Level     39bc08000.mbox-recv\n131:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66784 Level     39bc08000.mbox-send\n132:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66742 Level     39b104000.spi\n133:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66743 Level     39b108000.spi\n134:          6          0          2          1         17         61          5          4          1         15          0          2     AIC2 66755 Level     pasemi_apple_i2c\n135:          2          0          0          0         90         33        100         18          6          4          4         11     AIC2 66756 Level     pasemi_apple_i2c\n136:          2          4          1          1         39          9         30         13          7          6          5          6     AIC2 66757 Level     pasemi_apple_i2c\n137:          0          6          1          3         91         44         82         36          2          4          1          0     AIC2 66758 Level     pasemi_apple_i2c\n138:          0          0          0          0          0          0          0          0          0          0          0          0 dockchannel-irqc   2 Edge      apple-dockchannel-tx\n139:          0          0          0          0          7          1          1          3          5          7          2          3 dockchannel-irqc   3 Edge      apple-dockchannel-rx\n140:          0          0          0          0          0          0          0          0          0          0          0          0 Apple-GPIO  25 Edge      dp2hdmi-hpd-irq\n141:          0          0          0          0          0          0          0          0          0          0          0          0 Apple-GPIO  44 Level     0-003a, 0-0038, 0-003f, 0-003b\n143:         99        213         24         18         77         52         61         63         71         78         20        102 PCI-MSI-0000:02:00.0   0 Edge      mmc0\n144:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66625 Level     287080000.avd\n146:          0          0          0          0          0          0          0          0          0          0          0          0 Apple-GPIO  58 Level     tas2764, tas2764, tas2764, tas2764, tas2764, tas2764\n147:          0          0          0          0          0          0          1          1          0          0          0          0 Apple-GPIO  59 Level     cs42l84\n149:         47         67         49         31        802        570        607       1770        343        298        163        258 PCI-MSI-0000:01:00.0   0 Edge      brcmf_pcie_intr\n150:         18          3          9         12         10         11         42         83        124         20         21          5 PCI-MSI-0000:01:00.1   0 Edge      bcm4377\n151:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66118 Level     apple-dart fault handler\n153:        125        125        123        122       1784       1146        906       1040        753        661        399        425     AIC2 66828 Level     xhci-hcd:usb1\nIPI0:       680        676        601        951        890        663        644        957        802        659        730        826       Rescheduling interrupts\nIPI1:     16367      16006      14255      12005      21306      22497      18724      21127      18397      17364      17601      16676       Function call interrupts\nIPI2:         0          0          0          0          0          0          0          0          0          0          0          0       CPU stop interrupts\nIPI3:         0          0          0          0          0          0          0          0          0          0          0          0       CPU stop NMIs\nIPI4:         0          0          0          0          0          0          0          0          0          0          0          0       Timer broadcast interrupts\nIPI5:        23         26         36         26         24         57         52         38         46         27         45         29       IRQ work interrupts\nIPI6:         0          0          0          0          0          0          0          0          0          0          0          0       CPU backtrace interrupts\nIPI7:         0          0          0          0          0          0          0          0          0          0          0          0       KGDB roundup interrupts\nErr:          0\n",
+    "after": "           CPU0       CPU1       CPU2       CPU3       CPU4       CPU5       CPU6       CPU7       CPU8       CPU9       CPU10      CPU11      \n 33:          0          0          0          0          0          0          0          0          0          0          0          0  AIC-FIQ   6 Level     vgic\n 34:          0          0          0          0          0          0          0          0          0          0          0          0      KVM   0 Level     kvm guest ptimer\n 35:          0          0          0          0          0          0          0          0          0          0          0          0      KVM   1 Level     kvm guest vtimer\n 36:      16378      16780      17412      18680      54135      30710      45212      49721      23876      25118      20954      25144  AIC-FIQ   0 Level     arch_timer\n 53:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66420 Level     285408000.mailbox-recv\n 54:         18         53         69         11        285        259        172        255        262        219        215       1624     AIC2 66401 Level     2a2408000.mbox-recv\n 55:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66398 Level     2a2408000.mbox-send\n 56:         40         61         19         16        307        313        192        195        398        303        174        117     AIC2 66152 Level     2a6408000.mbox-recv\n 57:          1          0          0          0          0          0          0          0          0          0          0          0     AIC2 66149 Level     2a6408000.mbox-send\n 58:          0          1          3          2          3          2          1          0          4          7         12          1     AIC2 66232 Level     2a9408000.mbox-recv\n 59:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66229 Level     2a9408000.mbox-send\n 60:         21         26          4         26         32         12         27          8         34          3         11          5     AIC2 66115 Level     396408000.mbox-recv\n 61:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66112 Level     396408000.mbox-send\n 62:          3          2          5          0         50         36         38         33         29         51         23         21     AIC2 66682 Level     406408000.mbox-recv\n 63:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66679 Level     406408000.mbox-send\n 64:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66361 Level     701108000.mailbox-recv\n 65:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66358 Level     701108000.mailbox-send\n 66:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66365 Level     b01108000.mailbox-recv\n 67:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66362 Level     b01108000.mailbox-send\n 68:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66369 Level     f01108000.mailbox-recv\n 69:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66366 Level     f01108000.mailbox-send\n 71:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66421 Level     apple-dart fault handler, apple-dart fault handler, apple-dart fault handler\n 72:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66623 Level     apple-dart fault handler\n 73:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66164 Level     apple-dart fault handler\n 74:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66212 Level     apple-dart fault handler\n 75:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66110 Level     apple-dart fault handler, apple-dart fault handler, apple-dart fault handler\n 76:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66447 Level     apple-dart fault handler, apple-dart fault handler\n 77:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66877 Level     apple-dart fault handler\n 78:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66881 Level     apple-dart fault handler\n 79:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66631 Level     apple-dart fault handler\n 80:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66522 Level     apple-dart fault handler, apple-dart fault handler\n 81:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66767 Level     apple-dart fault handler\n 82:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66796 Level     apple-dart fault handler, apple-dart fault handler\n 83:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66814 Level     apple-dart fault handler, apple-dart fault handler\n 84:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66832 Level     apple-dart fault handler, apple-dart fault handler\n 85:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66558 Level     apple-dart fault handler, apple-dart fault handler\n 86:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66594 Level     apple-dart fault handler, apple-dart fault handler\n 87:          0          0          0          0          0          0          0          0          0          0          0          0  AIC-FIQ   5 Level     arm-pmu, arm-pmu\n 95:          2          4          2          3        121         29         23         18         26         14          4         17     AIC2 66167 Level     2a6980000.dma-controller\n 96:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66622 Level     28ec08000.mbox-recv\n 97:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66619 Level     28ec08000.mbox-send\n 98:          6         29         12         16        237        148        118        125        193        195         84         95     AIC2 66471 Level     389c08000.mbox-recv\n 99:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66468 Level     389c08000.mbox-send\n100:          1          8          0          8        132          1         26          3         26          9          2          2     AIC2 66546 Level     315c08000.mbox-recv\n101:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66543 Level     315c08000.mbox-send\n102:          0          0          0          0          0          0          1          0          3         17         56          0     AIC2 66708 Level     347408000.mbox-recv\n103:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66705 Level     347408000.mbox-send\n104:          0          2          0          0          6          7         11        182          5          6          0          0     AIC2 66582 Level     48dc08000.mbox-recv\n105:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66579 Level     48dc08000.mbox-send\n106:          0          5          0          0          0          1        169         13         14          6          1          9     AIC2 66618 Level     50dc08000.mbox-recv\n107:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66615 Level     50dc08000.mbox-send\n108:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66486 Level     apple-dart fault handler, apple-dart fault handler\n109:        278        277        150        150       2903       2402       2192       2387       1634       1980        923       1417     AIC2 67368 Level     nvme-apple\n118:          0          0          0          0          0          0          0          0          0          0          0          0     PCIe  12 Edge      Link up\n119:          0          0          0          0          0          0          0          0          0          0          0          0     PCIe  14 Edge      Link down\n121:          0          0          0          0          0          0          0          0          0          0          0          0     PCIe  12 Edge      Link up\n122:          0          0          0          0          0          0          0          0          0          0          0          0     PCIe  14 Edge      Link down\n124:          0          0          0          0          0          0          0          0          0          0          0          0 PCI-MSI-0000:00:00.0   0 Edge      PCIe PME, aerdrv, PCIe bwctrl\n126:          0          0          0          0          0          0          0          0          0          0          0          0 PCI-MSI-0000:00:01.0   0 Edge      PCIe PME, aerdrv, PCIe bwctrl\n127:          3          1          0          1         39         13         24          6          6          7          4          0     AIC2 66754 Level     39b400000.dma-controller\n128:          4          7         10          9         22         23         36         38         16         40         17          6     AIC2 66510 Level     289c08000.mbox-recv\n129:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66507 Level     289c08000.mbox-send\n130:          1          2          0          0          5          7          6         13          1          2          0          1     AIC2 66787 Level     39bc08000.mbox-recv\n131:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66784 Level     39bc08000.mbox-send\n132:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66742 Level     39b104000.spi\n133:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66743 Level     39b108000.spi\n134:          6          0          2          1         17         61          5          4          1         15          0          2     AIC2 66755 Level     pasemi_apple_i2c\n135:          2          0          0          0         90         33        100         18          6          4          4         11     AIC2 66756 Level     pasemi_apple_i2c\n136:          2          4          1          1         39          9         30         13          7          6          5          6     AIC2 66757 Level     pasemi_apple_i2c\n137:          0          6          1          3         91         44         82         36          2          4          1          0     AIC2 66758 Level     pasemi_apple_i2c\n138:          0          0          0          0          0          0          0          0          0          0          0          0 dockchannel-irqc   2 Edge      apple-dockchannel-tx\n139:          0          0          0          0          7          1          1          3          5          7          2          3 dockchannel-irqc   3 Edge      apple-dockchannel-rx\n140:          0          0          0          0          0          0          0          0          0          0          0          0 Apple-GPIO  25 Edge      dp2hdmi-hpd-irq\n141:          0          0          0          0          0          0          0          0          0          0          0          0 Apple-GPIO  44 Level     0-003a, 0-0038, 0-003f, 0-003b\n143:         99        213         24         18         77         52         61         63         71         78         20        102 PCI-MSI-0000:02:00.0   0 Edge      mmc0\n144:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66625 Level     287080000.avd\n146:          0          0          0          0          0          0          0          0          0          0          0          0 Apple-GPIO  58 Level     tas2764, tas2764, tas2764, tas2764, tas2764, tas2764\n147:          0          0          0          0          0          0          1          1          0          0          0          0 Apple-GPIO  59 Level     cs42l84\n149:         50         67         49         31        807        580        628       1808        346        308        164        262 PCI-MSI-0000:01:00.0   0 Edge      brcmf_pcie_intr\n150:         18          3          9         12         10         11         42         83        124         20         21          5 PCI-MSI-0000:01:00.1   0 Edge      bcm4377\n151:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66118 Level     apple-dart fault handler\n153:        128        125        123        122       1811       1166        952       1074        769        675        404        428     AIC2 66828 Level     xhci-hcd:usb1\nIPI0:       692        685        607        963        897        669        646        967        811        675        745        830       Rescheduling interrupts\nIPI1:     17464      16184      14301      12047      22933      26062      21966      21447      18947      18000      17875      18931       Function call interrupts\nIPI2:         0          0          0          0          0          0          0          0          0          0          0          0       CPU stop interrupts\nIPI3:         0          0          0          0          0          0          0          0          0          0          0          0       CPU stop NMIs\nIPI4:         0          0          0          0          0          0          0          0          0          0          0          0       Timer broadcast interrupts\nIPI5:        23         28         36         26         24         57         52         39         46         27         45         29       IRQ work interrupts\nIPI6:         0          0          0          0          0          0          0          0          0          0          0          0       CPU backtrace interrupts\nIPI7:         0          0          0          0          0          0          0          0          0          0          0          0       KGDB roundup interrupts\nErr:          0\n"
+   },
+   "logits_sha256": "5c359d366ad883ea911e2bfba5f2e600dc6b22fd34eaad5c12059ef5c35ab37a",
+   "logits_bytes": 15892480,
+   "kernel_stop": [],
+   "boot_id_start": "b010a7cd-0305-4ef9-b0b5-9e31d2fb9edc",
+   "boot_id_end": "b010a7cd-0305-4ef9-b0b5-9e31d2fb9edc",
+   "bo_total_before": 2805055488,
+   "bo_total_after": 2805055488,
+   "exch_new": 0
+  },
+  {
+   "arm": "U",
+   "tokens": [
+    271,
+    248068,
+    271,
+    248069,
+    271,
+    33704,
+    82,
+    2222,
+    383,
+    8964,
+    1521,
+    279,
+    35003,
+    314,
+    279,
+    8964
+   ],
+   "affinity": {
+    "set": [
+     0,
+     1,
+     2,
+     3,
+     4,
+     5,
+     6,
+     7,
+     8,
+     9,
+     10,
+     11
+    ],
+    "readback": {
+     "4882:4882": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ],
+     "4882:8740": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ],
+     "4882:8741": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ],
+     "4882:8742": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ],
+     "4882:8743": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ],
+     "4882:8744": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ],
+     "4882:8745": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ],
+     "4882:8746": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ],
+     "4882:8747": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ],
+     "4882:8748": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ],
+     "4882:8749": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ],
+     "4882:8750": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ],
+     "4885:4885": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ]
+    },
+    "readback_end": {
+     "4882:4882": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ],
+     "4882:8740": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ],
+     "4882:8741": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ],
+     "4882:8742": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ],
+     "4882:8743": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ],
+     "4882:8744": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ],
+     "4882:8745": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ],
+     "4882:8746": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ],
+     "4882:8747": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ],
+     "4882:8748": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ],
+     "4882:8749": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ],
+     "4882:8750": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ],
+     "4885:4885": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ]
+    }
+   },
+   "interrupts": {
+    "before": "           CPU0       CPU1       CPU2       CPU3       CPU4       CPU5       CPU6       CPU7       CPU8       CPU9       CPU10      CPU11      \n 33:          0          0          0          0          0          0          0          0          0          0          0          0  AIC-FIQ   6 Level     vgic\n 34:          0          0          0          0          0          0          0          0          0          0          0          0      KVM   0 Level     kvm guest ptimer\n 35:          0          0          0          0          0          0          0          0          0          0          0          0      KVM   1 Level     kvm guest vtimer\n 36:      18335      18673      18285      19536      56482      32465      47182      53044      26574      27431      22249      29131  AIC-FIQ   0 Level     arch_timer\n 53:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66420 Level     285408000.mailbox-recv\n 54:         30         55         70         11        297        273        175        274        276        243        222       2394     AIC2 66401 Level     2a2408000.mbox-recv\n 55:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66398 Level     2a2408000.mbox-send\n 56:         43         69         25         16        338        364        221        221        475        365        204        152     AIC2 66152 Level     2a6408000.mbox-recv\n 57:          1          0          0          0          0          0          0          0          0          0          0          0     AIC2 66149 Level     2a6408000.mbox-send\n 58:          0          1          3          2          3          2          1          0          4          7         12          1     AIC2 66232 Level     2a9408000.mbox-recv\n 59:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66229 Level     2a9408000.mbox-send\n 60:         21         26         12         26         32         12         27          8         34          3         19          5     AIC2 66115 Level     396408000.mbox-recv\n 61:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66112 Level     396408000.mbox-send\n 62:          3          2          5          0         50         36         38         33         29         51         23         21     AIC2 66682 Level     406408000.mbox-recv\n 63:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66679 Level     406408000.mbox-send\n 64:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66361 Level     701108000.mailbox-recv\n 65:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66358 Level     701108000.mailbox-send\n 66:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66365 Level     b01108000.mailbox-recv\n 67:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66362 Level     b01108000.mailbox-send\n 68:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66369 Level     f01108000.mailbox-recv\n 69:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66366 Level     f01108000.mailbox-send\n 71:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66421 Level     apple-dart fault handler, apple-dart fault handler, apple-dart fault handler\n 72:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66623 Level     apple-dart fault handler\n 73:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66164 Level     apple-dart fault handler\n 74:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66212 Level     apple-dart fault handler\n 75:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66110 Level     apple-dart fault handler, apple-dart fault handler, apple-dart fault handler\n 76:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66447 Level     apple-dart fault handler, apple-dart fault handler\n 77:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66877 Level     apple-dart fault handler\n 78:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66881 Level     apple-dart fault handler\n 79:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66631 Level     apple-dart fault handler\n 80:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66522 Level     apple-dart fault handler, apple-dart fault handler\n 81:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66767 Level     apple-dart fault handler\n 82:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66796 Level     apple-dart fault handler, apple-dart fault handler\n 83:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66814 Level     apple-dart fault handler, apple-dart fault handler\n 84:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66832 Level     apple-dart fault handler, apple-dart fault handler\n 85:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66558 Level     apple-dart fault handler, apple-dart fault handler\n 86:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66594 Level     apple-dart fault handler, apple-dart fault handler\n 87:          0          0          0          0          0          0          0          0          0          0          0          0  AIC-FIQ   5 Level     arm-pmu, arm-pmu\n 95:          2          4          2          3        121         29         23         18         26         14          4         17     AIC2 66167 Level     2a6980000.dma-controller\n 96:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66622 Level     28ec08000.mbox-recv\n 97:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66619 Level     28ec08000.mbox-send\n 98:          6         29         12         16        237        148        118        125        193        195         84         95     AIC2 66471 Level     389c08000.mbox-recv\n 99:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66468 Level     389c08000.mbox-send\n100:          1          8          0          8        132          1         26          3         26          9          2          2     AIC2 66546 Level     315c08000.mbox-recv\n101:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66543 Level     315c08000.mbox-send\n102:          0          0          0          0          0          0          1          0          3         17         56          0     AIC2 66708 Level     347408000.mbox-recv\n103:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66705 Level     347408000.mbox-send\n104:          0          2          0          0          6          7         11        182          5          6          0          0     AIC2 66582 Level     48dc08000.mbox-recv\n105:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66579 Level     48dc08000.mbox-send\n106:          0          5          0          0          0          1        169         13         14          6          1          9     AIC2 66618 Level     50dc08000.mbox-recv\n107:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66615 Level     50dc08000.mbox-send\n108:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66486 Level     apple-dart fault handler, apple-dart fault handler\n109:        279        284        152        152       2904       2403       2206       2401       1668       1991        965       1452     AIC2 67368 Level     nvme-apple\n118:          0          0          0          0          0          0          0          0          0          0          0          0     PCIe  12 Edge      Link up\n119:          0          0          0          0          0          0          0          0          0          0          0          0     PCIe  14 Edge      Link down\n121:          0          0          0          0          0          0          0          0          0          0          0          0     PCIe  12 Edge      Link up\n122:          0          0          0          0          0          0          0          0          0          0          0          0     PCIe  14 Edge      Link down\n124:          0          0          0          0          0          0          0          0          0          0          0          0 PCI-MSI-0000:00:00.0   0 Edge      PCIe PME, aerdrv, PCIe bwctrl\n126:          0          0          0          0          0          0          0          0          0          0          0          0 PCI-MSI-0000:00:01.0   0 Edge      PCIe PME, aerdrv, PCIe bwctrl\n127:          3          1          0          1         39         13         24          6          6          7          4          0     AIC2 66754 Level     39b400000.dma-controller\n128:          4          7         10          9         22         23         36         38         16         40         17          6     AIC2 66510 Level     289c08000.mbox-recv\n129:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66507 Level     289c08000.mbox-send\n130:          1          2          0          0          5          7          6         13          1          2          0          1     AIC2 66787 Level     39bc08000.mbox-recv\n131:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66784 Level     39bc08000.mbox-send\n132:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66742 Level     39b104000.spi\n133:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66743 Level     39b108000.spi\n134:          6          0          2          1         17         61          5          4          1         15          0          2     AIC2 66755 Level     pasemi_apple_i2c\n135:          2          0          0          0         90         33        100         18          6          4          4         11     AIC2 66756 Level     pasemi_apple_i2c\n136:          2          4          1          1         39          9         30         13          7          6          5          6     AIC2 66757 Level     pasemi_apple_i2c\n137:          0          6          1          3         91         44         82         36          2          4          1          0     AIC2 66758 Level     pasemi_apple_i2c\n138:          0          0          0          0          0          0          0          0          0          0          0          0 dockchannel-irqc   2 Edge      apple-dockchannel-tx\n139:          0          0          0          0          7          1          1          3          5          7          2          3 dockchannel-irqc   3 Edge      apple-dockchannel-rx\n140:          0          0          0          0          0          0          0          0          0          0          0          0 Apple-GPIO  25 Edge      dp2hdmi-hpd-irq\n141:          0          0          0          0          0          0          0          0          0          0          0          0 Apple-GPIO  44 Level     0-003a, 0-0038, 0-003f, 0-003b\n143:         99        213         24         18         77         52         61         63         71         78         20        102 PCI-MSI-0000:02:00.0   0 Edge      mmc0\n144:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66625 Level     287080000.avd\n146:          0          0          0          0          0          0          0          0          0          0          0          0 Apple-GPIO  58 Level     tas2764, tas2764, tas2764, tas2764, tas2764, tas2764\n147:          0          0          0          0          0          0          1          1          0          0          0          0 Apple-GPIO  59 Level     cs42l84\n149:         56         72         55         31        859        624        657       2023        363        340        172        286 PCI-MSI-0000:01:00.0   0 Edge      brcmf_pcie_intr\n150:         18          3          9         12         10         11         42         83        124         20         21          5 PCI-MSI-0000:01:00.1   0 Edge      bcm4377\n151:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66118 Level     apple-dart fault handler\n153:        160        150        129        133       2018       1366       1105       1224        926        822        450        513     AIC2 66828 Level     xhci-hcd:usb1\nIPI0:       726        711        626        983        918        684        665       1018        842        696        768        847       Rescheduling interrupts\nIPI1:     18764      17259      14825      12326      23362      26480      22357      22128      19882      18620      18196      19394       Function call interrupts\nIPI2:         0          0          0          0          0          0          0          0          0          0          0          0       CPU stop interrupts\nIPI3:         0          0          0          0          0          0          0          0          0          0          0          0       CPU stop NMIs\nIPI4:         0          0          0          0          0          0          0          0          0          0          0          0       Timer broadcast interrupts\nIPI5:        23         29         36         30         24         58         52         39         46         27         45         33       IRQ work interrupts\nIPI6:         0          0          0          0          0          0          0          0          0          0          0          0       CPU backtrace interrupts\nIPI7:         0          0          0          0          0          0          0          0          0          0          0          0       KGDB roundup interrupts\nErr:          0\n",
+    "after": "           CPU0       CPU1       CPU2       CPU3       CPU4       CPU5       CPU6       CPU7       CPU8       CPU9       CPU10      CPU11      \n 33:          0          0          0          0          0          0          0          0          0          0          0          0  AIC-FIQ   6 Level     vgic\n 34:          0          0          0          0          0          0          0          0          0          0          0          0      KVM   0 Level     kvm guest ptimer\n 35:          0          0          0          0          0          0          0          0          0          0          0          0      KVM   1 Level     kvm guest vtimer\n 36:      31247      21149      19126      20204      57774      33090      48510      59509      28592      41526      24076      30484  AIC-FIQ   0 Level     arch_timer\n 53:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66420 Level     285408000.mailbox-recv\n 54:         30         56         72         11        303        275        176        305        289        258        244       2432     AIC2 66401 Level     2a2408000.mbox-recv\n 55:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66398 Level     2a2408000.mbox-send\n 56:         51         71         27         16        342        365        227        228        477        376        211        153     AIC2 66152 Level     2a6408000.mbox-recv\n 57:          1          0          0          0          0          0          0          0          0          0          0          0     AIC2 66149 Level     2a6408000.mbox-send\n 58:          0          1          3          2          3          2          1          0          4          7         12          1     AIC2 66232 Level     2a9408000.mbox-recv\n 59:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66229 Level     2a9408000.mbox-send\n 60:         21         26         12         26         32         12         27          8         34          3         35          5     AIC2 66115 Level     396408000.mbox-recv\n 61:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66112 Level     396408000.mbox-send\n 62:          3          2          5          0         50         36         38         33         29         51         23         21     AIC2 66682 Level     406408000.mbox-recv\n 63:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66679 Level     406408000.mbox-send\n 64:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66361 Level     701108000.mailbox-recv\n 65:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66358 Level     701108000.mailbox-send\n 66:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66365 Level     b01108000.mailbox-recv\n 67:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66362 Level     b01108000.mailbox-send\n 68:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66369 Level     f01108000.mailbox-recv\n 69:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66366 Level     f01108000.mailbox-send\n 71:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66421 Level     apple-dart fault handler, apple-dart fault handler, apple-dart fault handler\n 72:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66623 Level     apple-dart fault handler\n 73:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66164 Level     apple-dart fault handler\n 74:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66212 Level     apple-dart fault handler\n 75:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66110 Level     apple-dart fault handler, apple-dart fault handler, apple-dart fault handler\n 76:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66447 Level     apple-dart fault handler, apple-dart fault handler\n 77:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66877 Level     apple-dart fault handler\n 78:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66881 Level     apple-dart fault handler\n 79:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66631 Level     apple-dart fault handler\n 80:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66522 Level     apple-dart fault handler, apple-dart fault handler\n 81:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66767 Level     apple-dart fault handler\n 82:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66796 Level     apple-dart fault handler, apple-dart fault handler\n 83:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66814 Level     apple-dart fault handler, apple-dart fault handler\n 84:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66832 Level     apple-dart fault handler, apple-dart fault handler\n 85:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66558 Level     apple-dart fault handler, apple-dart fault handler\n 86:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66594 Level     apple-dart fault handler, apple-dart fault handler\n 87:          0          0          0          0          0          0          0          0          0          0          0          0  AIC-FIQ   5 Level     arm-pmu, arm-pmu\n 95:          2          4          2          3        121         29         23         18         26         14          4         17     AIC2 66167 Level     2a6980000.dma-controller\n 96:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66622 Level     28ec08000.mbox-recv\n 97:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66619 Level     28ec08000.mbox-send\n 98:          6         29         12         16        237        148        118        125        193        195         84         95     AIC2 66471 Level     389c08000.mbox-recv\n 99:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66468 Level     389c08000.mbox-send\n100:          1          8          0          8        132          1         26          3         26          9          2          2     AIC2 66546 Level     315c08000.mbox-recv\n101:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66543 Level     315c08000.mbox-send\n102:          0          0          0          0          0          0          1          0          3         17         56          0     AIC2 66708 Level     347408000.mbox-recv\n103:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66705 Level     347408000.mbox-send\n104:          0          2          0          0          6          7         11        182          5          6          0          0     AIC2 66582 Level     48dc08000.mbox-recv\n105:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66579 Level     48dc08000.mbox-send\n106:          0          5          0          0          0          1        169         13         14          6          1          9     AIC2 66618 Level     50dc08000.mbox-recv\n107:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66615 Level     50dc08000.mbox-send\n108:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66486 Level     apple-dart fault handler, apple-dart fault handler\n109:        279        284        153        152       2904       2403       2206       2401       1669       1992        981       1452     AIC2 67368 Level     nvme-apple\n118:          0          0          0          0          0          0          0          0          0          0          0          0     PCIe  12 Edge      Link up\n119:          0          0          0          0          0          0          0          0          0          0          0          0     PCIe  14 Edge      Link down\n121:          0          0          0          0          0          0          0          0          0          0          0          0     PCIe  12 Edge      Link up\n122:          0          0          0          0          0          0          0          0          0          0          0          0     PCIe  14 Edge      Link down\n124:          0          0          0          0          0          0          0          0          0          0          0          0 PCI-MSI-0000:00:00.0   0 Edge      PCIe PME, aerdrv, PCIe bwctrl\n126:          0          0          0          0          0          0          0          0          0          0          0          0 PCI-MSI-0000:00:01.0   0 Edge      PCIe PME, aerdrv, PCIe bwctrl\n127:          3          1          0          1         39         13         24          6          6          7          4          0     AIC2 66754 Level     39b400000.dma-controller\n128:          4          7         10          9         22         23         36         38         16         40         17          6     AIC2 66510 Level     289c08000.mbox-recv\n129:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66507 Level     289c08000.mbox-send\n130:          1          2          0          0          5          7          6         13          1          2          0          1     AIC2 66787 Level     39bc08000.mbox-recv\n131:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66784 Level     39bc08000.mbox-send\n132:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66742 Level     39b104000.spi\n133:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66743 Level     39b108000.spi\n134:          6          0          2          1         17         61          5          4          1         15          0          2     AIC2 66755 Level     pasemi_apple_i2c\n135:          2          0          0          0         90         33        100         18          6          4          4         11     AIC2 66756 Level     pasemi_apple_i2c\n136:          2          4          1          1         39          9         30         13          7          6          5          6     AIC2 66757 Level     pasemi_apple_i2c\n137:          0          6          1          3         91         44         82         36          2          4          1          0     AIC2 66758 Level     pasemi_apple_i2c\n138:          0          0          0          0          0          0          0          0          0          0          0          0 dockchannel-irqc   2 Edge      apple-dockchannel-tx\n139:          0          0          0          0          7          1          1          3          5          7          2          3 dockchannel-irqc   3 Edge      apple-dockchannel-rx\n140:          0          0          0          0          0          0          0          0          0          0          0          0 Apple-GPIO  25 Edge      dp2hdmi-hpd-irq\n141:          0          0          0          0          0          0          0          0          0          0          0          0 Apple-GPIO  44 Level     0-003a, 0-0038, 0-003f, 0-003b\n143:         99        213         24         18         77         52         61         63         71         78         20        102 PCI-MSI-0000:02:00.0   0 Edge      mmc0\n144:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66625 Level     287080000.avd\n146:          0          0          0          0          0          0          0          0          0          0          0          0 Apple-GPIO  58 Level     tas2764, tas2764, tas2764, tas2764, tas2764, tas2764\n147:          0          0          0          0          0          0          1          1          0          0          0          0 Apple-GPIO  59 Level     cs42l84\n149:         58         72         55         31        860        627        667       2041        366        347        176        289 PCI-MSI-0000:01:00.0   0 Edge      brcmf_pcie_intr\n150:         18          3          9         12         10         11         42         83        124         20         21          5 PCI-MSI-0000:01:00.1   0 Edge      bcm4377\n151:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66118 Level     apple-dart fault handler\n153:        189        154        131        133       2028       1368       1119       1245        935        846        476        518     AIC2 66828 Level     xhci-hcd:usb1\nIPI0:       732        722        632        989        923        686        672       1021        845        697        770        851       Rescheduling interrupts\nIPI1:     21656      19769      15503      12643      24249      26639      22436      23078      20187      20961      19742      20580       Function call interrupts\nIPI2:         0          0          0          0          0          0          0          0          0          0          0          0       CPU stop interrupts\nIPI3:         0          0          0          0          0          0          0          0          0          0          0          0       CPU stop NMIs\nIPI4:         0          0          0          0          0          0          0          0          0          0          0          0       Timer broadcast interrupts\nIPI5:        23         29         36         31         24         58         52         39         46         27         46         33       IRQ work interrupts\nIPI6:         0          0          0          0          0          0          0          0          0          0          0          0       CPU backtrace interrupts\nIPI7:         0          0          0          0          0          0          0          0          0          0          0          0       KGDB roundup interrupts\nErr:          0\n"
+   },
+   "logits_sha256": "5c359d366ad883ea911e2bfba5f2e600dc6b22fd34eaad5c12059ef5c35ab37a",
+   "logits_bytes": 15892480,
+   "kernel_stop": [],
+   "boot_id_start": "b010a7cd-0305-4ef9-b0b5-9e31d2fb9edc",
+   "boot_id_end": "b010a7cd-0305-4ef9-b0b5-9e31d2fb9edc",
+   "bo_total_before": 2805055488,
+   "bo_total_after": 2805055488,
+   "exch_new": 0
+  },
+  {
+   "arm": "P",
+   "tokens": [
+    271,
+    248068,
+    271,
+    248069,
+    271,
+    33704,
+    82,
+    2222,
+    383,
+    8964,
+    1521,
+    279,
+    35003,
+    314,
+    279,
+    8964
+   ],
+   "affinity": {
+    "set": [
+     4,
+     5,
+     6,
+     7,
+     8,
+     9,
+     10,
+     11
+    ],
+    "readback": {
+     "4882:4882": [
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ],
+     "4882:8740": [
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ],
+     "4882:8741": [
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ],
+     "4882:8742": [
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ],
+     "4882:8743": [
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ],
+     "4882:8744": [
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ],
+     "4882:8745": [
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ],
+     "4882:8746": [
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ],
+     "4882:8747": [
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ],
+     "4882:8748": [
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ],
+     "4882:8749": [
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ],
+     "4882:8750": [
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ],
+     "4885:4885": [
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ]
+    },
+    "readback_end": {
+     "4882:4882": [
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ],
+     "4882:8740": [
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ],
+     "4882:8741": [
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ],
+     "4882:8742": [
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ],
+     "4882:8743": [
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ],
+     "4882:8744": [
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ],
+     "4882:8745": [
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ],
+     "4882:8746": [
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ],
+     "4882:8747": [
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ],
+     "4882:8748": [
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ],
+     "4882:8749": [
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ],
+     "4882:8750": [
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ],
+     "4885:4885": [
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ]
+    }
+   },
+   "interrupts": {
+    "before": "           CPU0       CPU1       CPU2       CPU3       CPU4       CPU5       CPU6       CPU7       CPU8       CPU9       CPU10      CPU11      \n 33:          0          0          0          0          0          0          0          0          0          0          0          0  AIC-FIQ   6 Level     vgic\n 34:          0          0          0          0          0          0          0          0          0          0          0          0      KVM   0 Level     kvm guest ptimer\n 35:          0          0          0          0          0          0          0          0          0          0          0          0      KVM   1 Level     kvm guest vtimer\n 36:      32652      22240      20823      21781      61411      36184      50098      62789      30616      43606      25499      34675  AIC-FIQ   0 Level     arch_timer\n 53:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66420 Level     285408000.mailbox-recv\n 54:         34         81         72         11        309        295        177        329        297        258        244       3208     AIC2 66401 Level     2a2408000.mbox-recv\n 55:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66398 Level     2a2408000.mbox-send\n 56:         53         81         28         17        386        415        258        258        559        423        243        181     AIC2 66152 Level     2a6408000.mbox-recv\n 57:          1          0          0          0          0          0          0          0          0          0          0          0     AIC2 66149 Level     2a6408000.mbox-send\n 58:          0          1          3          2          3          2          1          0          4          7         12          1     AIC2 66232 Level     2a9408000.mbox-recv\n 59:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66229 Level     2a9408000.mbox-send\n 60:         21         26         26         26         32         12         27          8         35          3         36          5     AIC2 66115 Level     396408000.mbox-recv\n 61:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66112 Level     396408000.mbox-send\n 62:          3          2          5          0         50         36         38         33         29         51         23         21     AIC2 66682 Level     406408000.mbox-recv\n 63:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66679 Level     406408000.mbox-send\n 64:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66361 Level     701108000.mailbox-recv\n 65:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66358 Level     701108000.mailbox-send\n 66:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66365 Level     b01108000.mailbox-recv\n 67:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66362 Level     b01108000.mailbox-send\n 68:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66369 Level     f01108000.mailbox-recv\n 69:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66366 Level     f01108000.mailbox-send\n 71:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66421 Level     apple-dart fault handler, apple-dart fault handler, apple-dart fault handler\n 72:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66623 Level     apple-dart fault handler\n 73:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66164 Level     apple-dart fault handler\n 74:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66212 Level     apple-dart fault handler\n 75:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66110 Level     apple-dart fault handler, apple-dart fault handler, apple-dart fault handler\n 76:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66447 Level     apple-dart fault handler, apple-dart fault handler\n 77:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66877 Level     apple-dart fault handler\n 78:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66881 Level     apple-dart fault handler\n 79:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66631 Level     apple-dart fault handler\n 80:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66522 Level     apple-dart fault handler, apple-dart fault handler\n 81:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66767 Level     apple-dart fault handler\n 82:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66796 Level     apple-dart fault handler, apple-dart fault handler\n 83:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66814 Level     apple-dart fault handler, apple-dart fault handler\n 84:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66832 Level     apple-dart fault handler, apple-dart fault handler\n 85:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66558 Level     apple-dart fault handler, apple-dart fault handler\n 86:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66594 Level     apple-dart fault handler, apple-dart fault handler\n 87:          0          0          0          0          0          0          0          0          0          0          0          0  AIC-FIQ   5 Level     arm-pmu, arm-pmu\n 95:          2          4          2          3        121         29         23         18         26         14          4         17     AIC2 66167 Level     2a6980000.dma-controller\n 96:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66622 Level     28ec08000.mbox-recv\n 97:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66619 Level     28ec08000.mbox-send\n 98:          6         29         12         16        237        148        118        125        193        195         84         95     AIC2 66471 Level     389c08000.mbox-recv\n 99:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66468 Level     389c08000.mbox-send\n100:          1          8          0          8        132          1         26          3         26          9          2          2     AIC2 66546 Level     315c08000.mbox-recv\n101:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66543 Level     315c08000.mbox-send\n102:          0          0          0          0          0          0          1          0          3         17         56          0     AIC2 66708 Level     347408000.mbox-recv\n103:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66705 Level     347408000.mbox-send\n104:          0          2          0          0          6          7         11        182          5          6          0          0     AIC2 66582 Level     48dc08000.mbox-recv\n105:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66579 Level     48dc08000.mbox-send\n106:          0          5          0          0          0          1        169         13         14          6          1          9     AIC2 66618 Level     50dc08000.mbox-recv\n107:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66615 Level     50dc08000.mbox-send\n108:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66486 Level     apple-dart fault handler, apple-dart fault handler\n109:        284        284        154        154       2923       2413       2223       2415       1737       2007        995       1469     AIC2 67368 Level     nvme-apple\n118:          0          0          0          0          0          0          0          0          0          0          0          0     PCIe  12 Edge      Link up\n119:          0          0          0          0          0          0          0          0          0          0          0          0     PCIe  14 Edge      Link down\n121:          0          0          0          0          0          0          0          0          0          0          0          0     PCIe  12 Edge      Link up\n122:          0          0          0          0          0          0          0          0          0          0          0          0     PCIe  14 Edge      Link down\n124:          0          0          0          0          0          0          0          0          0          0          0          0 PCI-MSI-0000:00:00.0   0 Edge      PCIe PME, aerdrv, PCIe bwctrl\n126:          0          0          0          0          0          0          0          0          0          0          0          0 PCI-MSI-0000:00:01.0   0 Edge      PCIe PME, aerdrv, PCIe bwctrl\n127:          3          1          0          1         39         13         24          6          6          7          4          0     AIC2 66754 Level     39b400000.dma-controller\n128:          4          7         10          9         22         23         36         38         16         40         17          6     AIC2 66510 Level     289c08000.mbox-recv\n129:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66507 Level     289c08000.mbox-send\n130:          1          2          0          0          5          7          6         13          1          2          0          1     AIC2 66787 Level     39bc08000.mbox-recv\n131:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66784 Level     39bc08000.mbox-send\n132:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66742 Level     39b104000.spi\n133:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66743 Level     39b108000.spi\n134:          6          0          2          1         17         61          5          4          1         15          0          2     AIC2 66755 Level     pasemi_apple_i2c\n135:          2          0          0          0         90         33        100         18          6          4          4         11     AIC2 66756 Level     pasemi_apple_i2c\n136:          2          4          1          1         39          9         30         13          7          6          5          6     AIC2 66757 Level     pasemi_apple_i2c\n137:          0          6          1          3         91         44         82         36          2          4          1          0     AIC2 66758 Level     pasemi_apple_i2c\n138:          0          0          0          0          0          0          0          0          0          0          0          0 dockchannel-irqc   2 Edge      apple-dockchannel-tx\n139:          0          0          0          0          7          1          1          3          5          7          2          3 dockchannel-irqc   3 Edge      apple-dockchannel-rx\n140:          0          0          0          0          0          0          0          0          0          0          0          0 Apple-GPIO  25 Edge      dp2hdmi-hpd-irq\n141:          0          0          0          0          0          0          0          0          0          0          0          0 Apple-GPIO  44 Level     0-003a, 0-0038, 0-003f, 0-003b\n143:         99        213         24         18         77         52         61         63         71         78         20        102 PCI-MSI-0000:02:00.0   0 Edge      mmc0\n144:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66625 Level     287080000.avd\n146:          0          0          0          0          0          0          0          0          0          0          0          0 Apple-GPIO  58 Level     tas2764, tas2764, tas2764, tas2764, tas2764, tas2764\n147:          0          0          0          0          0          0          1          1          0          0          0          0 Apple-GPIO  59 Level     cs42l84\n149:         59         74         64         32        930        678        695       2413        400        376        197        331 PCI-MSI-0000:01:00.0   0 Edge      brcmf_pcie_intr\n150:         18          3          9         12         10         11         42         83        124         20         21          5 PCI-MSI-0000:01:00.1   0 Edge      bcm4377\n151:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66118 Level     apple-dart fault handler\n153:        211        163        152        154       2283       1582       1231       1398       1072        961        565        610     AIC2 66828 Level     xhci-hcd:usb1\nIPI0:       776        751        662       1018        960        706        683       1042        875        720        787        881       Rescheduling interrupts\nIPI1:     22753      20202      16447      13409      24828      27114      22734      23849      21142      21521      20091      20999       Function call interrupts\nIPI2:         0          0          0          0          0          0          0          0          0          0          0          0       CPU stop interrupts\nIPI3:         0          0          0          0          0          0          0          0          0          0          0          0       CPU stop NMIs\nIPI4:         0          0          0          0          0          0          0          0          0          0          0          0       Timer broadcast interrupts\nIPI5:        23         30         36         31         24         59         52         43         46         27         48         37       IRQ work interrupts\nIPI6:         0          0          0          0          0          0          0          0          0          0          0          0       CPU backtrace interrupts\nIPI7:         0          0          0          0          0          0          0          0          0          0          0          0       KGDB roundup interrupts\nErr:          0\n",
+    "after": "           CPU0       CPU1       CPU2       CPU3       CPU4       CPU5       CPU6       CPU7       CPU8       CPU9       CPU10      CPU11      \n 33:          0          0          0          0          0          0          0          0          0          0          0          0  AIC-FIQ   6 Level     vgic\n 34:          0          0          0          0          0          0          0          0          0          0          0          0      KVM   0 Level     kvm guest ptimer\n 35:          0          0          0          0          0          0          0          0          0          0          0          0      KVM   1 Level     kvm guest vtimer\n 36:      32873      22416      20876      21963      76896      45867      60677      66104      31993      44753      25934      36495  AIC-FIQ   0 Level     arch_timer\n 53:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66420 Level     285408000.mailbox-recv\n 54:         34         81         72         11        330        308        188        334        338        271        244       3216     AIC2 66401 Level     2a2408000.mbox-recv\n 55:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66398 Level     2a2408000.mbox-send\n 56:         53         81         28         17        396        421        268        263        566        425        244        188     AIC2 66152 Level     2a6408000.mbox-recv\n 57:          1          0          0          0          0          0          0          0          0          0          0          0     AIC2 66149 Level     2a6408000.mbox-send\n 58:          0          1          3          2          3          2          1          0          4          7         12          1     AIC2 66232 Level     2a9408000.mbox-recv\n 59:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66229 Level     2a9408000.mbox-send\n 60:         21         26         26         26         32         12         27          8         35          3         36          5     AIC2 66115 Level     396408000.mbox-recv\n 61:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66112 Level     396408000.mbox-send\n 62:          3          2          5          0         50         36         38         33         29         51         23         21     AIC2 66682 Level     406408000.mbox-recv\n 63:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66679 Level     406408000.mbox-send\n 64:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66361 Level     701108000.mailbox-recv\n 65:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66358 Level     701108000.mailbox-send\n 66:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66365 Level     b01108000.mailbox-recv\n 67:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66362 Level     b01108000.mailbox-send\n 68:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66369 Level     f01108000.mailbox-recv\n 69:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66366 Level     f01108000.mailbox-send\n 71:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66421 Level     apple-dart fault handler, apple-dart fault handler, apple-dart fault handler\n 72:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66623 Level     apple-dart fault handler\n 73:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66164 Level     apple-dart fault handler\n 74:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66212 Level     apple-dart fault handler\n 75:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66110 Level     apple-dart fault handler, apple-dart fault handler, apple-dart fault handler\n 76:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66447 Level     apple-dart fault handler, apple-dart fault handler\n 77:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66877 Level     apple-dart fault handler\n 78:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66881 Level     apple-dart fault handler\n 79:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66631 Level     apple-dart fault handler\n 80:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66522 Level     apple-dart fault handler, apple-dart fault handler\n 81:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66767 Level     apple-dart fault handler\n 82:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66796 Level     apple-dart fault handler, apple-dart fault handler\n 83:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66814 Level     apple-dart fault handler, apple-dart fault handler\n 84:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66832 Level     apple-dart fault handler, apple-dart fault handler\n 85:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66558 Level     apple-dart fault handler, apple-dart fault handler\n 86:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66594 Level     apple-dart fault handler, apple-dart fault handler\n 87:          0          0          0          0          0          0          0          0          0          0          0          0  AIC-FIQ   5 Level     arm-pmu, arm-pmu\n 95:          2          4          2          3        121         29         23         18         26         14          4         17     AIC2 66167 Level     2a6980000.dma-controller\n 96:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66622 Level     28ec08000.mbox-recv\n 97:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66619 Level     28ec08000.mbox-send\n 98:          6         29         12         16        237        148        118        125        193        195         84         95     AIC2 66471 Level     389c08000.mbox-recv\n 99:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66468 Level     389c08000.mbox-send\n100:          1          8          0          8        132          1         26          3         26          9          2          2     AIC2 66546 Level     315c08000.mbox-recv\n101:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66543 Level     315c08000.mbox-send\n102:          0          0          0          0          0          0          1          0          3         17         56          0     AIC2 66708 Level     347408000.mbox-recv\n103:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66705 Level     347408000.mbox-send\n104:          0          2          0          0          6          7         11        182          5          6          0          0     AIC2 66582 Level     48dc08000.mbox-recv\n105:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66579 Level     48dc08000.mbox-send\n106:          0          5          0          0          0          1        169         13         14          6          1          9     AIC2 66618 Level     50dc08000.mbox-recv\n107:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66615 Level     50dc08000.mbox-send\n108:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66486 Level     apple-dart fault handler, apple-dart fault handler\n109:        284        284        154        154       2932       2413       2225       2416       1738       2007        995       1469     AIC2 67368 Level     nvme-apple\n118:          0          0          0          0          0          0          0          0          0          0          0          0     PCIe  12 Edge      Link up\n119:          0          0          0          0          0          0          0          0          0          0          0          0     PCIe  14 Edge      Link down\n121:          0          0          0          0          0          0          0          0          0          0          0          0     PCIe  12 Edge      Link up\n122:          0          0          0          0          0          0          0          0          0          0          0          0     PCIe  14 Edge      Link down\n124:          0          0          0          0          0          0          0          0          0          0          0          0 PCI-MSI-0000:00:00.0   0 Edge      PCIe PME, aerdrv, PCIe bwctrl\n126:          0          0          0          0          0          0          0          0          0          0          0          0 PCI-MSI-0000:00:01.0   0 Edge      PCIe PME, aerdrv, PCIe bwctrl\n127:          3          1          0          1         39         13         24          6          6          7          4          0     AIC2 66754 Level     39b400000.dma-controller\n128:          4          7         10          9         22         23         36         38         16         40         17          6     AIC2 66510 Level     289c08000.mbox-recv\n129:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66507 Level     289c08000.mbox-send\n130:          1          2          0          0          5          7          6         13          1          2          0          1     AIC2 66787 Level     39bc08000.mbox-recv\n131:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66784 Level     39bc08000.mbox-send\n132:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66742 Level     39b104000.spi\n133:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66743 Level     39b108000.spi\n134:          6          0          2          1         17         61          5          4          1         15          0          2     AIC2 66755 Level     pasemi_apple_i2c\n135:          2          0          0          0         90         33        100         18          6          4          4         11     AIC2 66756 Level     pasemi_apple_i2c\n136:          2          4          1          1         39          9         30         13          7          6          5          6     AIC2 66757 Level     pasemi_apple_i2c\n137:          0          6          1          3         91         44         82         36          2          4          1          0     AIC2 66758 Level     pasemi_apple_i2c\n138:          0          0          0          0          0          0          0          0          0          0          0          0 dockchannel-irqc   2 Edge      apple-dockchannel-tx\n139:          0          0          0          0          7          1          1          3          5          7          2          3 dockchannel-irqc   3 Edge      apple-dockchannel-rx\n140:          0          0          0          0          0          0          0          0          0          0          0          0 Apple-GPIO  25 Edge      dp2hdmi-hpd-irq\n141:          0          0          0          0          0          0          0          0          0          0          0          0 Apple-GPIO  44 Level     0-003a, 0-0038, 0-003f, 0-003b\n143:         99        213         24         18         77         52         61         63         71         78         20        102 PCI-MSI-0000:02:00.0   0 Edge      mmc0\n144:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66625 Level     287080000.avd\n146:          0          0          0          0          0          0          0          0          0          0          0          0 Apple-GPIO  58 Level     tas2764, tas2764, tas2764, tas2764, tas2764, tas2764\n147:          0          0          0          0          0          0          1          1          0          0          0          0 Apple-GPIO  59 Level     cs42l84\n149:         59         74         64         32        954        688        736       2456        404        418        197        355 PCI-MSI-0000:01:00.0   0 Edge      brcmf_pcie_intr\n150:         18          3          9         12         10         11         42         83        124         20         21          5 PCI-MSI-0000:01:00.1   0 Edge      bcm4377\n151:          0          0          0          0          0          0          0          0          0          0          0          0     AIC2 66118 Level     apple-dart fault handler\n153:        215        163        152        154       2314       1615       1272       1415       1079        967        566        639     AIC2 66828 Level     xhci-hcd:usb1\nIPI0:       783        753        662       1023        966        718        689       1054        890        729        791        889       Rescheduling interrupts\nIPI1:     23730      20303      16499      13509      28529      29720      26846      25154      21408      21804      20207      21201       Function call interrupts\nIPI2:         0          0          0          0          0          0          0          0          0          0          0          0       CPU stop interrupts\nIPI3:         0          0          0          0          0          0          0          0          0          0          0          0       CPU stop NMIs\nIPI4:         0          0          0          0          0          0          0          0          0          0          0          0       Timer broadcast interrupts\nIPI5:        23         30         36         31         24         59         52         43         46         27         48         37       IRQ work interrupts\nIPI6:         0          0          0          0          0          0          0          0          0          0          0          0       CPU backtrace interrupts\nIPI7:         0          0          0          0          0          0          0          0          0          0          0          0       KGDB roundup interrupts\nErr:          0\n"
+   },
+   "logits_sha256": "5c359d366ad883ea911e2bfba5f2e600dc6b22fd34eaad5c12059ef5c35ab37a",
+   "logits_bytes": 15892480,
+   "kernel_stop": [],
+   "boot_id_start": "b010a7cd-0305-4ef9-b0b5-9e31d2fb9edc",
+   "boot_id_end": "b010a7cd-0305-4ef9-b0b5-9e31d2fb9edc",
+   "bo_total_before": 2805055488,
+   "bo_total_after": 2805055488,
+   "exch_new": 0
+  }
+ ]
+}

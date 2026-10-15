@@ -1,0 +1,57 @@
+== per-arm (order U P U P)
+arm1 U: mean 171.86 ms p50 171.94 p90 172.53 max 172.71; ane 146.31 head 25.55 between 0.12 callwallsum 146.19 execsum 130.73 outside_exec 15.59
+   calls on E 0/608; calls by cpu {5: 520, 6: 88}; steps decode_cpu on E 0, child_cpu on E 0; any-thread-on-E steps 16; E ticks 10.25 P ticks 16.81
+   schedstat ane window: {'decode': {'on_cpu_ms': 9.4249585, 'run_queue_wait_ms': 0.0009061875000000001}, 'child': {'on_cpu_ms': 16.944625187499998, 'run_queue_wait_ms': 0.023731625}}
+   raw step walls ms: 171.2 170.6 170.8 171.7 172.1 171.8 171.7 172.5 172.3 171.7 171.7 172.2 172.7 172.4 172.3 171.9
+   head ms mean 25.55 min 24.09 max 25.92
+arm2 P: mean 168.41 ms p50 168.52 p90 170.74 max 170.82; ane 146.76 head 21.65 between 0.12 callwallsum 146.64 execsum 130.73 outside_exec 16.03
+   calls on E 0/608; calls by cpu {5: 266, 8: 56, 11: 286}; steps decode_cpu on E 0, child_cpu on E 0; any-thread-on-E steps 0; E ticks 0.25 P ticks 17.94
+   schedstat ane window: {'decode': {'on_cpu_ms': 9.605024375, 'run_queue_wait_ms': 0.00083075}, 'child': {'on_cpu_ms': 17.29846375, 'run_queue_wait_ms': 0.0096224375}}
+   raw step walls ms: 167.7 166.8 168.5 167.4 168.0 166.8 167.2 169.1 170.8 168.7 169.0 170.2 168.9 167.0 167.7 170.7
+   head ms mean 21.65 min 20.69 max 24.10
+arm3 U: mean 190.99 ms p50 199.50 p90 201.56 max 202.05; ane 164.94 head 26.06 between 0.36 callwallsum 164.57 execsum 130.65 outside_exec 34.29
+   calls on E 408/608; calls by cpu {1: 337, 2: 71, 10: 86, 11: 114}; steps decode_cpu on E 11, child_cpu on E 11; any-thread-on-E steps 16; E ticks 14.62 P ticks 14.50
+   schedstat ane window: {'decode': {'on_cpu_ms': 22.15887925, 'run_queue_wait_ms': 0.0014974375}, 'child': {'on_cpu_ms': 26.268040437499998, 'run_queue_wait_ms': 0.022354}}
+   raw step walls ms: 171.2 172.3 171.9 172.4 172.1 195.6 199.6 200.4 201.2 202.0 201.6 198.7 197.7 199.7 199.5 200.0
+   head ms mean 26.06 min 25.71 max 26.24
+arm4 P: mean 167.82 ms p50 167.88 p90 168.40 max 168.89; ane 146.16 head 21.66 between 0.12 callwallsum 146.04 execsum 130.70 outside_exec 15.45
+   calls on E 0/608; calls by cpu {4: 237, 5: 189, 6: 164, 7: 18}; steps decode_cpu on E 0, child_cpu on E 0; any-thread-on-E steps 0; E ticks 0.31 P ticks 18.06
+   schedstat ane window: {'decode': {'on_cpu_ms': 9.2771888125, 'run_queue_wait_ms': 0.0015833125}, 'child': {'on_cpu_ms': 16.8708118125, 'run_queue_wait_ms': 0.008137937500000001}}
+   raw step walls ms: 168.4 167.2 167.5 168.9 167.9 167.7 167.9 168.4 167.2 168.4 168.4 167.6 167.6 167.2 167.1 167.9
+   head ms mean 21.66 min 20.85 max 23.46
+
+== per-step detail U arms
+arm1 U
+  pos  11 wall  171.2 ane  145.3 callsum  145.2 exec  130.8 head  25.9 calls_on_E  0 dec_cpu  6 child_cpu  7 dec_on   8.7 dec_wait 0.006 ch_on  16.2 ch_wait 0.010
+  pos  12 wall  170.6 ane  146.4 callsum  146.3 exec  130.8 head  24.2 calls_on_E  0 dec_cpu  6 child_cpu  7 dec_on   9.3 dec_wait 0.000 ch_on  16.9 ch_wait 0.030
+  pos  13 wall  170.8 ane  146.8 callsum  146.6 exec  130.6 head  24.1 calls_on_E  0 dec_cpu  5 child_cpu  7 dec_on   9.4 dec_wait 0.000 ch_on  17.3 ch_wait 0.015
+  pos  14 wall  171.7 ane  146.0 callsum  145.9 exec  130.4 head  25.7 calls_on_E  0 dec_cpu  5 child_cpu  7 dec_on   9.0 dec_wait 0.000 ch_on  16.9 ch_wait 0.032
+  pos  15 wall  172.1 ane  146.3 callsum  146.1 exec  130.8 head  25.8 calls_on_E  0 dec_cpu  5 child_cpu  7 dec_on   9.6 dec_wait 0.000 ch_on  16.8 ch_wait 0.000
+  pos  16 wall  171.8 ane  146.0 callsum  145.9 exec  130.5 head  25.7 calls_on_E  0 dec_cpu  5 child_cpu  4 dec_on   9.8 dec_wait 0.000 ch_on  16.9 ch_wait 0.000
+  pos  17 wall  171.7 ane  146.0 callsum  145.8 exec  130.7 head  25.7 calls_on_E  0 dec_cpu  5 child_cpu  4 dec_on   9.4 dec_wait 0.000 ch_on  16.7 ch_wait 0.046
+  pos  18 wall  172.5 ane  146.7 callsum  146.6 exec  130.8 head  25.8 calls_on_E  0 dec_cpu  5 child_cpu  7 dec_on   9.5 dec_wait 0.005 ch_on  17.1 ch_wait 0.004
+  pos  19 wall  172.3 ane  146.6 callsum  146.4 exec  130.8 head  25.7 calls_on_E  0 dec_cpu  5 child_cpu  7 dec_on   9.9 dec_wait 0.000 ch_on  17.1 ch_wait 0.022
+  pos  20 wall  171.7 ane  146.0 callsum  145.8 exec  130.6 head  25.7 calls_on_E  0 dec_cpu  5 child_cpu  7 dec_on   9.0 dec_wait 0.000 ch_on  16.9 ch_wait 0.015
+  pos  21 wall  171.7 ane  146.1 callsum  145.9 exec  130.5 head  25.7 calls_on_E  0 dec_cpu  5 child_cpu  7 dec_on   9.8 dec_wait 0.000 ch_on  17.0 ch_wait 0.008
+  pos  22 wall  172.2 ane  146.5 callsum  146.4 exec  130.9 head  25.7 calls_on_E  0 dec_cpu  5 child_cpu  7 dec_on   9.5 dec_wait 0.004 ch_on  17.0 ch_wait 0.041
+  pos  23 wall  172.7 ane  146.9 callsum  146.8 exec  130.9 head  25.8 calls_on_E  0 dec_cpu  5 child_cpu  4 dec_on  10.2 dec_wait 0.000 ch_on  17.2 ch_wait 0.112
+  pos  24 wall  172.4 ane  146.7 callsum  146.6 exec  130.9 head  25.7 calls_on_E  0 dec_cpu  5 child_cpu  4 dec_on   9.5 dec_wait 0.000 ch_on  17.1 ch_wait 0.000
+  pos  25 wall  172.3 ane  146.6 callsum  146.5 exec  130.9 head  25.7 calls_on_E  0 dec_cpu  5 child_cpu  4 dec_on   8.9 dec_wait 0.000 ch_on  17.1 ch_wait 0.000
+  pos  26 wall  171.9 ane  146.2 callsum  146.1 exec  130.5 head  25.7 calls_on_E  0 dec_cpu  5 child_cpu  4 dec_on   9.2 dec_wait 0.000 ch_on  17.1 ch_wait 0.044
+arm3 U
+  pos  11 wall  171.2 ane  145.4 callsum  145.3 exec  130.9 head  25.8 calls_on_E  0 dec_cpu 11 child_cpu  9 dec_on   9.3 dec_wait 0.000 ch_on  16.2 ch_wait 0.012
+  pos  12 wall  172.3 ane  146.5 callsum  146.3 exec  130.9 head  25.8 calls_on_E  0 dec_cpu 11 child_cpu  9 dec_on   9.0 dec_wait 0.000 ch_on  16.9 ch_wait 0.038
+  pos  13 wall  171.9 ane  146.1 callsum  145.9 exec  130.7 head  25.9 calls_on_E  0 dec_cpu 10 child_cpu  9 dec_on   9.3 dec_wait 0.000 ch_on  16.9 ch_wait 0.004
+  pos  14 wall  172.4 ane  146.7 callsum  146.5 exec  130.9 head  25.7 calls_on_E  0 dec_cpu 10 child_cpu  9 dec_on   9.3 dec_wait 0.000 ch_on  17.0 ch_wait 0.014
+  pos  15 wall  172.1 ane  146.4 callsum  146.3 exec  130.8 head  25.7 calls_on_E  0 dec_cpu 10 child_cpu  9 dec_on   9.8 dec_wait 0.000 ch_on  17.0 ch_wait 0.022
+  pos  16 wall  195.6 ane  169.4 callsum  168.9 exec  130.8 head  26.2 calls_on_E 28 dec_cpu  1 child_cpu  0 dec_on  24.1 dec_wait 0.000 ch_on  28.7 ch_wait 0.001
+  pos  17 wall  199.6 ane  173.4 callsum  173.0 exec  130.6 head  26.2 calls_on_E 38 dec_cpu  1 child_cpu  0 dec_on  27.5 dec_wait 0.000 ch_on  31.0 ch_wait 0.003
+  pos  18 wall  200.4 ane  174.2 callsum  173.8 exec  130.3 head  26.1 calls_on_E 38 dec_cpu  1 child_cpu  0 dec_on  28.8 dec_wait 0.000 ch_on  31.0 ch_wait 0.010
+  pos  19 wall  201.2 ane  175.1 callsum  174.6 exec  130.5 head  26.2 calls_on_E 38 dec_cpu  1 child_cpu  0 dec_on  28.9 dec_wait 0.006 ch_on  31.5 ch_wait 0.001
+  pos  20 wall  202.0 ane  175.9 callsum  175.4 exec  130.4 head  26.2 calls_on_E 38 dec_cpu  1 child_cpu  0 dec_on  30.4 dec_wait 0.000 ch_on  31.6 ch_wait 0.002
+  pos  21 wall  201.6 ane  175.4 callsum  174.9 exec  130.8 head  26.1 calls_on_E 38 dec_cpu  1 child_cpu  0 dec_on  29.5 dec_wait 0.016 ch_on  31.2 ch_wait 0.048
+  pos  22 wall  198.7 ane  172.5 callsum  172.0 exec  130.4 head  26.2 calls_on_E 38 dec_cpu  1 child_cpu  0 dec_on  27.9 dec_wait 0.000 ch_on  30.0 ch_wait 0.000
+  pos  23 wall  197.7 ane  171.5 callsum  171.0 exec  130.8 head  26.1 calls_on_E 38 dec_cpu  1 child_cpu  0 dec_on  26.1 dec_wait 0.000 ch_on  30.1 ch_wait 0.015
+  pos  24 wall  199.7 ane  173.5 callsum  173.0 exec  130.4 head  26.2 calls_on_E 38 dec_cpu  1 child_cpu  0 dec_on  28.2 dec_wait 0.000 ch_on  30.7 ch_wait 0.024
+  pos  25 wall  199.5 ane  173.3 callsum  172.8 exec  130.4 head  26.2 calls_on_E 38 dec_cpu  2 child_cpu  0 dec_on  28.7 dec_wait 0.000 ch_on  30.1 ch_wait 0.035
+  pos  26 wall  200.0 ane  173.9 callsum  173.4 exec  130.8 head  26.1 calls_on_E 38 dec_cpu  2 child_cpu  1 dec_on  27.8 dec_wait 0.002 ch_on  30.4 ch_wait 0.131

@@ -1,0 +1,5 @@
+logits.f32 birth and mtime read read-only on the M2 at 16:55Z (arm = the 16 generated steps; 11 prefill steps run about 1.9 s before the first write)
+arm1-U birth=1792082820.226207438 mtime=1792082822.820108390
+arm2-P birth=1792082888.421672690 mtime=1792082890.964645683
+arm3-U birth=1792082956.615314655 mtime=1792082959.533311236
+arm4-P birth=1792083025.132359302 mtime=1792083027.665364476

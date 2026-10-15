@@ -1,0 +1,5 @@
+arm1 U no call on E: n=16 wall 171.86 ms, call-wall sum 146.19, exec sum 130.73, head 25.55, per-call wall 3.847 ms, decode on-cpu 9.4 ms, child on-cpu 16.9 ms
+arm3 U all 38 calls on E: n=10 wall 200.04 ms, call-wall sum 173.39, exec sum 130.54, head 26.16, per-call wall 4.563 ms, decode on-cpu 28.4 ms, child on-cpu 30.8 ms
+arm3 U no call on E: n=5 wall 171.99 ms, call-wall sum 146.07, exec sum 130.83, head 25.80, per-call wall 3.844 ms, decode on-cpu 9.3 ms, child on-cpu 16.8 ms
+arm3 U mixed: n=1 wall 195.60 ms, call-wall sum 168.92, exec sum 130.82, head 26.24, per-call wall 4.445 ms, decode on-cpu 24.1 ms, child on-cpu 28.7 ms
+P arms pooled: n=32 mean 168.12 ms; P over the 10 all-E steps of arm3: 0.8404 (post hoc subset, not the gate)
