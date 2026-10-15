@@ -2323,7 +2323,8 @@ static int ane_rtclient_probe_inner(struct platform_device *pdev,
 			pm_runtime_put_sync_suspend(dev);
 			pm_runtime_disable(dev);
 			return dev_err_probe(dev, -ENODEV,
-					     "PWGATE closed; refusing before any engine read\n");
+					     "PWGATE closed (word 0x%x%s, ane_cpu 0x%x); refusing before any engine read\n",
+					     gate, IS_ERR(set) ? ", window not mapped" : "", ps_cpu);
 		}
 	}
 
