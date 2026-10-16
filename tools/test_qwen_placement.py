@@ -108,8 +108,9 @@ class FakeRunDecoder:
         pass
 
 
-def run_exit_path(mode):
-    """dec.run() on fakes: returns (exit text or None, the record types written to results.jsonl)."""
+def run_exit_path(mode, q6k_head=None, load_calls=None, earlier=None):
+    """dec.run() on fakes: returns (exit text or None, the record types written to results.jsonl, the records). q6k_head=None leaves the attribute off the args (the
+    default path); load_calls, when given, collects the keyword q6k of every load_head call; earlier, when given, are records already in the out directory's results.jsonl."""
     import json
     child = subprocess.Popen(["sleep", "30"])
     saved = {k: getattr(dec, k) for k in ("Decoder", "reference_blas", "load_head", "rope_tables", "kernel_marks")}
@@ -122,7 +123,12 @@ def run_exit_path(mode):
     try:
         FakeRunDecoder.mode, FakeRunDecoder.child = mode, child
         dec.Decoder, dec.reference_blas, dec.kernel_marks = FakeRunDecoder, (lambda: False), marks
-        dec.load_head = lambda path: (np.ones((4, 2), np.float16), np.ones((4, 2), np.float32), (2, 2, 10000.0))
+        def fake_load_head(path, q6k=False):
+            if load_calls is not None:
+                load_calls.append(q6k)
+            return np.ones((4, 2), np.float16), np.ones((4, 2), np.float32), (2, 2, 10000.0)
+
+        dec.load_head = fake_load_head
         dec.rope_tables = lambda seq, dh, rot, base: (np.ones((seq, 2)), np.ones((seq, 2)))
         with tempfile.TemporaryDirectory() as tmp:
             t = Path(tmp)
@@ -130,6 +136,11 @@ def run_exit_path(mode):
                 (t / name).write_text(text)
             args = argparse.Namespace(out=str(t / "out"), manifest=str(t / "manifest.json"), ref=str(t / "ref.json"), ref_logits=None, prompts="", new_tokens=2, max_steps=None, m_per_prompt=False,
                                       dump=None, band=None, ane_run=str(t / "x"), session_bin=str(t / "x"), resident=True, resident_lock="call", gguf="x", logits_file=None)
+            if q6k_head is not None:
+                args.q6k_head = q6k_head
+            if earlier:
+                (t / "out").mkdir(parents=True, exist_ok=True)
+                (t / "out" / "results.jsonl").write_text("".join(json.dumps(r) + "\n" for r in earlier))
             text = None
             with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
                 try:
@@ -153,6 +164,22 @@ def check_exit_paths():
     assert text and text.startswith("STOP kernel") and types[-2:] == ["stop", "placement"] and types.count("placement") == 1, (text, types)
     text, types, recs = run_exit_path("ok")
     assert text is None and types[0] == "start" and types[-1] == "placement" and types.count("placement") == 1 and "prompt" in types, (text, types)
+    for flag, want_head in ((None, "fp32"), (False, "fp32"), (True, "q6k")):
+        calls = []
+        text, types, recs = run_exit_path("ok", q6k_head=flag, load_calls=calls)
+        assert text is None and calls == [bool(flag)], (flag, calls)
+        assert recs[0]["type"] == "start" and recs[0]["head"] == want_head, (flag, recs[0].get("head"))
+    for flag, earlier_head in ((True, "fp32"), (False, "q6k"), (True, None)):
+        calls = []
+        start = {"type": "start"} if earlier_head is None else {"type": "start", "head": earlier_head}
+        text, types, recs = run_exit_path("ok", q6k_head=flag, load_calls=calls, earlier=[start])
+        if earlier_head is None:
+            assert text and text.startswith("REFUSE") and "fp32" in text and calls == [] and types == ["start"], (text, calls, types)
+        else:
+            assert text and text.startswith("REFUSE") and earlier_head in text and calls == [] and types == ["start"], (flag, earlier_head, text, calls, types)
+    calls = []
+    text, types, recs = run_exit_path("ok", q6k_head=True, load_calls=calls, earlier=[{"type": "start", "head": "q6k"}])
+    assert text is None and calls == [True] and types[0] == "start" and types.count("start") == 2, (text, calls, types)
 
 
 def main():

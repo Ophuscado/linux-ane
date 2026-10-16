@@ -104,13 +104,47 @@ def reference_blas(maps_text=None):
     return "openblas" not in maps_text and ("libcblas" in maps_text or "libblas" in maps_text)
 
 
-def load_head(path):
-    """(fp16 embedding, float32 tied head, rope (dh, rotary dim, base)) from
-    the GGUF, as staged_qwen_runner.load_gguf_parts and its metadata reads."""
-    from gguf import GGUFReader
+class Q6KMatrix:
+    """`head @ hidden` for the tied head read as Q6_K (tools/q6k_head.py): fp32 activation, fp32 logits."""
+
+    def __init__(self, head):
+        self.head = head
+
+    def __matmul__(self, hidden):
+        return self.head.logits(hidden)
+
+
+class Q6KEmbed:
+    """`embed[token]`: the Q6_K row dequantized as ggml does, rounded to fp16, equal bit for bit to the fp16 embedding table built from the fp32 head."""
+
+    def __init__(self, head):
+        self.head = head
+
+    def __getitem__(self, token):
+        return self.head.embed_row(int(token)).astype(f16)
+
+
+def head_threads():
+    """One thread per performance core (the pcore_mask list) so a pinned run reads the head from both P clusters; 8 when the chip has no efficiency cores."""
+    p = pcore_mask.p_core_cpus()
+    return len(p) if p else min(8, os.cpu_count() or 1)
+
+
+def load_head(path, q6k=False):
+    """(embedding, tied head, rope (dh, rotary dim, base)) from the GGUF, as staged_qwen_runner.load_gguf_parts and its metadata reads.
+    Default: the head dequantized to float32 (2.03 GB) and an fp16 embedding table. q6k=True: the Q6_K bytes of token_embd.weight (417 MB) read by tools/q6k_head.py,
+    with an fp32 activation vector; the weight values are the same, only the float32 summation order of the logits differs."""
+    from gguf import GGMLQuantizationType, GGUFReader
     from gguf.quants import dequantize
     reader = GGUFReader(path)
     tensor = next(t for t in reader.tensors if t.name == "token_embd.weight")
+    if q6k:
+        if tensor.tensor_type != GGMLQuantizationType.Q6_K:
+            raise Refuse(f"--q6k-head: token_embd.weight is {tensor.tensor_type.name}, not Q6_K")
+        from q6k_head import Q6KHead
+        k, rows = int(tensor.shape[0]), int(tensor.shape[1])
+        head = Q6KHead(np.asarray(tensor.data).reshape(rows, -1), rows, k, threads=head_threads())
+        return Q6KEmbed(head), Q6KMatrix(head), rope_params(reader)
     head = dequantize(np.asarray(tensor.data), tensor.tensor_type).astype(np.float32, copy=False)
     return head.astype(f16), head, rope_params(reader)
 
@@ -427,9 +461,13 @@ def run(args):
     out.mkdir(parents=True, exist_ok=True)
     results = out / "results.jsonl"
     done = set()
+    head_name = "q6k" if getattr(args, "q6k_head", False) else "fp32"
     if results.exists():
-        done = {r["prompt"] for r in map(json.loads, results.read_text().splitlines())
-                if r["type"] == "prompt"}
+        earlier = [json.loads(line) for line in results.read_text().splitlines()]
+        other = {r.get("head", "fp32") for r in earlier if r["type"] == "start"} - {head_name}
+        if other:
+            raise SystemExit(f"REFUSE: {results} already holds a run with the {sorted(other)[0]} head; the resume would mix heads, use a new --out")
+        done = {r["prompt"] for r in earlier if r["type"] == "prompt"}
 
     def record(rec):
         with results.open("a") as f:
@@ -443,7 +481,8 @@ def run(args):
     ref_logits = np.load(args.ref_logits) if args.ref_logits else None
     decoder = Decoder(args, manifest)
     start = time.monotonic()
-    embed, head, (dh, rotary, base) = load_head(args.gguf)
+    q6k = bool(getattr(args, "q6k_head", False))
+    embed, head, (dh, rotary, base) = load_head(args.gguf, q6k=q6k)
     max_len = (lambda p: len(p["prompt_token_ids"]) + args.new_tokens) if args.m_per_prompt \
         else (lambda p: decoder.max_len)
     cos, sin = rope_tables(max([decoder.max_len] + [max_len(p) for _, p in prompts]), dh, rotary, base)
@@ -455,7 +494,7 @@ def run(args):
             if args.resident else None,
             "ref_sha256": sha(args.ref), "manifest_sha256": sha(args.manifest),
             "boot_id": Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
-            "head_load_s": round(time.monotonic() - start, 2), "rope": f"dh={dh} rotary={rotary} base={base}", "placement": placement(decoder)})
+            "head_load_s": round(time.monotonic() - start, 2), "head": "q6k" if q6k else "fp32", "rope": f"dh={dh} rotary={rotary} base={base}", "placement": placement(decoder)})
     dump = DumpCheck(args.dump, args.band, record, out / "m2-dump") if args.dump else None
     for n, prompt in prompts:
         pid = prompt["id"]
@@ -576,6 +615,9 @@ def main(argv=None):
     ap.add_argument("--resident-lock", choices=("call", "step"), default="call",
                     help="hold /var/tmp/ane-run.lock per CALL or per step; "
                          "always released between steps")
+    ap.add_argument("--q6k-head", action="store_true",
+                    help="read the tied head as Q6_K (417 MB, tools/q6k_head.py) instead of the dequantized float32 head (2.03 GB): same weights, fp32 activation, "
+                         "float32 summation order differs (default off until the decode gate has passed)")
     ap.add_argument("--resident-states", action="store_true",
                     help="with --resident: keep every state (DeltaNet, conv, KV) inside the "
                          "session instead of sending it out and back on every CALL; the "
