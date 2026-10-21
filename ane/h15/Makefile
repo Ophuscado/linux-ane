@@ -78,6 +78,16 @@ sim-negative-pd-rpm-err: sim/sim_h15
 sim-negative-pd-eacces-alone: sim/sim_h15
 	./sim/sim_h15 neg-pd-eacces-alone
 
+# Stage 2 (confirm_read=1): the read-only preflight.
+sim-negative-read-ps-stuck: sim/sim_h15
+	./sim/sim_h15 neg-read-ps-stuck
+
+sim-negative-read-window: sim/sim_h15
+	./sim/sim_h15 neg-read-window
+
+sim-negative-read-forbidden: sim/sim_h15
+	./sim/sim_h15 neg-read-forbidden
+
 # Mutation controls for the multi-domain code: build a copy of the real
 # module with one sed edit and REQUIRE the named harness mode to fail it.
 # $(call pd_mutant,<name>,<sed script>,<marker>,<harness mode>)
@@ -111,6 +121,22 @@ sim-mutation-pd-noidleleak:
 # remove() no longer detaches the domains and deletes the links
 sim-mutation-pd-noremovedetach:
 	$(call pd_mutant,pd-noremovedetach,/^static void ane_h15_remove/$(COMMA)/^}/ s/ane_h15_detach_pds(ane);/\/* NEG: remove does not detach *\//,NEG: remove does not detach,pos)
+
+# stage 2 reads without the pmgr ACTUAL=0xf gate
+sim-mutation-read-noguard:
+	$(call pd_mutant,read-noguard,/^static int ane_h15_stage_wrapper/$(COMMA)/^}/ s/ret = ane_h15_ps_wait(ane);/ret = 0; \/* NEG: stage 2 guard skipped *\//,NEG: stage 2 guard skipped,neg-read-ps-stuck)
+
+# stage 2 read allowlist (two ADT windows, no CPU_CONTROL, no fatal range) skipped
+sim-mutation-read-nocheck:
+	$(call pd_mutant,read-nocheck,s/if (!ane_h15_read_ok(ane->soc$(COMMA) off$(COMMA) 4)) {/if (0 \/* NEG: read allowlist skipped *\/) {/,NEG: read allowlist skipped,neg-read-forbidden)
+
+# stage 2 trusts the SoC row without comparing the live reg[0] and reg[1] resources
+sim-mutation-read-nowindow:
+	$(call pd_mutant,read-nowindow,s/res.start == pa \&\& resource_size(\&res) == size/1 \/* NEG: window check skipped *\//,NEG: window check skipped,neg-read-window)
+
+# stage 2 runs without confirm_read=1
+sim-mutation-read-noconfirm:
+	$(call pd_mutant,read-noconfirm,s/if (!confirm_read) {/if (0 \/* NEG: confirm_read ignored *\/) {/,NEG: confirm_read ignored,pos)
 
 sim-negative-nopsguard:
 	rm -rf /tmp/ane_h15-nopsguard && mkdir -p /tmp/ane_h15-nopsguard
@@ -168,5 +194,8 @@ clean:
 	sim-negative-pd-rpm-err sim-negative-pd-eacces-alone \
 	sim-mutation-pd-nolinkdetach sim-mutation-pd-anyerrignored \
 	sim-mutation-pd-noremovedetach sim-mutation-pd-noidleleak \
-	sim-mutation-nofillrefusal clean
+	sim-negative-read-ps-stuck sim-negative-read-forbidden sim-negative-read-window \
+	sim-mutation-read-nowindow \
+	sim-mutation-read-noguard sim-mutation-read-nocheck \
+	sim-mutation-read-noconfirm sim-mutation-nofillrefusal clean
 endif

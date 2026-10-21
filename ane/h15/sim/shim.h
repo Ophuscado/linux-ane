@@ -254,6 +254,26 @@ static inline void iounmap(void *p)
 	sim_n_iounmap++;
 }
 
+struct resource {
+	u64 start;
+	u64 end;
+};
+
+static inline u64 resource_size(const struct resource *r)
+{
+	return r->end - r->start + 1;
+}
+
+static inline int of_address_to_resource(struct device_node *n, int idx,
+					 struct resource *r)
+{
+	if (!n || idx < 0 || idx >= n->n_reg || !n->reg_size[idx])
+		return -EINVAL;
+	r->start = n->reg_pa[idx];
+	r->end = n->reg_pa[idx] + n->reg_size[idx] - 1;
+	return 0;
+}
+
 static inline void *of_iomap(struct device_node *n, int idx)
 {
 	if (!n || idx < 0 || idx >= n->n_reg || !n->reg_size[idx])

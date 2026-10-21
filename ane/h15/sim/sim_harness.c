@@ -215,6 +215,7 @@ static void reset_all(void)
 	stage = "status";
 	ps_wait_ms = 500;
 	confirm_boot = false;
+	confirm_read = false;
 	fw_path = NULL;
 }
 
@@ -439,6 +440,262 @@ static void pos_other_socs(void)
 		chk(log_count("actual=0xf pass=true") == 5, name);
 		chk_global_invariants(cur_soc, tag);
 	}
+}
+
+
+/* ---- stage 2 preflight (confirm_read=1): read-only ---- */
+static void eng_set(const struct ane_h15_soc *s, u32 off, u32 v)
+{
+	sim_bus[sim_region_find(s->engine_pa + off) - sim_bus].mem[off >> 2] = v;
+}
+
+static void stage2_setup(const struct ane_h15_soc *s, const char *compat,
+			 int stuck_ps)
+{
+	reset_all();
+	optin = (char *)s->name;
+	stage = "wrapper";
+	confirm_read = true;
+	build_node(s, 2, compat);
+	set_ps_words(s, stuck_ps);
+	sim_bus_map(s->engine_pa, s->engine_size);
+	eng_set(s, s->cpu_status, 0x2a);
+	eng_set(s, s->rvbar, 0x1);
+	eng_set(s, s->rvbar + 4, 0x0);
+	eng_set(s, s->mbox + 0x110, 0x20001);
+	eng_set(s, s->mbox + 0x114, 0x20001);
+}
+
+/* every engine event, as a pa offset list; returns the count of reads
+ * that hit `off` and of all engine events
+ */
+static int eng_events_at(const struct ane_h15_soc *s, u32 off)
+{
+	return events_in(s->engine_pa + off, 4, 0);
+}
+
+static void pos_stage2(void)
+{
+	static const struct {
+		const struct ane_h15_soc *soc;
+		const char *compat;
+	} rows[] = {
+		{ &ane_t8122_soc, "apple,t8122-ane" },
+		{ &ane_t6030_soc, "apple,t6030-ane" },
+		{ &ane_t6031_soc, "apple,t6031-ane" },
+		{ &ane_t6034_soc, "apple,t6034-ane" },
+	};
+	unsigned int rstage;
+	char verdict[32], reason[128], name[96], tag[32];
+	size_t r;
+	int ret;
+
+	for (r = 0; r < ARRAY_SIZE(rows); r++) {
+		const struct ane_h15_soc *s = rows[r].soc;
+
+		stage2_setup(s, rows[r].compat, -1);
+		ret = probe_now();
+		snprintf(tag, sizeof(tag), "P9 %s", s->name);
+		snprintf(name, sizeof(name), "%s: probe returns 0", tag);
+		chk(ret == 0, name);
+		snprintf(name, sizeof(name), "%s: RESULT stage=2 PASS preflight-read-only", tag);
+		chk(parse_result(&rstage, verdict, sizeof(verdict),
+				 reason, sizeof(reason)) &&
+		    rstage == 2 && !strcmp(verdict, "PASS") &&
+		    !strcmp(reason, "preflight-read-only"), name);
+		snprintf(name, sizeof(name), "%s: exactly five engine reads at the five words", tag);
+		chk(events_in(s->engine_pa, s->engine_size, 0) == 5 &&
+		    eng_events_at(s, s->cpu_status) == 1 &&
+		    eng_events_at(s, s->rvbar) == 1 &&
+		    eng_events_at(s, s->rvbar + 4) == 1 &&
+		    eng_events_at(s, s->mbox + 0x110) == 1 &&
+		    eng_events_at(s, s->mbox + 0x114) == 1, name);
+		snprintf(name, sizeof(name), "%s: CPU_CONTROL never touched", tag);
+		chk(eng_events_at(s, s->cpu_control) == 0, name);
+		snprintf(name, sizeof(name), "%s: zero bus writes, zero faults", tag);
+		chk(events_in(0, ~0ULL, 1) == 0 && sim_bus_faults == 0, name);
+		snprintf(name, sizeof(name), "%s: each address logged before its read (5 lines)", tag);
+		chk(log_count("ane_h15 read CPU_STATUS") == 1 &&
+		    log_count("ane_h15 read RVBAR_LO") == 1 &&
+		    log_count("ane_h15 read RVBAR_HI") == 1 &&
+		    log_count("ane_h15 read MBOX_A2I_CTRL") == 1 &&
+		    log_count("ane_h15 read MBOX_I2A_CTRL") == 1, name);
+		snprintf(name, sizeof(name), "%s: values logged", tag);
+		chk(log_count("cpu_status=0x2a rvbar=0x1 a2i_ctrl=0x20001 i2a_ctrl=0x20001 t6021_stopped_status=equal") == 1, name);
+		snprintf(name, sizeof(name), "%s: pmgr words read before the first engine read", tag);
+		{
+			int first_eng = -1, last_pmgr = -1, i;
+
+			for (i = 0; i < sim_n_events && i < SIM_MAX_EVENTS; i++) {
+				if (sim_events[i].pa >= s->engine_pa &&
+				    sim_events[i].pa < s->engine_pa + s->engine_size) {
+					if (first_eng < 0)
+						first_eng = i;
+				} else {
+					last_pmgr = i;
+				}
+			}
+			chk(first_eng > last_pmgr && last_pmgr >= 4, name);
+		}
+		snprintf(name, sizeof(name), "%s: power claim released", tag);
+		chk(sim_pm_get == 1 && sim_pm_put == 1, name);
+		ane_h15_remove(&pdev);
+		snprintf(name, sizeof(name), "%s: remove unmaps both windows", tag);
+		chk(sim_n_iomap == 2 && sim_n_iounmap == 2, name);
+	}
+	/* a status word that differs from the T6021 stopped capture */
+	stage2_setup(&ane_t6030_soc, "apple,t6030-ane", -1);
+	eng_set(&ane_t6030_soc, ane_t6030_soc.cpu_status, 0x1);
+	ret = probe_now();
+	chk(ret == 0 && log_count("cpu_status=0x1 ") == 1 &&
+	    log_count("t6021_stopped_status=differs") == 1,
+	    "P9 differing CPU_STATUS is logged, not interpreted");
+	ane_h15_remove(&pdev);
+}
+
+/* reg[0] or reg[1] that is not the window the SoC row describes (shifted
+ * base, shorter, or another block): stage 2 refuses before any bus access
+ */
+static int neg_read_window(void)
+{
+	unsigned int rstage;
+	char verdict[32], reason[128];
+	int i, bad = 0;
+
+	for (i = 0; i < 6; i++) {
+		int ret;
+
+		stage2_setup(&ane_t6030_soc, "apple,t6030-ane", -1);
+		if (i == 0)
+			node.reg_pa[0] += 0x1000000;	/* base moved */
+		else if (i == 1)
+			node.reg_size[0] -= 0x100000;	/* window shorter */
+		else if (i == 2)
+			node.reg_pa[0] = ane_t6030_soc.pmgr_pa + 0x100000;	/* some other block */
+		else if (i == 3)
+			node.reg_pa[1] += 0x10000;	/* pmgr base moved */
+		else if (i == 4)
+			node.reg_size[1] -= 0x4000;	/* pmgr window shorter */
+		else
+			node.reg_pa[1] = ane_t6030_soc.engine_pa + 0x100000;	/* pmgr is some other block */
+		ret = probe_now();
+		if (ret != -EINVAL) {
+			printf("    NEG-READ-WINDOW case %d: expected -EINVAL, got %d\n", i, ret);
+			bad = 1;
+		}
+		if (!parse_result(&rstage, verdict, sizeof(verdict), reason, sizeof(reason)) ||
+		    rstage != 2 || strcmp(verdict, "FAIL") || strcmp(reason, "window-mismatch")) {
+			printf("    NEG-READ-WINDOW case %d: expected RESULT stage=2 FAIL window-mismatch\n", i);
+			bad = 1;
+		}
+		if (sim_n_events != 0 || sim_bus_faults) {
+			printf("    NEG-READ-WINDOW case %d: bus access before the window check\n", i);
+			bad = 1;
+		}
+		if (sim_n_iomap != sim_n_iounmap || sim_pm_get != sim_pm_put) {
+			printf("    NEG-READ-WINDOW case %d: a refused probe leaked a window or the power claim\n", i);
+			bad = 1;
+		}
+	}
+	printf("%s\n", bad ? "  neg-read-window: harness FAILED the module (BAD)"
+			   : "  neg-read-window: module refuses as required");
+	return bad;
+}
+
+/* stuck pmgr word: no engine read at all */
+static int neg_read_ps_stuck(void)
+{
+	unsigned int rstage;
+	char verdict[32], reason[128];
+	int ret, bad = 0;
+
+	stage2_setup(&ane_t6030_soc, "apple,t6030-ane", 3);
+	ret = probe_now();
+	if (ret != -ETIMEDOUT) {
+		printf("    NEG-READ-PS-STUCK: expected -ETIMEDOUT, got %d\n", ret);
+		bad = 1;
+	}
+	if (!parse_result(&rstage, verdict, sizeof(verdict), reason, sizeof(reason)) ||
+	    rstage != 2 || strcmp(verdict, "FAIL") || strcmp(reason, "pmgr-actual-stuck")) {
+		printf("    NEG-READ-PS-STUCK: expected RESULT stage=2 FAIL pmgr-actual-stuck\n");
+		bad = 1;
+	}
+	if (events_in(ane_t6030_soc.engine_pa, ane_t6030_soc.engine_size, 0) ||
+	    events_in(0, ~0ULL, 1) || sim_bus_faults) {
+		printf("    NEG-READ-PS-STUCK: engine access, write or fault on a stuck pmgr word\n");
+		bad = 1;
+	}
+	if (sim_n_iomap != sim_n_iounmap) {
+		printf("    NEG-READ-PS-STUCK: leaked a window\n");
+		bad = 1;
+	}
+	printf("%s\n", bad ? "  neg-read-ps-stuck: harness FAILED the module (BAD)"
+			   : "  neg-read-ps-stuck: module refuses as required");
+	return bad;
+}
+
+/* a soc row whose word lies outside the two ADT windows, on CPU_CONTROL
+ * or beyond the wrapper: the read is refused and never reaches the bus
+ */
+static int neg_read_forbidden(void)
+{
+	static struct ane_h15_soc bad_soc;
+	struct {
+		const char *what;
+		u32 cpu_status, rvbar, mbox;
+		u32 forbidden;
+	} cases[] = {
+		/* RVBAR in the T6021 fatal range */
+		{ "rvbar-in-fatal-range", 0x1400048, 0x1854000, 0x1408000, 0x1854000 },
+		/* a mailbox word that lands on CPU_CONTROL */
+		{ "mbox-on-cpu-control", 0x1400048, 0x1050000, 0x1400044 - 0x110, 0x1400044 },
+		/* CPU_STATUS past the end of the wrapper window */
+		{ "status-past-wrapper", 0x146c000, 0x1050000, 0x1408000, 0x146c000 },
+		/* RVBAR on the CoreSight line */
+		{ "rvbar-on-coresight", 0x1400048, 0x1010000, 0x1408000, 0x1010000 },
+	};
+	unsigned int rstage;
+	char verdict[32], reason[128];
+	size_t i;
+	int bad = 0;
+
+	for (i = 0; i < ARRAY_SIZE(cases); i++) {
+		int ret;
+
+		bad_soc = ane_t6030_soc;
+		bad_soc.cpu_status = cases[i].cpu_status;
+		bad_soc.rvbar = cases[i].rvbar;
+		bad_soc.mbox = cases[i].mbox;
+		stage2_setup(&ane_t6030_soc, "apple,t6030-ane", -1);
+		node.match_data = &bad_soc;
+		cur_soc = &bad_soc;
+		ret = probe_now();
+		if (ret != -EPERM) {
+			printf("    NEG-READ-FORBIDDEN %s: expected -EPERM, got %d\n",
+			       cases[i].what, ret);
+			bad = 1;
+		}
+		if (!parse_result(&rstage, verdict, sizeof(verdict), reason, sizeof(reason)) ||
+		    rstage != 2 || strcmp(verdict, "FAIL") || strcmp(reason, "read-refused")) {
+			printf("    NEG-READ-FORBIDDEN %s: expected RESULT stage=2 FAIL read-refused\n",
+			       cases[i].what);
+			bad = 1;
+		}
+		if (events_in(bad_soc.engine_pa + cases[i].forbidden, 4, 0) ||
+		    events_in(0, ~0ULL, 1) || sim_bus_faults) {
+			printf("    NEG-READ-FORBIDDEN %s: the forbidden word reached the bus\n",
+			       cases[i].what);
+			bad = 1;
+		}
+		if (sim_n_iomap != sim_n_iounmap || sim_pm_get != sim_pm_put) {
+			printf("    NEG-READ-FORBIDDEN %s: a refused probe leaked a window or the power claim\n",
+			       cases[i].what);
+			bad = 1;
+		}
+	}
+	printf("%s\n", bad ? "  neg-read-forbidden: harness FAILED the module (BAD)"
+			   : "  neg-read-forbidden: module refuses as required");
+	return bad;
 }
 
 /* ---- P7 filled-table probe control (filled build only) ---- */
@@ -901,6 +1158,7 @@ int main(int argc, char **argv)
 		pos_gate_logic();
 		pos_other_socs();
 		pos_multi_pd();
+		pos_stage2();
 		printf("%s\n", fails ? "SIM-TEST: FAILED"
 				     : "SIM-TEST: all positive controls PASS");
 	} else if (!strcmp(mode, "neg-ps-stuck")) {
@@ -919,6 +1177,15 @@ int main(int argc, char **argv)
 		printf("%s\n", fails ? "SIM-TEST: FAILED"
 				     : "SIM-TEST: filled-table probe control PASS");
 #endif
+	} else if (!strcmp(mode, "neg-read-ps-stuck")) {
+		printf("sim-h15 negative control: stage 2 with a stuck pmgr word\n");
+		fails = neg_read_ps_stuck();
+	} else if (!strcmp(mode, "neg-read-window")) {
+		printf("sim-h15 negative control: stage 2 with a reg[0] that is not the SoC row's window\n");
+		fails = neg_read_window();
+	} else if (!strcmp(mode, "neg-read-forbidden")) {
+		printf("sim-h15 negative control: stage 2 words outside the ADT windows or on CPU_CONTROL\n");
+		fails = neg_read_forbidden();
 	} else if (!strcmp(mode, "neg-rpm-fail")) {
 		printf("sim-h15 negative control: pm_runtime_get_sync failure\n");
 		fails = neg_rpm_fail();
@@ -936,7 +1203,7 @@ int main(int argc, char **argv)
 		fails = neg_pd_eacces_alone();
 	} else {
 		fprintf(stderr,
-			"usage: sim_h15 [pos|neg-ps-stuck|neg-wrong-stage|neg-truncated-dt|neg-rpm-fail|neg-pd-attach-fail|neg-pd-link-fail|neg-pd-rpm-err|neg-pd-eacces-alone]\n");
+			"usage: sim_h15 [pos|neg-ps-stuck|neg-wrong-stage|neg-truncated-dt|neg-rpm-fail|neg-pd-attach-fail|neg-pd-link-fail|neg-pd-rpm-err|neg-pd-eacces-alone|neg-read-ps-stuck|neg-read-window|neg-read-forbidden]\n");
 		return 2;
 	}
 	return fails ? 1 : 0;

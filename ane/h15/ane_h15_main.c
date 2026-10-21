@@ -17,9 +17,13 @@
  *   1 status : enable ANE power domains, wait for every pmgr ANE
  *              state word to read ACTUAL=0xf, then log every SAFE
  *              word (only the pmgr words qualify for H15).
- *   2 wrapper: refuses on H15 (no MEASURED-safe word beyond the pmgr
- *              words; CPU_STATUS/RVBAR are MEASURED-address,
- *              INFERENCE-role). Prints what would clear it.
+ *   2 wrapper: refuses on H15 unless confirm_read=1 (CPU_STATUS and
+ *              RVBAR are MEASURED-address, INFERENCE-role). With
+ *              confirm_read=1 it runs the read-only preflight of the b0
+ *              plan: behind the ACTUAL=0xf gate it reads CPU_STATUS,
+ *              RVBAR and the two mailbox CTRL words, each address logged
+ *              before its read, inside the two ADT-published windows
+ *              only. No write, no CPU release.
  *   3 boot   : refuses without fw_path=; with fw_path=, prints one
  *              line per still-unmeasured fact from the ane_h15_facts
  *              table (stub firmware identity H1, mailbox/IRQ roles H2,
@@ -46,6 +50,7 @@
 #include <linux/errno.h>
 #include <linux/firmware.h>
 #include <linux/io.h>
+#include <linux/ioport.h>
 #include <linux/iommu.h>
 #include <linux/bitops.h>
 #include <linux/iopoll.h>
@@ -74,7 +79,7 @@ MODULE_PARM_DESC(optin,
 static char *stage = "status";
 module_param(stage, charp, 0444);
 MODULE_PARM_DESC(stage,
-		 "0/1/2/3 or name (dt/status/wrapper/boot). 1/status (default): power up and log ps ACTUAL. 0/dt: parse the DT only. 2/wrapper: REFUSED on H15. 3/boot: refused without fw_path=.");
+		 "0/1/2/3 or name (dt/status/wrapper/boot). 1/status (default): power up and log ps ACTUAL. 0/dt: parse the DT only. 2/wrapper: REFUSED on H15 without confirm_read=1. 3/boot: refused without fw_path=.");
 
 static unsigned int ps_wait_ms = 500;
 module_param(ps_wait_ms, uint, 0444);
@@ -85,6 +90,11 @@ static bool confirm_boot;
 module_param(confirm_boot, bool, 0444);
 MODULE_PARM_DESC(confirm_boot,
 		 "Required for stage=boot. Off by default; stage=boot refuses without it.");
+
+static bool confirm_read;
+module_param(confirm_read, bool, 0444);
+MODULE_PARM_DESC(confirm_read,
+		 "Stage=wrapper only. Off by default; stage=wrapper refuses without it. With it, stage=wrapper reads CPU_STATUS, RVBAR and the two mailbox CTRL words behind the pmgr ACTUAL=0xf gate. Reads only, nothing is written.");
 
 static char *fw_path;
 module_param(fw_path, charp, 0444);
@@ -304,38 +314,157 @@ static int ane_h15_stage_status(struct ane_h15 *ane)
 	return 0;
 }
 
-/* ---- stage 2: REFUSED on H15. The word table's `cleared` flag
- * is the future-proofing: when a macOS capture flips a row to
- * cleared=true, this stage reads it. For H15 rows none are cleared. */
+/* ---- stage 2: wrapper preflight ----
+ * Without confirm_read=1 the stage refuses before any engine read and
+ * lists the ADDR_MEASURED words (their roles are INFERENCE on H15).
+ * With confirm_read=1 it runs the read-only preflight of the b0 plan
+ * (receipts/2026-10-03-ane-h15, "b1 plan", step 2) once every pmgr word
+ * reads ACTUAL=0xf: CPU_STATUS, RVBAR (two 32-bit reads) and the two
+ * mailbox CTRL words. Every address is logged BEFORE its read, so a
+ * hang leaves the last attempted address in the log. Only offsets
+ * inside the two windows the ADT publishes for the ANE node are read:
+ * the wrapper (engine+0x1400000, 0x6c000) and the RVBAR block
+ * (engine+0x1050000, 0x4000). CPU_CONTROL, the CoreSight line and the
+ * T6021 fatal range are refused by ane_h15_read_ok(), whatever the
+ * soc row says. Nothing is written.
+ */
+/* Sources of the numbers below, by exact commit.
+ * - Wrapper (CPU_CONTROL +0x44, CPU_STATUS +0x48), RVBAR +0x1050000,
+ *   mailbox CTRL words +0x1408110 and +0x1408114, and the fatal range
+ *   0x1854000..0x1c04000: ane/t6021/ane_t6021.h at 16cfa8720b80677dbcdf8fd1d04077a8b72768bf
+ *   (lines 104-109, 142-143 and 160-163). These are T6021 values. Their
+ *   H15 roles are INFERENCE (see the b0 receipt).
+ * - The two ADT windows (wrapper 0x6c000 bytes at engine + 0x1400000,
+ *   RVBAR block 0x4000 bytes at engine + 0x1050000): the macOS 27.0 ADT
+ *   summary adt-27.0.txt, sha256
+ *   04fe38b8ee009700f02e2c01e83bf608afab5e843f5878a83f162973a1ffdb84,
+ *   as tabulated (A1, A3) in receipts/2026-10-03-ane-h15/README.md at
+ *   71ed021859a3f7e55c04756a1c6ab456fa48fc9f.
+ * - CoreSight line engine + 0x1010000: docs/t6021-ane-bringup-findings.md
+ *   section 7 at 16cfa8720b80677dbcdf8fd1d04077a8b72768bf.
+ */
+#define ANE_H15_WRAP_OFF	0x1400000u
+#define ANE_H15_WRAP_SIZE	0x6c000u
+#define ANE_H15_RVBAR_WIN_OFF	0x1050000u
+#define ANE_H15_RVBAR_WIN_SIZE	0x4000u
+#define ANE_H15_CORESIGHT	0x1010000u
+#define ANE_H15_FATAL_LO	0x1854000u
+#define ANE_H15_FATAL_HI	0x1c04000u
+
+static bool ane_h15_read_ok(const struct ane_h15_soc *s, u32 off, u32 size)
+{
+	u64 end = (u64)off + size;
+	bool in_wrap = off >= ANE_H15_WRAP_OFF &&
+		       end <= (u64)ANE_H15_WRAP_OFF + ANE_H15_WRAP_SIZE;
+	bool in_rvbar = off >= ANE_H15_RVBAR_WIN_OFF &&
+			end <= (u64)ANE_H15_RVBAR_WIN_OFF + ANE_H15_RVBAR_WIN_SIZE;
+
+	if (!in_wrap && !in_rvbar)
+		return false;
+	if (end > s->engine_size)
+		return false;
+	/* CPU_CONTROL is never read (hostile on T6001), neither the
+	 * CoreSight line nor the T6021 fatal range. */
+	if (off < s->cpu_control + 4 && end > s->cpu_control)
+		return false;
+	if (off < ANE_H15_CORESIGHT + 4 && end > ANE_H15_CORESIGHT)
+		return false;
+	if (off < ANE_H15_FATAL_HI && end > ANE_H15_FATAL_LO)
+		return false;
+	return true;
+}
+
+static int ane_h15_read_word(struct ane_h15 *ane, const char *name, u32 off,
+			     u32 *v)
+{
+	if (!ane_h15_read_ok(ane->soc, off, 4)) {
+		dev_err(ane->dev, "ane_h15 refusing read %s engine+%#x\n", name, off);
+		return -EPERM;
+	}
+	dev_crit(ane->dev, "ane_h15 read %s pa=%#llx off=%#x\n", name,
+		 ane->soc->engine_pa + off, off);
+	*v = readl_relaxed(ane->engine + off);
+	dev_info(ane->dev, "ane_h15 word=%s pa=%#llx value=%#x\n", name,
+		 ane->soc->engine_pa + off, *v);
+	return 0;
+}
+
+/* The static offsets hold only for the windows the SoC row describes.
+ * Compare a live reg resource, the one of_iomap() mapped, with the row. */
+static bool ane_h15_window_ok(struct ane_h15 *ane, int idx, const char *what,
+			      u64 pa, u32 size)
+{
+	struct resource res;
+	int ret = of_address_to_resource(ane->dev->of_node, idx, &res);
+
+	if (!ret && res.start == pa && resource_size(&res) == size)
+		return true;
+	dev_err(ane->dev,
+		"ane_h15 %s window mismatch: reg[%d] start=%#llx size=%#llx, SoC row wants start=%#llx size=%#x\n",
+		what, idx, ret ? 0ULL : (u64)res.start,
+		ret ? 0ULL : (u64)resource_size(&res), pa, size);
+	return false;
+}
+
 static int ane_h15_stage_wrapper(struct ane_h15 *ane)
 {
 	const struct ane_h15_soc *s = ane->soc;
+	u32 status = 0, rvbar_lo = 0, rvbar_hi = 0, a2i = 0, i2a = 0;
 	unsigned int i, refused = 0;
 	char why[128];
+	int ret;
 
-	for (i = 0; i < 5; i++) {
-		const struct ane_h15_word *w = &s->words[i + 5]; /* ADDR_MEASURED rows */
+	if (!confirm_read) {
+		for (i = 0; i < 5; i++) {
+			const struct ane_h15_word *w = &s->words[i + 5];
 
-		if (w->tier != ANE15_TIER_ADDR_MEASURED)
-			continue;
-		if (w->cleared) {
-			dev_info(ane->dev, "word %s cleared; reading", w->name);
-			/* future: read with pr_crit guard + log */
-		} else {
+			if (w->tier != ANE15_TIER_ADDR_MEASURED)
+				continue;
 			dev_info(ane->dev,
 				 "word %s tier=ADDR_MEASURED not cleared; src=%s",
 				 w->name, w->src);
 			refused++;
 		}
-	}
-	if (refused) {
 		snprintf(why, sizeof(why),
-			 "%u ADDR_MEASURED word(s) lack a macOS capture; role INFERENCE",
+			 "%u ADDR_MEASURED word(s) lack a macOS capture; role INFERENCE; confirm_read=1 runs the read-only preflight",
 			 refused);
 		ane_h15_result(ane, 2, "REFUSED", why);
 		return -EPERM;
 	}
-	ane_h15_result(ane, 2, "PASS", "no cleared words defined");
+
+	/* Both windows are checked before any bus access: the pmgr gate
+	 * below reads through reg[1], the preflight through reg[0]. */
+	if (!ane_h15_window_ok(ane, 0, "engine", s->engine_pa, s->engine_size) ||
+	    !ane_h15_window_ok(ane, 1, "pmgr", s->pmgr_pa, s->pmgr_size)) {
+		ane_h15_result(ane, 2, "FAIL", "window-mismatch");
+		return -EINVAL;
+	}
+	ret = ane_h15_ps_wait(ane);
+	if (ret) {
+		ane_h15_result(ane, 2, "FAIL", "pmgr-actual-stuck");
+		return ret;
+	}
+	ret = ane_h15_read_word(ane, "CPU_STATUS", s->cpu_status, &status);
+	if (!ret)
+		ret = ane_h15_read_word(ane, "RVBAR_LO", s->rvbar, &rvbar_lo);
+	if (!ret)
+		ret = ane_h15_read_word(ane, "RVBAR_HI", s->rvbar + 4, &rvbar_hi);
+	if (!ret)
+		ret = ane_h15_read_word(ane, "MBOX_A2I_CTRL", s->mbox + 0x110, &a2i);
+	if (!ret)
+		ret = ane_h15_read_word(ane, "MBOX_I2A_CTRL", s->mbox + 0x114, &i2a);
+	if (ret) {
+		ane_h15_result(ane, 2, "FAIL", "read-refused");
+		return ret;
+	}
+	/* The T6021 capture of a stopped core reads CPU_STATUS 0x2a and
+	 * RVBAR 0x1 (ane/t6021/ane_t6021.h). The H15 meaning of the
+	 * bits is not measured; the line only compares. */
+	dev_info(ane->dev,
+		 "ane_h15 preflight cpu_status=%#x rvbar=%#llx a2i_ctrl=%#x i2a_ctrl=%#x t6021_stopped_status=%s\n",
+		 status, ((u64)rvbar_hi << 32) | rvbar_lo, a2i, i2a,
+		 status == 0x2a ? "equal" : "differs");
+	ane_h15_result(ane, 2, "PASS", "preflight-read-only");
 	return 0;
 }
 
