@@ -95,6 +95,7 @@ struct device_node {
 	int n_reg;		/* valid reg entries: 0, 1 (truncated), 2 */
 	u64 reg_pa[2];
 	u64 reg_size[2];
+	int n_pd;		/* entries in the node's power-domains property */
 };
 
 struct device {
@@ -285,21 +286,134 @@ static inline void msleep(unsigned int ms) { sim_jiffies += ms; }
  */
 extern int sim_pm_get;
 extern int sim_pm_put;
-/* when nonzero, get_sync returns this (induced power-domains failure) */
+/* when nonzero, get_sync returns this (induced power-domains failure).
+ * Like the kernel, a failing get_sync still takes a usage count that a
+ * pm_runtime_put_sync must drop: sim_pm_get_err counts those.
+ */
 extern int sim_pm_get_fail;
+extern int sim_pm_get_err;
 static inline void pm_runtime_enable(struct device *d) { (void)d; }
 static inline void pm_runtime_disable(struct device *d) { (void)d; }
 static inline int pm_runtime_get_sync(struct device *d)
 {
 	(void)d;
-	if (sim_pm_get_fail)
+	if (sim_pm_get_fail) {
+		sim_pm_get_err++;
 		return sim_pm_get_fail;
+	}
 	return ++sim_pm_get;
 }
 static inline int pm_runtime_put_sync(struct device *d)
 {
 	(void)d;
 	return ++sim_pm_put;
+}
+
+/* ---- ERR_PTR helpers (the real linux/err.h is an empty sim stub) ---- */
+#define MAX_ERRNO 4095
+static inline void *ERR_PTR(long e) { return (void *)e; }
+static inline long PTR_ERR(const void *p) { return (long)p; }
+static inline bool IS_ERR(const void *p)
+{
+	return (unsigned long)p >= (unsigned long)-MAX_ERRNO;
+}
+static inline bool IS_ERR_OR_NULL(const void *p) { return !p || IS_ERR(p); }
+
+/* ---- multiple power-domains: attach by id + runtime-PM device links.
+ * Every attach, link, link delete and detach is counted and tracked per
+ * slot, so the harness can assert that a probe (success or failure at
+ * any index) and remove leave nothing attached or linked, and that no
+ * slot is released twice. Like the kernel, device_link_add() returns
+ * NULL on failure (not an ERR_PTR); dev_pm_domain_attach_by_id()
+ * returns an ERR_PTR on failure.
+ * ----
+ */
+#define SIM_MAX_PD 8
+#define DL_FLAG_STATELESS	(1U << 0)
+#define DL_FLAG_PM_RUNTIME	(1U << 1)
+#define DL_FLAG_RPM_ACTIVE	(1U << 2)
+struct device_link {
+	int idx;
+};
+extern struct device sim_pd_dev[SIM_MAX_PD];
+extern struct device_link sim_pd_link[SIM_MAX_PD];
+/* 0 = never attached/linked, 1 = live, 2 = released */
+extern int sim_pd_state[SIM_MAX_PD];
+extern int sim_link_state[SIM_MAX_PD];
+extern int sim_pd_attach;	/* successful attaches */
+extern int sim_pd_detach;	/* detaches of a live slot */
+extern int sim_link_add;	/* successful links */
+extern int sim_link_del;	/* deletes of a live link */
+extern int sim_pd_bad;		/* detach/del of a slot that is not live */
+/* attach/link call number (0-based, counted over the whole run) that
+ * fails; -1 = never
+ */
+extern int sim_pd_attach_fail_at;
+extern int sim_link_fail_at;
+extern int sim_pd_attach_calls;
+extern int sim_link_calls;
+
+static inline int of_count_phandle_with_args(const struct device_node *np,
+					     const char *list_name,
+					     const char *cells_name)
+{
+	(void)list_name;
+	(void)cells_name;
+	return np && np->n_pd > 0 ? np->n_pd : -ENOENT;
+}
+
+static inline struct device *dev_pm_domain_attach_by_id(struct device *dev,
+							unsigned int index)
+{
+	int call = sim_pd_attach_calls++;
+
+	(void)dev;
+	if (call == sim_pd_attach_fail_at || index >= SIM_MAX_PD)
+		return ERR_PTR(-ENODEV);
+	sim_pd_state[index] = 1;
+	sim_pd_attach++;
+	return &sim_pd_dev[index];
+}
+
+static inline void dev_pm_domain_detach(struct device *dev, bool power_off)
+{
+	long idx = dev - sim_pd_dev;
+
+	(void)power_off;
+	if (idx < 0 || idx >= SIM_MAX_PD || sim_pd_state[idx] != 1) {
+		sim_pd_bad++;
+		return;
+	}
+	sim_pd_state[idx] = 2;
+	sim_pd_detach++;
+}
+
+static inline struct device_link *device_link_add(struct device *consumer,
+						  struct device *supplier,
+						  unsigned int flags)
+{
+	int call = sim_link_calls++;
+	long idx = supplier - sim_pd_dev;
+
+	(void)consumer;
+	(void)flags;
+	if (call == sim_link_fail_at || idx < 0 || idx >= SIM_MAX_PD)
+		return NULL;
+	sim_link_state[idx] = 1;
+	sim_link_add++;
+	return &sim_pd_link[idx];
+}
+
+static inline void device_link_del(struct device_link *link)
+{
+	long idx = link - sim_pd_link;
+
+	if (idx < 0 || idx >= SIM_MAX_PD || sim_link_state[idx] != 1) {
+		sim_pd_bad++;
+		return;
+	}
+	sim_link_state[idx] = 2;
+	sim_link_del++;
 }
 
 /* ---- allocators / drvdata ---- */

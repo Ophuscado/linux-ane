@@ -151,6 +151,8 @@ static int ane_h15_attach_pds(struct ane_h15 *ane)
 		ane->pd_link[i] = device_link_add(dev, ane->pd_dev[i],
 						  DL_FLAG_STATELESS | DL_FLAG_PM_RUNTIME |
 						  DL_FLAG_RPM_ACTIVE);
+		/* device_link_add() returns NULL on failure, never an
+		 * ERR_PTR, so a plain !link test is the right check. */
 		if (!ane->pd_link[i]) {
 			dev_err(dev, "link power-domain %d\n", i);
 			return -EINVAL;
@@ -452,10 +454,12 @@ static int ane_h15_probe(struct platform_device *pdev)
 	if (ret < 0) {
 		/*
 		 * With several power-domains attached by id, the RPM_ACTIVE
-		 * device links already resumed every domain, so the engine is
-		 * powered even though this device has no runtime-PM callback of
-		 * its own and get_sync reports -EACCES. Treat that as powered
-		 * and let the ACTUAL=0xf gate in the stage be the real check.
+		 * device links already resumed every domain. On T6030 the main
+		 * device's get_sync then returned -EACCES (observed at stage 1;
+		 * the cause is not established). Only that code, and only with
+		 * domains attached, is treated as powered;
+		 * the ACTUAL=0xf gate in the stage is the real check. Any other
+		 * error fails the probe.
 		 */
 		if (ane->pd_count > 0 && ret == -EACCES) {
 			dev_info(&pdev->dev,

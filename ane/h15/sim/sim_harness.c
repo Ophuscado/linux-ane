@@ -68,6 +68,20 @@ unsigned long sim_jiffies;
 int sim_pm_get;
 int sim_pm_put;
 int sim_pm_get_fail;
+int sim_pm_get_err;
+struct device sim_pd_dev[SIM_MAX_PD];
+struct device_link sim_pd_link[SIM_MAX_PD];
+int sim_pd_state[SIM_MAX_PD];
+int sim_link_state[SIM_MAX_PD];
+int sim_pd_attach;
+int sim_pd_detach;
+int sim_link_add;
+int sim_link_del;
+int sim_pd_bad;
+int sim_pd_attach_fail_at = -1;
+int sim_link_fail_at = -1;
+int sim_pd_attach_calls;
+int sim_link_calls;
 
 /* ---- helpers ---- */
 static int fails;
@@ -184,6 +198,15 @@ static void reset_all(void)
 	sim_pm_get = 0;
 	sim_pm_put = 0;
 	sim_pm_get_fail = 0;
+	sim_pm_get_err = 0;
+	memset(sim_pd_state, 0, sizeof(sim_pd_state));
+	memset(sim_link_state, 0, sizeof(sim_link_state));
+	sim_pd_attach = sim_pd_detach = sim_link_add = sim_link_del = 0;
+	sim_pd_bad = 0;
+	sim_pd_attach_fail_at = -1;
+	sim_link_fail_at = -1;
+	sim_pd_attach_calls = 0;
+	sim_link_calls = 0;
 	memset(&pdev, 0, sizeof(pdev));
 	memset(&node, 0, sizeof(node));
 	optin = NULL;
@@ -635,6 +658,230 @@ static int neg_rpm_fail(void)
 	return bad;
 }
 
+/* ---- multiple power-domains (attach by id + runtime-PM device links) ---- */
+static int pd_live(void)
+{
+	int i, n = 0;
+
+	for (i = 0; i < SIM_MAX_PD; i++)
+		n += sim_pd_state[i] == 1;
+	return n;
+}
+
+static int link_live(void)
+{
+	int i, n = 0;
+
+	for (i = 0; i < SIM_MAX_PD; i++)
+		n += sim_link_state[i] == 1;
+	return n;
+}
+
+/* A node with n_pd power-domains at stage 1; the caller sets the fault
+ * knobs (sim_pd_attach_fail_at, sim_link_fail_at, sim_pm_get_fail)
+ * after this returns and before probe_now().
+ */
+static void pd_setup(int n_pd)
+{
+	reset_all();
+	optin = "t8122";
+	stage = "status";
+	build_node(&ane_t8122_soc, 2, "apple,t8122-ane");
+	node.n_pd = n_pd;
+	set_ps_words(&ane_t8122_soc, -1);
+}
+
+static void pos_multi_pd(void)
+{
+	unsigned int rstage;
+	char verdict[32], reason[128];
+	int ret, variant;
+
+	/* P8: five domains; variant 0 = get_sync succeeds, 1 = get_sync
+	 * returns -EACCES (what T6030 stage 1 reported): both must pass
+	 */
+	for (variant = 0; variant < 2; variant++) {
+		pd_setup(5);
+		if (variant)
+			sim_pm_get_fail = -EACCES;
+		ret = probe_now();
+		chk(ret == 0, variant ? "P8b pd/-EACCES: probe returns 0"
+				      : "P8a pd: probe returns 0");
+		chk(parse_result(&rstage, verdict, sizeof(verdict),
+				 reason, sizeof(reason)) &&
+		    rstage == 1 && !strcmp(verdict, "PASS") &&
+		    !strcmp(reason, "ps-guard+reads"),
+		    "P8 pd: RESULT stage=1 PASS ps-guard+reads");
+		chk(sim_pd_attach == 5 && sim_link_add == 5,
+		    "P8 pd: 5 domains attached and 5 links added");
+		chk(pd_live() == 5 && link_live() == 5,
+		    "P8 pd: all 5 attached and linked after probe");
+		if (variant) {
+			chk(sim_pm_get == 0 && sim_pm_get_err == 1 &&
+			    sim_pm_put == 1,
+			    "P8b pd/-EACCES: failing get_sync usage count dropped");
+			chk(log_count("main get_sync -13 ignored") == 1,
+			    "P8b pd/-EACCES: ignore line logged once");
+		} else {
+			chk(sim_pm_get == 1 && sim_pm_put == 1,
+			    "P8a pd: get==put==1");
+		}
+		chk_global_invariants(cur_soc, "P8 pd");
+		ane_h15_remove(&pdev);
+		chk(sim_pd_detach == 5 && sim_link_del == 5,
+		    "P8 pd: remove detaches 5 domains and deletes 5 links");
+		chk(pd_live() == 0 && link_live() == 0 && sim_pd_bad == 0,
+		    "P8 pd: nothing left attached, none released twice");
+		chk(sim_n_iomap == 2 && sim_n_iounmap == 2,
+		    "P8 pd: remove unmaps both windows");
+	}
+
+	/* P9: zero or one domain is the core's job: no attach, no link */
+	for (variant = 0; variant < 2; variant++) {
+		pd_setup(variant);
+		ret = probe_now();
+		chk(ret == 0 && sim_pd_attach_calls == 0 && sim_link_calls == 0,
+		    variant ? "P9 one domain: module attaches nothing"
+			    : "P9 no domain: module attaches nothing");
+	}
+}
+
+/* Common refusal checks for a failed multi-domain probe. */
+static int pd_refused(const char *tag, int ret, int want_ret)
+{
+	int bad = 0;
+
+	if (ret != want_ret) {
+		printf("    %s: expected %d, got %d\n", tag, want_ret, ret);
+		bad = 1;
+	}
+	if (log_count("ane_h15 RESULT") != 0) {
+		printf("    %s: RESULT line before the stage ran\n", tag);
+		bad = 1;
+	}
+	if (pd_live() || link_live() || sim_pd_bad) {
+		printf("    %s: leak or double release (domains live=%d links live=%d bad=%d)\n",
+		       tag, pd_live(), link_live(), sim_pd_bad);
+		bad = 1;
+	}
+	if (sim_pd_attach != sim_pd_detach || sim_link_add != sim_link_del) {
+		printf("    %s: attach/detach %d/%d, link add/del %d/%d\n", tag,
+		       sim_pd_attach, sim_pd_detach, sim_link_add, sim_link_del);
+		bad = 1;
+	}
+	if (sim_n_iomap != sim_n_iounmap) {
+		printf("    %s: window leak (iomap=%d iounmap=%d)\n", tag,
+		       sim_n_iomap, sim_n_iounmap);
+		bad = 1;
+	}
+	if (events_in(ane_t8122_soc.engine_pa, ane_t8122_soc.engine_size, 0) ||
+	    sim_bus_faults || events_in(0, ~0ULL, 1)) {
+		printf("    %s: engine access, fault, or write\n", tag);
+		bad = 1;
+	}
+	return bad;
+}
+
+static int neg_pd_attach_fail(void)
+{
+	char tag[64];
+	int i, bad = 0;
+
+	for (i = 0; i < 5; i++) {
+		pd_setup(5);
+		sim_pd_attach_fail_at = i;
+		snprintf(tag, sizeof(tag), "NEG-PD-ATTACH-FAIL(i=%d)", i);
+		bad |= pd_refused(tag, probe_now(), -ENODEV);
+		if (sim_pd_attach != i) {
+			printf("    %s: %d domains attached before the failure, expected %d\n",
+			       tag, sim_pd_attach, i);
+			bad = 1;
+		}
+		if (sim_pm_get || sim_pm_put || sim_pm_get_err) {
+			printf("    %s: runtime PM touched after a failed attach\n", tag);
+			bad = 1;
+		}
+	}
+	printf("%s\n", bad ? "  neg-pd-attach-fail: harness FAILED (BAD)"
+			   : "  neg-pd-attach-fail: module refuses and releases as required");
+	return bad;
+}
+
+static int neg_pd_link_fail(void)
+{
+	char tag[64];
+	int i, bad = 0;
+
+	for (i = 0; i < 5; i++) {
+		pd_setup(5);
+		sim_link_fail_at = i;
+		snprintf(tag, sizeof(tag), "NEG-PD-LINK-FAIL(i=%d)", i);
+		bad |= pd_refused(tag, probe_now(), -EINVAL);
+		/* the domain whose link failed is attached and must be
+		 * detached too: i+1 attaches, i links
+		 */
+		if (sim_pd_attach != i + 1 || sim_link_add != i) {
+			printf("    %s: attach=%d link=%d, expected %d and %d\n",
+			       tag, sim_pd_attach, sim_link_add, i + 1, i);
+			bad = 1;
+		}
+		if (sim_pm_get || sim_pm_put || sim_pm_get_err) {
+			printf("    %s: runtime PM touched after a failed link\n", tag);
+			bad = 1;
+		}
+	}
+	printf("%s\n", bad ? "  neg-pd-link-fail: harness FAILED (BAD)"
+			   : "  neg-pd-link-fail: module refuses and releases as required");
+	return bad;
+}
+
+/* get_sync fails with something other than -EACCES while five domains
+ * are attached: the probe must fail and release everything
+ */
+static int neg_pd_rpm_err(void)
+{
+	int bad;
+
+	pd_setup(5);
+	sim_pm_get_fail = -EIO;
+	bad = pd_refused("NEG-PD-RPM-ERR", probe_now(), -EIO);
+	if (sim_pd_attach != 5 || sim_link_add != 5) {
+		printf("    NEG-PD-RPM-ERR: attach=%d link=%d, expected 5 and 5\n",
+		       sim_pd_attach, sim_link_add);
+		bad = 1;
+	}
+	if (sim_pm_get != 0 || sim_pm_put != 0) {
+		printf("    NEG-PD-RPM-ERR: power claim taken on a failed get_sync\n");
+		bad = 1;
+	}
+	printf("%s\n", bad ? "  neg-pd-rpm-err: harness FAILED (BAD)"
+			   : "  neg-pd-rpm-err: module refuses as required");
+	return bad;
+}
+
+/* -EACCES is ignored only with domains attached by the module: with
+ * zero or one domain it must still fail the probe
+ */
+static int neg_pd_eacces_alone(void)
+{
+	int n, bad = 0;
+
+	for (n = 0; n < 2; n++) {
+		pd_setup(n);
+		sim_pm_get_fail = -EACCES;
+		bad |= pd_refused(n ? "NEG-PD-EACCES(one domain)"
+				    : "NEG-PD-EACCES(no domain)",
+				  probe_now(), -EACCES);
+		if (sim_pd_attach_calls) {
+			printf("    NEG-PD-EACCES(n=%d): module attached a domain\n", n);
+			bad = 1;
+		}
+	}
+	printf("%s\n", bad ? "  neg-pd-eacces-alone: harness FAILED (BAD)"
+			   : "  neg-pd-eacces-alone: module refuses as required");
+	return bad;
+}
+
 int main(int argc, char **argv)
 {
 	const char *mode = argc > 1 ? argv[1] : "pos";
@@ -646,6 +893,7 @@ int main(int argc, char **argv)
 		pos_refusals();
 		pos_gate_logic();
 		pos_other_socs();
+		pos_multi_pd();
 		printf("%s\n", fails ? "SIM-TEST: FAILED"
 				     : "SIM-TEST: all positive controls PASS");
 	} else if (!strcmp(mode, "neg-ps-stuck")) {
@@ -667,9 +915,21 @@ int main(int argc, char **argv)
 	} else if (!strcmp(mode, "neg-rpm-fail")) {
 		printf("sim-h15 negative control: pm_runtime_get_sync failure\n");
 		fails = neg_rpm_fail();
+	} else if (!strcmp(mode, "neg-pd-attach-fail")) {
+		printf("sim-h15 negative control: power-domain attach fails at index i\n");
+		fails = neg_pd_attach_fail();
+	} else if (!strcmp(mode, "neg-pd-link-fail")) {
+		printf("sim-h15 negative control: device_link_add fails at index i\n");
+		fails = neg_pd_link_fail();
+	} else if (!strcmp(mode, "neg-pd-rpm-err")) {
+		printf("sim-h15 negative control: get_sync error other than -EACCES with domains attached\n");
+		fails = neg_pd_rpm_err();
+	} else if (!strcmp(mode, "neg-pd-eacces-alone")) {
+		printf("sim-h15 negative control: -EACCES with zero or one domain\n");
+		fails = neg_pd_eacces_alone();
 	} else {
 		fprintf(stderr,
-			"usage: sim_h15 [pos|neg-ps-stuck|neg-wrong-stage|neg-truncated-dt|neg-rpm-fail]\n");
+			"usage: sim_h15 [pos|neg-ps-stuck|neg-wrong-stage|neg-truncated-dt|neg-rpm-fail|neg-pd-attach-fail|neg-pd-link-fail|neg-pd-rpm-err|neg-pd-eacces-alone]\n");
 		return 2;
 	}
 	return fails ? 1 : 0;
