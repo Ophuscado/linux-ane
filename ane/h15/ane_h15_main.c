@@ -57,6 +57,7 @@
 #include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/platform_device.h>
+#include <linux/pm_domain.h>
 #include <linux/pm_runtime.h>
 #include <linux/sizes.h>
 #include <linux/string.h>
@@ -108,7 +109,75 @@ struct ane_h15 {
 	struct ane_h15_seg segs[2];
 	bool fw_touched;
 	bool fw_started;
+	/* The ANE node carries several power-domains (sys, mpm, cpu, td,
+	 * base). The kernel's automatic attach handles only a single
+	 * domain, so for more than one we attach each by id and link it
+	 * for runtime PM, as the in-tree ane driver does. */
+#define ANE_H15_MAX_PD 8
+	struct device *pd_dev[ANE_H15_MAX_PD];
+	struct device_link *pd_link[ANE_H15_MAX_PD];
+	int pd_count;
 };
+
+/* Attach every power-domain the node lists and link it so a single
+ * pm_runtime_get on this device powers them all. Returns 0 when the
+ * node has 0 or 1 domains (the core's automatic attach covers those).
+ */
+static int ane_h15_attach_pds(struct ane_h15 *ane)
+{
+	struct device *dev = ane->dev;
+	int count, i;
+
+	count = of_count_phandle_with_args(dev->of_node, "power-domains",
+					   "#power-domain-cells");
+	if (count <= 1)
+		return 0;
+	if (count > ANE_H15_MAX_PD) {
+		dev_err(dev, "too many power-domains: %d\n", count);
+		return -EINVAL;
+	}
+	for (i = 0; i < count; i++) {
+		ane->pd_dev[i] = dev_pm_domain_attach_by_id(dev, i);
+		if (IS_ERR_OR_NULL(ane->pd_dev[i])) {
+			int err = ane->pd_dev[i] ? PTR_ERR(ane->pd_dev[i]) : -ENODEV;
+
+			ane->pd_dev[i] = NULL;
+			dev_err(dev, "attach power-domain %d: %d\n", i, err);
+			return err;
+		}
+		/* Count it before adding the link: if device_link_add fails,
+		 * ane_h15_detach_pds must still detach this attached domain. */
+		ane->pd_count = i + 1;
+		ane->pd_link[i] = device_link_add(dev, ane->pd_dev[i],
+						  DL_FLAG_STATELESS | DL_FLAG_PM_RUNTIME |
+						  DL_FLAG_RPM_ACTIVE);
+		/* device_link_add() returns NULL on failure, never an
+		 * ERR_PTR, so a plain !link test is the right check. */
+		if (!ane->pd_link[i]) {
+			dev_err(dev, "link power-domain %d\n", i);
+			return -EINVAL;
+		}
+	}
+	dev_info(dev, "attached %d ANE power-domains\n", ane->pd_count);
+	return 0;
+}
+
+static void ane_h15_detach_pds(struct ane_h15 *ane)
+{
+	int i;
+
+	for (i = ane->pd_count - 1; i >= 0; i--) {
+		if (ane->pd_link[i]) {
+			device_link_del(ane->pd_link[i]);
+			ane->pd_link[i] = NULL;
+		}
+		if (ane->pd_dev[i]) {
+			dev_pm_domain_detach(ane->pd_dev[i], true);
+			ane->pd_dev[i] = NULL;
+		}
+	}
+	ane->pd_count = 0;
+}
 
 /* ---- RESULT line, emitted at every stage ---- */
 static void ane_h15_result(struct ane_h15 *ane, unsigned int stage_idx,
@@ -373,13 +442,38 @@ static int ane_h15_probe(struct platform_device *pdev)
 		return -ENXIO;
 	}
 
+	ret = ane_h15_attach_pds(ane);
+	if (ret) {
+		ane_h15_detach_pds(ane);
+		ane_h15_unmap_windows(ane);
+		return ret;
+	}
+
 	pm_runtime_enable(&pdev->dev);
 	ret = pm_runtime_get_sync(&pdev->dev);
 	if (ret < 0) {
-		dev_err(&pdev->dev, "power-domains bring-up failed: %d\n", ret);
-		pm_runtime_disable(&pdev->dev);
-		ane_h15_unmap_windows(ane);
-		return ret;
+		/*
+		 * With several power-domains attached by id, the RPM_ACTIVE
+		 * device links already resumed every domain. On T6030 the main
+		 * device's get_sync then returned -EACCES (observed at stage 1;
+		 * the cause is not established). Only that code, and only with
+		 * domains attached, is treated as powered;
+		 * the ACTUAL=0xf gate in the stage is the real check. Any other
+		 * error fails the probe.
+		 */
+		if (ane->pd_count > 0 && ret == -EACCES) {
+			dev_info(&pdev->dev,
+				 "engine powered via %d domain links (main get_sync %d ignored)\n",
+				 ane->pd_count, ret);
+		} else {
+			dev_err(&pdev->dev, "power-domains bring-up failed: %d\n", ret);
+			/* a failed get_sync still took a usage count */
+			pm_runtime_put_noidle(&pdev->dev);
+			pm_runtime_disable(&pdev->dev);
+			ane_h15_detach_pds(ane);
+			ane_h15_unmap_windows(ane);
+			return ret;
+		}
 	}
 
 	if (stage_idx == 1)       ret = ane_h15_stage_status(ane);
@@ -390,9 +484,12 @@ static int ane_h15_probe(struct platform_device *pdev)
 	if (ane->fw_started)
 		dev_emerg(&pdev->dev,
 			  "firmware started: do NOT unload; reboot to park the ANE\n");
-	/* a failed probe never reaches remove(); release the windows */
-	if (ret)
+	/* a failed probe never reaches remove(); release everything */
+	if (ret) {
+		pm_runtime_disable(&pdev->dev);
+		ane_h15_detach_pds(ane);
 		ane_h15_unmap_windows(ane);
+	}
 	return ret;
 }
 
@@ -406,6 +503,7 @@ static void ane_h15_remove(struct platform_device *pdev)
 		return;
 	}
 	pm_runtime_disable(&pdev->dev);
+	ane_h15_detach_pds(ane);
 	ane_h15_unmap_windows(ane);
 }
 

@@ -65,6 +65,53 @@ sim-negative-truncated-dt: sim/sim_h15
 sim-negative-rpm-fail: sim/sim_h15
 	./sim/sim_h15 neg-rpm-fail
 
+# Multiple power-domains (attach by id + runtime-PM device links).
+sim-negative-pd-attach-fail: sim/sim_h15
+	./sim/sim_h15 neg-pd-attach-fail
+
+sim-negative-pd-link-fail: sim/sim_h15
+	./sim/sim_h15 neg-pd-link-fail
+
+sim-negative-pd-rpm-err: sim/sim_h15
+	./sim/sim_h15 neg-pd-rpm-err
+
+sim-negative-pd-eacces-alone: sim/sim_h15
+	./sim/sim_h15 neg-pd-eacces-alone
+
+# Mutation controls for the multi-domain code: build a copy of the real
+# module with one sed edit and REQUIRE the named harness mode to fail it.
+# $(call pd_mutant,<name>,<sed script>,<marker>,<harness mode>)
+COMMA := ,
+define pd_mutant
+	rm -rf /tmp/ane_h15-$(1) && mkdir -p /tmp/ane_h15-$(1)
+	cp -r sim /tmp/ane_h15-$(1)/sim
+	cp ane_h15_main.c ane_h15_soc.c ane_h15.h ane_h15_adt.h /tmp/ane_h15-$(1)/
+	sed '$(2)' ane_h15_main.c > /tmp/ane_h15-$(1)/ane_h15_main.c
+	grep -q '$(3)' /tmp/ane_h15-$(1)/ane_h15_main.c
+	$(SIM_CC) $(SIM_CFLAGS) -I /tmp/ane_h15-$(1)/sim -I /tmp/ane_h15-$(1)/sim/inc -o /tmp/ane_h15-$(1)/sim_h15 /tmp/ane_h15-$(1)/sim/sim_harness.c
+	@/tmp/ane_h15-$(1)/sim_h15 $(4) > /tmp/ane_h15-$(1)/run.log 2>&1; \
+	s=$$?; \
+	echo "--- $(1) mutant harness tail ---"; tail -4 /tmp/ane_h15-$(1)/run.log; \
+	if [ $$s -eq 0 ]; then echo "SIM-MUT-$(1) BAD: mutant PASSED the harness (harness does not discriminate)"; exit 1; \
+	else echo "SIM-MUT-$(1) OK: mutant FAILS the harness"; fi
+endef
+
+# pd_count set only after device_link_add: a failed link leaks its domain
+sim-mutation-pd-nolinkdetach:
+	$(call pd_mutant,pd-nolinkdetach,s/ane->pd_count = i + 1;/\/* NEG: pd_count set after link *\//,NEG: pd_count set after link,neg-pd-link-fail)
+
+# any get_sync error ignored once domains are attached, not only -EACCES
+sim-mutation-pd-anyerrignored:
+	$(call pd_mutant,pd-anyerrignored,s/ret == -EACCES/ret < 0 \/* NEG: any error ignored *\//,NEG: any error ignored,neg-pd-rpm-err)
+
+# a failed get_sync takes a usage count that nothing drops
+sim-mutation-pd-noidleleak:
+	$(call pd_mutant,pd-noidleleak,s/pm_runtime_put_noidle(&pdev->dev);/\/* NEG: usage count leaked *\//,NEG: usage count leaked,neg-pd-rpm-err)
+
+# remove() no longer detaches the domains and deletes the links
+sim-mutation-pd-noremovedetach:
+	$(call pd_mutant,pd-noremovedetach,/^static void ane_h15_remove/$(COMMA)/^}/ s/ane_h15_detach_pds(ane);/\/* NEG: remove does not detach *\//,NEG: remove does not detach,pos)
+
 sim-negative-nopsguard:
 	rm -rf /tmp/ane_h15-nopsguard && mkdir -p /tmp/ane_h15-nopsguard
 	cp -r sim /tmp/ane_h15-nopsguard/sim
@@ -117,5 +164,9 @@ clean:
 	sim-negative-wrong-stage sim-negative-truncated-dt \
 	sim-negative-rpm-fail sim-negative-nopsguard \
 	sim-probe-filled sim-mutation-nounmap \
+	sim-negative-pd-attach-fail sim-negative-pd-link-fail \
+	sim-negative-pd-rpm-err sim-negative-pd-eacces-alone \
+	sim-mutation-pd-nolinkdetach sim-mutation-pd-anyerrignored \
+	sim-mutation-pd-noremovedetach sim-mutation-pd-noidleleak \
 	sim-mutation-nofillrefusal clean
 endif
