@@ -87,6 +87,9 @@
 		target-path = "/soc";
 
 		__overlay__ {
+			/* The four ANE DART nodes are disabled. The DART driver probes an enabled node at boot. On a T6030,
+			 * equivalent enabled nodes hung the machine before display or network, because the ANE hardware behind
+			 * them was not powered. That was not measured with this exact overlay. Stages 0 and 1 of ane_h15 need no DART. Enable the nodes when the DART work lands. */
 			ane_dart0: iommu@311800000 {
 				compatible = "apple,t8122-dart", "apple,t8110-dart";
 				reg = <0x3 0x11800000 0x0 0x4000>;
@@ -94,7 +97,7 @@
 				interrupt-parent = <&aic>;
 				interrupts = <0 525 4>;
 				power-domains = <&ps_ane_sys>;
-				status = "okay";
+				status = "disabled";
 			};
 			ane_dart1: iommu@311810000 {
 				compatible = "apple,t8122-dart", "apple,t8110-dart";
@@ -103,7 +106,7 @@
 				interrupt-parent = <&aic>;
 				interrupts = <0 525 4>;
 				power-domains = <&ps_ane_sys>;
-				status = "okay";
+				status = "disabled";
 			};
 			ane_dart2: iommu@311820000 {
 				compatible = "apple,t8122-dart", "apple,t8110-dart";
@@ -112,7 +115,7 @@
 				interrupt-parent = <&aic>;
 				interrupts = <0 525 4>;
 				power-domains = <&ps_ane_sys>;
-				status = "okay";
+				status = "disabled";
 			};
 			ane_dart3: iommu@311804000 {
 				compatible = "apple,t8122-dart", "apple,t8110-dart";
@@ -121,7 +124,7 @@
 				interrupt-parent = <&aic>;
 				interrupts = <0 525 4>;
 				power-domains = <&ps_ane_sys>;
-				status = "okay";
+				status = "disabled";
 			};
 
 			ane: ane@310000000 {
@@ -131,7 +134,8 @@
 				      <0x2 0xd0700000 0x0 0x18000>;
 				interrupt-parent = <&aic>;
 				interrupts = <0 507 4>, <0 506 4>, <0 509 4>, <0 508 4>, <0 524 4>;
-				iommus = <&ane_dart0 0>, <&ane_dart1 0>, <&ane_dart2 0>;
+				/* No iommus property until the DART nodes are enabled: omarchy-ane-dt refuses a node that
+				 * names a disabled provider. Add <&ane_dart0 0>, <&ane_dart1 0>, <&ane_dart2 0> back with them. */
 				power-domains = <&ps_ane_sys>, <&ps_ane_mpm>,
 						<&ps_ane_cpu>, <&ps_ane_td>,
 						<&ps_ane_base>;

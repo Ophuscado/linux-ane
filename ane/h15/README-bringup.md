@@ -89,7 +89,12 @@ the aurora t8122-pmgr.dtsi and t6030-pmgr.dtsi do not yet carry
 (only `ps_ane_sys` is in the kernel tree today; the b0 receipt
 describes the four missing ps words). The t6031 overlay targets
 the existing ps nodes by path. None of these overlays are
-installed by the package; the first M3 owner:
+installed by the package. They ship the four ANE DART nodes as
+`status = "disabled"` and the `ane` node without an `iommus`
+property. Stage 0 and stage 1 need no DART, and enabled DART nodes
+hung a T6030 at boot through equivalent nodes. `omarchy-ane-probe`
+reports the ANE node as `not-exposed` until the DART work lands.
+That is expected. The first M3 owner:
 
 1. Compile against the aurora tree with the system dtc 1.7.2+:
    `dtc -@ -I dts -O dtb -o ane-h15-t8122.dtbo t8122-ane-experimental.dts`
