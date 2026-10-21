@@ -104,6 +104,10 @@ sim-mutation-pd-nolinkdetach:
 sim-mutation-pd-anyerrignored:
 	$(call pd_mutant,pd-anyerrignored,s/ret == -EACCES/ret < 0 \/* NEG: any error ignored *\//,NEG: any error ignored,neg-pd-rpm-err)
 
+# a failed get_sync takes a usage count that nothing drops
+sim-mutation-pd-noidleleak:
+	$(call pd_mutant,pd-noidleleak,s/pm_runtime_put_noidle(&pdev->dev);/\/* NEG: usage count leaked *\//,NEG: usage count leaked,neg-pd-rpm-err)
+
 # remove() no longer detaches the domains and deletes the links
 sim-mutation-pd-noremovedetach:
 	$(call pd_mutant,pd-noremovedetach,/^static void ane_h15_remove/$(COMMA)/^}/ s/ane_h15_detach_pds(ane);/\/* NEG: remove does not detach *\//,NEG: remove does not detach,pos)
@@ -163,6 +167,6 @@ clean:
 	sim-negative-pd-attach-fail sim-negative-pd-link-fail \
 	sim-negative-pd-rpm-err sim-negative-pd-eacces-alone \
 	sim-mutation-pd-nolinkdetach sim-mutation-pd-anyerrignored \
-	sim-mutation-pd-noremovedetach \
+	sim-mutation-pd-noremovedetach sim-mutation-pd-noidleleak \
 	sim-mutation-nofillrefusal clean
 endif

@@ -69,6 +69,7 @@ int sim_pm_get;
 int sim_pm_put;
 int sim_pm_get_fail;
 int sim_pm_get_err;
+int sim_pm_noidle;
 struct device sim_pd_dev[SIM_MAX_PD];
 struct device_link sim_pd_link[SIM_MAX_PD];
 int sim_pd_state[SIM_MAX_PD];
@@ -199,6 +200,7 @@ static void reset_all(void)
 	sim_pm_put = 0;
 	sim_pm_get_fail = 0;
 	sim_pm_get_err = 0;
+	sim_pm_noidle = 0;
 	memset(sim_pd_state, 0, sizeof(sim_pd_state));
 	memset(sim_link_state, 0, sizeof(sim_link_state));
 	sim_pd_attach = sim_pd_detach = sim_link_add = sim_link_del = 0;
@@ -767,6 +769,11 @@ static int pd_refused(const char *tag, int ret, int want_ret)
 	if (sim_pd_attach != sim_pd_detach || sim_link_add != sim_link_del) {
 		printf("    %s: attach/detach %d/%d, link add/del %d/%d\n", tag,
 		       sim_pd_attach, sim_pd_detach, sim_link_add, sim_link_del);
+		bad = 1;
+	}
+	if (sim_pm_get_err != sim_pm_noidle) {
+		printf("    %s: failed get_sync usage count not dropped (get_err=%d noidle=%d)\n", tag,
+		       sim_pm_get_err, sim_pm_noidle);
 		bad = 1;
 	}
 	if (sim_n_iomap != sim_n_iounmap) {

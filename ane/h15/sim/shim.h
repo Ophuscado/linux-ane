@@ -292,6 +292,7 @@ extern int sim_pm_put;
  */
 extern int sim_pm_get_fail;
 extern int sim_pm_get_err;
+extern int sim_pm_noidle;	/* put_noidle calls: they drop a failed get_sync's count */
 static inline void pm_runtime_enable(struct device *d) { (void)d; }
 static inline void pm_runtime_disable(struct device *d) { (void)d; }
 static inline int pm_runtime_get_sync(struct device *d)
@@ -307,6 +308,11 @@ static inline int pm_runtime_put_sync(struct device *d)
 {
 	(void)d;
 	return ++sim_pm_put;
+}
+static inline void pm_runtime_put_noidle(struct device *d)
+{
+	(void)d;
+	sim_pm_noidle++;
 }
 
 /* ---- ERR_PTR helpers (the real linux/err.h is an empty sim stub) ---- */

@@ -467,6 +467,8 @@ static int ane_h15_probe(struct platform_device *pdev)
 				 ane->pd_count, ret);
 		} else {
 			dev_err(&pdev->dev, "power-domains bring-up failed: %d\n", ret);
+			/* a failed get_sync still took a usage count */
+			pm_runtime_put_noidle(&pdev->dev);
 			pm_runtime_disable(&pdev->dev);
 			ane_h15_detach_pds(ane);
 			ane_h15_unmap_windows(ane);
