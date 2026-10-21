@@ -115,6 +115,7 @@ struct ane_h15 {
 	 * for runtime PM, as the in-tree ane driver does. */
 #define ANE_H15_MAX_PD 8
 	struct device *pd_dev[ANE_H15_MAX_PD];
+	struct device_link *pd_link[ANE_H15_MAX_PD];
 	int pd_count;
 };
 
@@ -144,13 +145,16 @@ static int ane_h15_attach_pds(struct ane_h15 *ane)
 			dev_err(dev, "attach power-domain %d: %d\n", i, err);
 			return err;
 		}
-		if (!device_link_add(dev, ane->pd_dev[i],
-				     DL_FLAG_STATELESS | DL_FLAG_PM_RUNTIME |
-				     DL_FLAG_RPM_ACTIVE)) {
+		/* Count it before adding the link: if device_link_add fails,
+		 * ane_h15_detach_pds must still detach this attached domain. */
+		ane->pd_count = i + 1;
+		ane->pd_link[i] = device_link_add(dev, ane->pd_dev[i],
+						  DL_FLAG_STATELESS | DL_FLAG_PM_RUNTIME |
+						  DL_FLAG_RPM_ACTIVE);
+		if (!ane->pd_link[i]) {
 			dev_err(dev, "link power-domain %d\n", i);
 			return -EINVAL;
 		}
-		ane->pd_count = i + 1;
 	}
 	dev_info(dev, "attached %d ANE power-domains\n", ane->pd_count);
 	return 0;
@@ -160,9 +164,16 @@ static void ane_h15_detach_pds(struct ane_h15 *ane)
 {
 	int i;
 
-	for (i = ane->pd_count - 1; i >= 0; i--)
-		if (ane->pd_dev[i])
+	for (i = ane->pd_count - 1; i >= 0; i--) {
+		if (ane->pd_link[i]) {
+			device_link_del(ane->pd_link[i]);
+			ane->pd_link[i] = NULL;
+		}
+		if (ane->pd_dev[i]) {
 			dev_pm_domain_detach(ane->pd_dev[i], true);
+			ane->pd_dev[i] = NULL;
+		}
+	}
 	ane->pd_count = 0;
 }
 
