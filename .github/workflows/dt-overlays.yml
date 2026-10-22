@@ -69,6 +69,8 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+      - name: DTB source selection (offline, no compilation)
+        run: python3 tools/test_asahi_dtbs.py
       # fdtget and fdtput; dtc and fdtoverlay come from the kernel tree. dkms
       # for tools/test_dkms_exclusive.py.
       - run: sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends device-tree-compiler flex bison libdrm-dev dkms
