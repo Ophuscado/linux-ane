@@ -210,6 +210,21 @@ p = run(machine(), '--smoke', mode='flip:1', tool='omarchy-ane-check')
 assert p.returncode == 1 and '  FAIL  smoke: add-fixture on t6021: 19/20 calls bit-exact' in p.stdout, p.stdout
 p = run(machine(), tool='omarchy-ane-check')
 assert p.returncode == 0 and 'smoke:' not in p.stdout, p.stdout
+
+# 8. A runner found only on PATH (not beside the script, not in the repo): which() returns a
+# str, and tool() must accept it instead of raising AttributeError.
+_bin = Path(tempfile.mkdtemp())
+_runner = _bin / 'omarchy-ane-only-on-path'
+_runner.write_text('#!/bin/sh\nexit 0\n')
+_runner.chmod(0o755)
+_old_path = os.environ['PATH']
+os.environ['PATH'] = f'{_bin}:{_old_path}'
+try:
+    assert smoke.tool('omarchy-ane-only-on-path') == _runner
+    assert smoke.tool('omarchy-ane-not-anywhere') is None
+finally:
+    os.environ['PATH'] = _old_path
+    shutil.rmtree(_bin)
 print('test_ane_smoke: ok')
 
 

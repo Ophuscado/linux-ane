@@ -134,7 +134,7 @@ def tool(name, repo=None):
     import os
     from shutil import which
     for path in (HERE / name, which(name), repo and HERE.parent / repo):
-        if path and path.is_file() and os.access(path, os.X_OK):
+        if path and Path(path).is_file() and os.access(path, os.X_OK):
             return Path(path)
     return None
 
