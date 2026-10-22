@@ -157,6 +157,37 @@ assert out['name'] == 'add-fixture' and out['chip'] == 't6021' and out['golden_s
 assert out['min_ms'] == 1.01 and out['median_ms'] == 1.105 and 'reason' not in out, out
 assert err == 'omarchy-ane-smoke: add-fixture on t6021: 20/20 calls bit-exact, min 1.010 ms, median 1.105 ms\n', err
 
+# Die reporting reads the big-endian 64-bit engine address, not the size cells.
+# Cover both module families; create die 1 first so creation order cannot win.
+for chip, board, base in (('t6002', 'j375d', 0x38E000000),
+                          ('t6022', 'j475d', 0x284000000)):
+    root = machine(chip, board)
+    try:
+        module = smoke.MODULE[chip]
+        drivers = root / 'sys/bus/platform/drivers' / module
+        reg = (drivers / 'ane.1').resolve() / 'of_node/reg'
+        reg.parent.mkdir(parents=True)
+        reg.write_bytes(struct.pack('>QQ', base + smoke.DIE_STRIDE, 0x1000000))
+        assert smoke.die(root, module) == 1, chip
+        rc, out, err = smoke_run(root)
+        assert rc == 0 and out['die'] == 1, (chip, rc, out, err)
+
+        # A driver module link is not a bound device. The first device in
+        # sorted order wins even when another bound device was created first.
+        (drivers / 'module').symlink_to((drivers / 'ane.1').resolve())
+        reg0 = root / 'sys/devices/platform/ane.0/of_node/reg'
+        reg0.parent.mkdir(parents=True)
+        reg0.write_bytes(struct.pack('>QQ', base, smoke.DIE_STRIDE))
+        (drivers / 'ane.0').symlink_to(reg0.parent.parent)
+        assert smoke.die(root, module) == 0, chip
+        reg0.unlink()
+        assert smoke.die(root, module) == 0, 'missing reg defaults to die 0'
+        (drivers / 'ane.0').unlink()
+        (drivers / 'ane.1').unlink()
+        assert smoke.die(root, module) == 0, 'module link alone is not a device'
+    finally:
+        shutil.rmtree(root)
+
 # 3. One call off by one bit in one lane: exit 1, that call alone counts.
 rc, out, err = smoke_run(machine(), mode='flip:7')
 assert rc == 1 and out['errors'] == 1 and len(out['sha256']) == 20, (rc, out)
