@@ -16,78 +16,41 @@ on:
   push:
     branches: [main]
     paths:
+      - Makefile
+      - fixtures/**
       - libane/**
-      - tools/Makefile
-      - tools/test_libane_ioctl.c
+      - tools/**
       - packaging/**
       - data/ane-soc/**
       - tests/fixtures/ane-soc/**
-      - tools/validate_ane_soc.py
-      - tools/test_validate_ane_soc.py
-      - tools/gen_coverage_table.py
       - README.md
-      - ane/src/ane_drv.c
+      - ane/src/**
+      - ane/include/**
+      - ane/ane_stats_show.c
       - ane/t6021/**
-      - tools/h14_boot_regression.c
-      - tools/asahi-dtbs
-      - tools/test_ane_dt.py
-      - tools/test_ane_firmware_fetch.py
-      - tools/test_ane_m2.py
-      - tools/test_ane_overlays.py
-      - tools/test_t8112_kit.py
-      - tools/t8112-kit/**
-      - tools/promotion_check.py
-      - tools/promote_chip.py
-      - tools/test_promotion_check.py
-      - tools/test_promote_chip.py
-      - tools/promote_from_verdict.py
-      - tools/test_promote_from_verdict.py
-      - tools/aurora_dt.py
-      - tools/test_aurora_dt.py
-      - tools/test_ane_intree.py
-      - tools/test_ane_smoke.py
-      - tools/omarchy-ane-probe
-      - tools/test_ane_probe.py
       - dkms.conf
-      - tools/test_dkms_exclusive.py
       - .github/workflows/dt-overlays.yml
   pull_request:
     paths:
+      - Makefile
+      - fixtures/**
       - libane/**
-      - tools/Makefile
-      - tools/test_libane_ioctl.c
+      - tools/**
       - packaging/**
       - data/ane-soc/**
       - tests/fixtures/ane-soc/**
-      - tools/validate_ane_soc.py
-      - tools/test_validate_ane_soc.py
-      - tools/gen_coverage_table.py
       - README.md
-      - ane/src/ane_drv.c
+      - ane/src/**
+      - ane/include/**
+      - ane/ane_stats_show.c
       - ane/t6021/**
-      - tools/h14_boot_regression.c
-      - tools/asahi-dtbs
-      - tools/test_ane_dt.py
-      - tools/test_ane_firmware_fetch.py
-      - tools/test_ane_m2.py
-      - tools/test_ane_overlays.py
-      - tools/test_t8112_kit.py
-      - tools/t8112-kit/**
-      - tools/promotion_check.py
-      - tools/promote_chip.py
-      - tools/test_promotion_check.py
-      - tools/test_promote_chip.py
-      - tools/promote_from_verdict.py
-      - tools/test_promote_from_verdict.py
-      - tools/aurora_dt.py
-      - tools/test_aurora_dt.py
-      - tools/test_ane_intree.py
-      - tools/test_ane_smoke.py
-      - tools/omarchy-ane-probe
-      - tools/test_ane_probe.py
       - dkms.conf
-      - tools/test_dkms_exclusive.py
       - .github/workflows/dt-overlays.yml
+
+# Explicit bash enables pipefail, so a failed regression cannot pass via tail.
+defaults:
+  run:
+    shell: bash
 
 jobs:
   ane-soc-data:

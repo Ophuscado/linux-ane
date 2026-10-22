@@ -156,8 +156,8 @@ endif
 
 # aarch64 cross-check for the SHA-2 crypto block in ane_sha256.c:
 # compile -Werror for aarch64 and run the digest suite under
-# qemu-aarch64-static (-cpu max enables the extension). Runs in `make
-# check` only when both tools exist; silent skip otherwise.
+# qemu-aarch64-static (-cpu max enables the extension). Invoke explicitly with
+# `make -C tools cross-check`; prints SKIP when either tool is missing.
 CROSS_CC := $(shell command -v aarch64-linux-gnu-gcc 2>/dev/null)
 CROSS_QEMU := $(shell command -v qemu-aarch64-static 2>/dev/null)
 
