@@ -57,6 +57,14 @@ correctly: a slot that never acknowledges, a slot that acknowledges another stat
 one check each from a copy of the module and must fail the harness. A sim is not silicon: it proves control flow and
 gating, not any M6 behavior.
 
+## Stage script
+
+`m6-ane-stage.sh <1|2|3> <boot-id prefix> [GO]` runs one stage as root and collects the log in a new directory under
+`/var/tmp/m6-ane`. It refuses on a kernel release other than 7.1.12-aurora-m6usb-ARCH, a boot id that does not match,
+a missing ANE node, a module whose sha256 is not the pinned one, and a module that is already loaded. It enforces the
+order per boot: step 2 needs a step 1 PASS, step 3 needs a step 2 PASS and the literal argument `GO`, and step 3 runs once
+per boot. `test-stage-script.sh` checks all of this off device with fake `insmod`, `dmesg` and `lsmod`.
+
 ## Device tree
 
 `t8152-j873-ane.dtsi` adds the `ane@419600000` node under `/soc` of `t8152-j873.dts`. Every window is a live ADT value
