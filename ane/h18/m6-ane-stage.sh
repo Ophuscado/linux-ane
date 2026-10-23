@@ -8,9 +8,19 @@
 # and names 1 as the first experiment. 0 is the value proven for the ATC USB slot 71 and GPU slot 3, 2 is the GPU ASC value.
 # Step 3 needs the literal third argument GO (the word of Main) and a step 2 PASS on this boot.
 # Order is enforced per boot: step 2 needs a step 1 PASS marker, step 3 a step 2 PASS marker, in the work directory.
-# Refuses on: wrong kernel release, boot id not matching, missing ANE node, a module whose sha256 is not the pinned one,
-# a module already loaded, a reused run directory. Writes only under $WORK. A hang costs one reboot.
+# Refuses on: wrong kernel release, boot id not matching (at least 8 hex characters), missing ANE node, a module whose sha256
+# is not the pinned one, a module already loaded, a reused run directory, and any of the variables below set in the
+# environment (they are for test-stage-script.sh, which sets M6_ANE_TEST=1). Writes only under $WORK.
+# The verdict is read only from RESULT lines that this run added to the kernel log, for the stage of this step.
+# A step 3 PASS whose log has a "did not return to state 6" line exits 3: read it before the next step.
+# A hang costs one reboot.
 set -u
+
+if [ "${M6_ANE_TEST:-}" != 1 ]; then
+  for v in WORK KO KO_SHA256 WANT_UNAME UNAME_R BOOT_ID_FILE DT_NODE INSMOD RMMOD DMESG LSMOD; do
+    if [ -n "${!v+x}" ]; then echo "m6-ane-stage: REFUSED: $v is set in the environment" >&2; exit 2; fi
+  done
+fi
 
 WORK=${WORK:-/var/tmp/m6-ane}
 KO=${KO:-$WORK/ane_h18.ko}
@@ -32,7 +42,7 @@ die() { echo "m6-ane-stage: REFUSED: $*" >&2; exit 2; }
 
 case "$step" in 1|2|3) ;; *) die "usage: $0 <1|2|3> <boot-id prefix> [GO [state]]" ;; esac
 case "$state" in 0|1|2|3|4|5) ;; *) die "state must be 0 to 5" ;; esac
-[ -n "$bid" ] || die "boot id prefix required"
+[ "${#bid}" -ge 8 ] || die "boot id prefix of at least 8 hex characters required"
 [ "$UNAME_R" = "$WANT_UNAME" ] || die "kernel release $UNAME_R, want $WANT_UNAME"
 boot=$(tr -d '-' < "$BOOT_ID_FILE" | cut -c1-8)
 case "$(tr -d '-' < "$BOOT_ID_FILE")" in "$bid"*) ;; *) die "boot id $boot does not start with $bid" ;; esac
@@ -62,7 +72,9 @@ case "$step" in
   2) args="optin=t8152 stage=psd" ;;
   3) args="optin=t8152 stage=power confirm_power=1 psd_state=$state psd_slots=1"; : > "$WORK/step3-run-$boot" ;;
 esac
-echo "insmod $KO $args" | tee -a "$run/header.txt"
+case "$step" in 1) want_stage=dt ;; 2) want_stage=psd ;; 3) want_stage=power ;; esac
+n0=$($DMESG 2>&1 | grep -c 'ane_h18 RESULT')
+echo "insmod $KO $args (RESULT lines already in the kernel log: $n0)" | tee -a "$run/header.txt"
 timeout 60 $INSMOD "$KO" $args > "$run/insmod.out" 2>&1
 rc=$?
 echo "insmod rc=$rc" | tee -a "$run/header.txt"
@@ -71,9 +83,14 @@ cat "$run/dmesg-ane_h18.txt"
 timeout 60 $RMMOD ane_h18 > "$run/rmmod.out" 2>&1
 echo "rmmod rc=$?" | tee -a "$run/header.txt"
 $DMESG 2>&1 | grep ane_h18 > "$run/dmesg-ane_h18-after-rmmod.txt"
-verdict=$(grep -o 'RESULT stage=[a-z]* soc=t8152 verdict=[A-Z]* reason=[^ ]*' "$run/dmesg-ane_h18.txt" | tail -1)
-echo "verdict: ${verdict:-none}" | tee -a "$run/header.txt"
+grep 'ane_h18 RESULT' "$run/dmesg-ane_h18.txt" | tail -n +$((n0 + 1)) > "$run/new-result-lines.txt"
+verdict=$(grep -o "RESULT stage=$want_stage soc=t8152 verdict=[A-Z]* reason=[^ ]*" "$run/new-result-lines.txt" | tail -1)
+echo "verdict: ${verdict:-none} (new RESULT lines: $(wc -l < "$run/new-result-lines.txt"), wanted stage $want_stage)" | tee -a "$run/header.txt"
 if echo "$verdict" | grep -q 'verdict=PASS'; then
+  if [ "$step" = 3 ] && grep -q 'did not return to state 6' "$run/dmesg-ane_h18.txt"; then
+    echo "m6-ane-stage: step 3 PASS but a PSD slot did not return to state 6, log in $run" >&2
+    exit 3
+  fi
   [ "$step" = 3 ] || : > "$WORK/step$step-pass-$boot"
   echo "m6-ane-stage: step $step PASS, log in $run"
   exit 0

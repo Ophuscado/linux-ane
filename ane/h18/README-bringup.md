@@ -65,7 +65,9 @@ gating, not any M6 behavior.
 `/var/tmp/m6-ane`. It refuses on a kernel release other than 7.1.12-aurora-m6usb-ARCH, a boot id that does not match,
 a missing ANE node, a module whose sha256 is not the pinned one, and a module that is already loaded. It enforces the
 order per boot: step 2 needs a step 1 PASS, step 3 needs a step 2 PASS and the literal argument `GO`, and step 3 runs once
-per boot. `test-stage-script.sh` checks all of this off device with fake `insmod`, `dmesg` and `lsmod`.
+per boot. The boot id prefix has at least 8 characters. The script refuses when any of its override variables is set in
+the environment. It reads the verdict only from RESULT lines that the run added to the kernel log, for its own stage. A
+step 3 PASS with a `did not return to state 6` line exits 3. `test-stage-script.sh` checks all of this off device with fake `insmod`, `dmesg` and `lsmod`.
 
 ## Device tree
 
