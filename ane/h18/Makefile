@@ -1,0 +1,90 @@
+# SPDX-License-Identifier: GPL-2.0-only OR MIT
+# OPT-IN EXPERIMENTAL module for the H18 ANE0 of the T8152 (Mac mini M6). Not part of "make all", not autoloaded.
+# Build against the M6 kernel tree on a build host (not the lab CT), by hand:
+#   make KERNELDIR=<kernel tree or its out dir> ARCH=arm64 LLVM=1 modules
+# The userspace sim needs only a C compiler:
+#   make sim-test                    positive controls
+#   make sim-negative-psd-never      sim-negative-psd-wrong   sim-negative-dt   sim-negative-args
+#   make sim-mutation-noconfirm      sim-mutation-nowindow    sim-mutation-noundo   sim-mutation-noack   sim-mutation-nogate
+#   make sim-all                     everything above
+ifneq ($(KERNELRELEASE),)
+	obj-m := ane_h18.o
+	ane_h18-objs := ane_h18_main.o ane_h18_soc.o
+	ccflags-y += -I$(src)
+else
+	KERNELDIR ?= /lib/modules/$(shell uname -r)/build
+	PWD := $(shell pwd)
+
+SIM_CC ?= cc
+SIM_CFLAGS ?= -g -O0 -Wall -Wextra -std=gnu11
+
+default: modules
+
+modules:
+	$(MAKE) -C $(KERNELDIR) M=$(PWD) modules
+
+sim/sim_h18: sim/sim_harness.c sim/shim.h ane_h18_main.c ane_h18_soc.c ane_h18.h
+	$(SIM_CC) $(SIM_CFLAGS) -I sim -I sim/inc -o $@ sim/sim_harness.c
+
+sim-test: sim/sim_h18
+	./sim/sim_h18 pos
+
+sim-negative-psd-never: sim/sim_h18
+	./sim/sim_h18 neg-psd-never
+
+sim-negative-psd-wrong: sim/sim_h18
+	./sim/sim_h18 neg-psd-wrong
+
+sim-negative-dt: sim/sim_h18
+	./sim/sim_h18 neg-dt
+
+sim-negative-args: sim/sim_h18
+	./sim/sim_h18 neg-args
+
+# Mutation controls: build a copy of the real module with one sed edit and REQUIRE the named harness mode to fail it.
+# $(call mutant,<name>,<sed script>,<marker>,<harness mode>)
+COMMA := ,
+define mutant
+	rm -rf /tmp/ane_h18-$(1) && mkdir -p /tmp/ane_h18-$(1)
+	cp -r sim /tmp/ane_h18-$(1)/sim
+	cp ane_h18_main.c ane_h18_soc.c ane_h18.h /tmp/ane_h18-$(1)/
+	sed '$(2)' ane_h18_main.c > /tmp/ane_h18-$(1)/ane_h18_main.c
+	grep -q '$(3)' /tmp/ane_h18-$(1)/ane_h18_main.c
+	$(SIM_CC) $(SIM_CFLAGS) -I /tmp/ane_h18-$(1)/sim -I /tmp/ane_h18-$(1)/sim/inc -o /tmp/ane_h18-$(1)/sim_h18 /tmp/ane_h18-$(1)/sim/sim_harness.c
+	@/tmp/ane_h18-$(1)/sim_h18 $(4) > /tmp/ane_h18-$(1)/run.log 2>&1; \
+	s=$$?; \
+	echo "--- $(1) mutant harness tail ---"; tail -3 /tmp/ane_h18-$(1)/run.log; \
+	if [ $$s -eq 0 ]; then echo "SIM-MUT-$(1) BAD: mutant PASSED the harness (the harness does not discriminate)"; exit 1; \
+	else echo "SIM-MUT-$(1) OK: mutant FAILS the harness"; fi
+endef
+
+# stage=power runs without confirm_power=1
+sim-mutation-noconfirm:
+	$(call mutant,noconfirm,s/if (!confirm_power) {/if (0 \/* NEG: confirm_power ignored *\/) {/,NEG: confirm_power ignored,pos)
+
+# the window check against the SoC row is skipped
+sim-mutation-nowindow:
+	$(call mutant,nowindow,s/if (res.start != pa || resource_size(\&res) != size) {/if (0 \/* NEG: window check skipped *\/) {/,NEG: window check skipped,neg-dt)
+
+# a failed request does not put the acknowledged slots back to state 6
+sim-mutation-noundo:
+	$(call mutant,noundo,/^static int ane_h18_stage_power/$(COMMA)/^}/ s/ane_h18_psd_off(ane);/\/* NEG: no undo *\//,NEG: no undo,neg-psd-never)
+
+# the acknowledged state is not compared with the requested one
+sim-mutation-noack:
+	$(call mutant,noack,s/if ((status \& ANE_H18_PSD_STATE_MASK) == state) {/if (1 \/* NEG: state not compared *\/) {/,NEG: state not compared,neg-psd-wrong)
+
+# the request returns right after the write, without waiting for the acknowledge
+sim-mutation-nogate:
+	$(call mutant,nogate,s/writel(state$(COMMA) ane->psd\[i\] + ANE_H18_PSD_REQUEST);/writel(state$(COMMA) ane->psd[i] + ANE_H18_PSD_REQUEST); return 0; \/* NEG: no wait *\//,NEG: no wait,neg-psd-never)
+
+sim-all: sim-test sim-negative-psd-never sim-negative-psd-wrong sim-negative-dt sim-negative-args \
+	sim-mutation-noconfirm sim-mutation-nowindow sim-mutation-noundo sim-mutation-noack sim-mutation-nogate
+
+clean:
+	$(MAKE) -C $(KERNELDIR) M=$(PWD) clean
+	rm -f sim/sim_h18
+
+.PHONY: default modules sim-test sim-negative-psd-never sim-negative-psd-wrong sim-negative-dt sim-negative-args \
+	sim-mutation-noconfirm sim-mutation-nowindow sim-mutation-noundo sim-mutation-noack sim-mutation-nogate sim-all clean
+endif

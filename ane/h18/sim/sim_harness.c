@@ -1,0 +1,454 @@
+// SPDX-License-Identifier: GPL-2.0-only OR MIT
+/*
+ * sim/sim_harness.c: drives the real ane_h18 probe through every stage against sim/shim.h.
+ *   sim_h18 pos                positive controls (exit 0 iff all pass)
+ *   sim_h18 neg-psd-never      a slot that never acknowledges: FAIL, undo, no ASC read
+ *   sim_h18 neg-psd-wrong      a slot that acknowledges the wrong state: FAIL, no ASC read
+ *   sim_h18 neg-dt             tampered windows or properties: refused before any bus access
+ *   sim_h18 neg-args           wrong optin, unknown stage, bad psd_state or psd_slots: no bus access
+ * A negative control exits 0 only when the module fails the induced fault correctly.
+ */
+#include "shim.h"
+
+char sim_log[SIM_LOG_SZ];
+size_t sim_log_len;
+struct sim_event sim_events[SIM_MAX_EVENTS];
+int sim_n_events, sim_faults, sim_n_iomap, sim_n_iounmap;
+int sim_psd_mode[SIM_NPSD];
+u32 sim_psd_slot[SIM_NPSD] = { 30, 31 };
+u32 sim_psd_state[SIM_NPSD];
+u32 sim_psd_valid[SIM_NPSD];
+u32 sim_psd_initial_valid[SIM_NPSD];
+u64 sim_asc_pa = 0x419600000ULL, sim_rvbar_pa = 0x419050000ULL, sim_mbox_pa = 0x316000000ULL;
+u32 sim_asc_size = 0x74000, sim_rvbar_size = 0x4000, sim_mbox_size = 0x1c000;
+unsigned long sim_jiffies;
+
+#include "../ane_h18_soc.c"
+#include "../ane_h18_main.c"
+
+static int fails;
+static struct platform_device pdev;
+static struct device_node node;
+
+static void chk(int ok, const char *name)
+{
+	printf("  %-74s %s\n", name, ok ? "PASS" : "FAIL");
+	if (!ok)
+		fails++;
+}
+
+static int log_count(const char *needle)
+{
+	const char *p = sim_log;
+	int n = 0;
+
+	while ((p = strstr(p, needle))) {
+		n++;
+		p++;
+	}
+	return n;
+}
+
+static int log_pos(const char *needle)
+{
+	const char *p = strstr(sim_log, needle);
+
+	return p ? (int)(p - sim_log) : -1;
+}
+
+static bool result(const char *stg, const char *verdict, const char *reason)
+{
+	char want[160];
+
+	snprintf(want, sizeof(want), "ane_h18 RESULT stage=%s soc=t8152 verdict=%s reason=%s", stg, verdict, reason);
+	return strstr(sim_log, want) != NULL;
+}
+
+static int writes(void)
+{
+	int i, n = 0;
+
+	for (i = 0; i < sim_n_events; i++)
+		n += sim_events[i].write;
+	return n;
+}
+
+static int events_in(u64 base, u32 size, int write)
+{
+	int i, n = 0;
+
+	for (i = 0; i < sim_n_events; i++)
+		if (sim_events[i].write == write && sim_events[i].pa >= base && sim_events[i].pa < base + size)
+			n++;
+	return n;
+}
+
+static u64 psd_pa(int i) { return SIM_PSD_BASE + ((u64)sim_psd_slot[i] << 8); }
+
+static void reset_all(void)
+{
+	int i;
+
+	sim_n_events = sim_faults = sim_n_iomap = sim_n_iounmap = 0;
+	sim_jiffies = 0;
+	sim_log_reset();
+	for (i = 0; i < SIM_NPSD; i++) {
+		sim_psd_mode[i] = SIM_PSD_ACK;
+		sim_psd_state[i] = 6;
+		sim_psd_valid[i] = sim_psd_initial_valid[i] = 0;
+	}
+	optin = "t8152";
+	stage = "dt";
+	confirm_power = false;
+	psd_state = 0;
+	psd_slots = 1;
+	keep_on = false;
+	read_mbox = false;
+	psd_timeout_ms = 1000;
+	memset(&pdev, 0, sizeof(pdev));
+	memset(&node, 0, sizeof(node));
+	node.n_reg = 5;
+	node.reg_pa[0] = 0x419600000ULL; node.reg_size[0] = 0x74000; node.reg_name[0] = "asc";
+	node.reg_pa[1] = 0x419050000ULL; node.reg_size[1] = 0x4000; node.reg_name[1] = "rvbar";
+	node.reg_pa[2] = 0x316000000ULL; node.reg_size[2] = 0x1c000; node.reg_name[2] = "mbox";
+	node.reg_pa[3] = psd_pa(0); node.reg_size[3] = 0x100; node.reg_name[3] = "psd0";
+	node.reg_pa[4] = psd_pa(1); node.reg_size[4] = 0x100; node.reg_name[4] = "psd1";
+	node.has_type = node.has_num = true;
+	node.ane_type = 784;
+	node.mbox_num = 12;
+	pdev.dev.of_node = &node;
+}
+
+static int probe_now(void) { return ane_h18_probe(&pdev); }
+
+static void pos_dt(void)
+{
+	int ret;
+
+	reset_all();
+	stage = "dt";
+	ret = probe_now();
+	chk(ret == 0, "P1 dt: probe returns 0");
+	chk(result("dt", "PASS", "dt-windows-match"), "P1 dt: RESULT PASS dt-windows-match");
+	chk(sim_n_events == 0 && sim_faults == 0, "P1 dt: zero bus accesses");
+	chk(sim_n_iomap == 0, "P1 dt: nothing mapped");
+}
+
+static void pos_psd(void)
+{
+	int ret;
+
+	reset_all();
+	stage = "psd";
+	ret = probe_now();
+	chk(ret == 0, "P2 psd (idle slots): probe returns 0");
+	chk(result("psd", "PASS", "psd-read-only"), "P2 psd: RESULT PASS psd-read-only");
+	chk(writes() == 0, "P2 psd: zero bus writes");
+	chk(sim_faults == 0, "P2 psd: zero faults");
+	chk(events_in(psd_pa(0), 0x100, 0) == 1 && events_in(psd_pa(1), 0x100, 0) == 1,
+	    "P2 psd: one read per slot (VALID only, it is not valid)");
+	chk(events_in(sim_asc_pa, sim_asc_size, 0) + events_in(sim_rvbar_pa, sim_rvbar_size, 0) + events_in(sim_mbox_pa, sim_mbox_size, 0) == 0,
+	    "P2 psd: no ASC, IORVBAR or mailbox read");
+	chk(log_count("not-valid") == 2, "P2 psd: both slots reported not-valid");
+	ane_h18_remove(&pdev);
+	chk(sim_n_iomap == 2 && sim_n_iounmap == 2, "P2 psd: two windows mapped and released on remove");
+
+	reset_all();
+	stage = "psd";
+	sim_psd_valid[0] = sim_psd_state[0] ? 1 : 1;
+	sim_psd_state[0] = 0;
+	ret = probe_now();
+	chk(ret == 0 && events_in(psd_pa(0), 0x100, 0) == 2 && log_count("state=P0-run") == 1,
+	    "P2b psd: a valid slot also reads STATUS and reports P0-run");
+	chk(writes() == 0, "P2b psd: still zero writes");
+}
+
+static void pos_refuse(void)
+{
+	int ret;
+
+	reset_all();
+	stage = "power";
+	ret = probe_now();
+	chk(ret == -EPERM && result("power", "REFUSED", "confirm_power=1 required"), "P3 power without confirm_power: REFUSED, -EPERM");
+	chk(writes() == 0 && events_in(sim_asc_pa, sim_asc_size, 0) == 0, "P3 power without confirm_power: no write and no ASC read");
+	chk(sim_n_iomap == sim_n_iounmap, "P3 power without confirm_power: windows released");
+}
+
+/* the sequence of writes as "pa:val" tokens */
+static void write_seq(char *out, size_t n)
+{
+	int i;
+
+	out[0] = 0;
+	for (i = 0; i < sim_n_events; i++)
+		if (sim_events[i].write)
+			snprintf(out + strlen(out), n - strlen(out), "%llx=%u ", (unsigned long long)sim_events[i].pa, sim_events[i].val);
+}
+
+static int first_asc_read(void)
+{
+	int i;
+
+	for (i = 0; i < sim_n_events; i++)
+		if (!sim_events[i].write && (sim_in(sim_events[i].pa, sim_asc_pa, sim_asc_size) || sim_in(sim_events[i].pa, sim_rvbar_pa, sim_rvbar_size) ||
+					     sim_in(sim_events[i].pa, sim_mbox_pa, sim_mbox_size)))
+			return i;
+	return -1;
+}
+
+static int last_write(void)
+{
+	int i, l = -1;
+
+	for (i = 0; i < sim_n_events; i++)
+		if (sim_events[i].write)
+			l = i;
+	return l;
+}
+
+static int first_write(void)
+{
+	int i;
+
+	for (i = 0; i < sim_n_events; i++)
+		if (sim_events[i].write)
+			return i;
+	return -1;
+}
+
+static void pos_power(void)
+{
+	char seq[256], want[256];
+	int ret, i;
+
+	/* one slot, default state 0 */
+	reset_all();
+	stage = "power";
+	confirm_power = true;
+	ret = probe_now();
+	chk(ret == 0 && result("power", "PASS", "psd-acked+asc-read"), "P4 power slot 30 only: PASS");
+	write_seq(seq, sizeof(seq));
+	snprintf(want, sizeof(want), "%llx=0 %llx=6 ", (unsigned long long)psd_pa(0) + 0x90, (unsigned long long)psd_pa(0) + 0x90);
+	chk(!strcmp(seq, want), "P4 power: writes are exactly REQUEST=0 on slot 30, then REQUEST=6 on slot 30");
+	chk(events_in(psd_pa(1), 0x100, 1) == 0 && events_in(psd_pa(1), 0x100, 0) == 0, "P4 power: slot 31 never touched");
+	chk(sim_faults == 0, "P4 power: zero faults (no ASC read before the acknowledge)");
+	chk(first_asc_read() > first_write() && first_asc_read() < last_write(), "P4 power: ASC reads sit after the first write and before the rail-gate write");
+	chk(events_in(sim_asc_pa, sim_asc_size, 0) == 2 && events_in(sim_rvbar_pa, sim_rvbar_size, 0) == 2, "P4 power: two ASC reads, two IORVBAR reads");
+	chk(events_in(sim_mbox_pa, sim_mbox_size, 0) == 0, "P4 power: no mailbox read without read_mbox");
+	chk(events_in(sim_asc_pa + 0x44, 4, 0) == 0 && events_in(sim_asc_pa, sim_asc_size, 1) == 0, "P4 power: CPU_CONTROL never read, ASC window never written");
+	chk(log_count("CRIT: ane_h18 write") == writes(), "P4 power: every write was logged before it");
+	chk(log_count("CRIT: ane_h18 read CPU_STATUS") == 1 && log_count("CRIT: ane_h18 read ASC_STATUS") == 1 &&
+	    log_count("CRIT: ane_h18 read IORVBAR_LO") == 1 && log_count("CRIT: ane_h18 read IORVBAR_HI") == 1,
+	    "P4 power: every read was logged");
+	chk(log_pos("CRIT: ane_h18 write psd0 slot=30 REQUEST=0") < log_pos("state 0 acknowledged"), "P4 power: write logged before the acknowledge line");
+	chk(sim_psd_state[0] == 6, "P4 power: slot 30 ends at state 6");
+	ane_h18_remove(&pdev);
+	chk(sim_n_iomap == sim_n_iounmap, "P4 power: all windows released on remove");
+
+	/* two slots */
+	reset_all();
+	stage = "power";
+	confirm_power = true;
+	psd_slots = 2;
+	ret = probe_now();
+	write_seq(seq, sizeof(seq));
+	snprintf(want, sizeof(want), "%llx=0 %llx=0 %llx=6 %llx=6 ", (unsigned long long)psd_pa(0) + 0x90, (unsigned long long)psd_pa(1) + 0x90,
+		 (unsigned long long)psd_pa(1) + 0x90, (unsigned long long)psd_pa(0) + 0x90);
+	chk(ret == 0 && !strcmp(seq, want), "P5 power two slots: 30 on, 31 on, then 31 off, 30 off");
+
+	/* keep_on */
+	reset_all();
+	stage = "power";
+	confirm_power = true;
+	keep_on = true;
+	ret = probe_now();
+	chk(ret == 0 && writes() == 1 && sim_psd_state[0] == 0, "P6 keep_on: one write, the slot stays at state 0");
+
+	/* read_mbox: the three candidate channels, exact addresses */
+	reset_all();
+	stage = "power";
+	confirm_power = true;
+	read_mbox = true;
+	ret = probe_now();
+	chk(ret == 0 && events_in(sim_mbox_pa, sim_mbox_size, 0) == 3, "P7 read_mbox: three mailbox reads");
+	for (i = 0; i < 3; i++) {
+		static const unsigned int ch[3] = { 12, 24, 25 };
+		bool found = false;
+		int k;
+
+		for (k = 0; k < sim_n_events; k++)
+			if (!sim_events[k].write && sim_events[k].pa == sim_mbox_pa + ch[i] * 0x80 + 0x20)
+				found = true;
+		char nm[64];
+
+		snprintf(nm, sizeof(nm), "P7 read_mbox: channel %u status at 0x%llx", ch[i], (unsigned long long)(sim_mbox_pa + ch[i] * 0x80 + 0x20));
+		chk(found, nm);
+	}
+}
+
+static int neg_psd_failure(int mode, int slots)
+{
+	int ret, bad = 0;
+	char seq[256], want[256];
+
+	reset_all();
+	stage = "power";
+	confirm_power = true;
+	psd_slots = slots;
+	if (slots == 2) {
+		sim_psd_mode[1] = mode;		/* slot 31 fails, slot 30 acks */
+	} else {
+		sim_psd_mode[0] = mode;
+	}
+	ret = probe_now();
+	if (ret != -ETIMEDOUT) {
+		printf("    expected -ETIMEDOUT, got %d\n", ret);
+		bad = 1;
+	}
+	if (!result("power", "FAIL", "psd-not-acknowledged")) {
+		printf("    expected RESULT FAIL psd-not-acknowledged\n");
+		bad = 1;
+	}
+	if (first_asc_read() >= 0) {
+		printf("    an ASC, IORVBAR or mailbox read happened without an acknowledge\n");
+		bad = 1;
+	}
+	if (sim_faults) {
+		printf("    bus faults: %d\n", sim_faults);
+		bad = 1;
+	}
+	write_seq(seq, sizeof(seq));
+	if (slots == 2)
+		snprintf(want, sizeof(want), "%llx=0 %llx=0 %llx=6 ", (unsigned long long)psd_pa(0) + 0x90, (unsigned long long)psd_pa(1) + 0x90,
+			 (unsigned long long)psd_pa(0) + 0x90);
+	else
+		snprintf(want, sizeof(want), "%llx=0 ", (unsigned long long)psd_pa(0) + 0x90);
+	if (strcmp(seq, want)) {
+		printf("    write sequence '%s', want '%s'\n", seq, want);
+		bad = 1;
+	}
+	if (sim_n_iomap != sim_n_iounmap) {
+		printf("    a failed probe leaked a window\n");
+		bad = 1;
+	}
+	if (sim_jiffies < psd_timeout_ms) {
+		printf("    the wait ended before the timeout (%lu ms)\n", sim_jiffies);
+		bad = 1;
+	}
+	return bad;
+}
+
+static int neg_never(void)
+{
+	int bad = neg_psd_failure(SIM_PSD_NEVER, 1) | neg_psd_failure(SIM_PSD_NEVER, 2);
+
+	printf("%s\n", bad ? "  neg-psd-never: harness FAILED the module (BAD)" : "  neg-psd-never: module fails as required");
+	return bad;
+}
+
+static int neg_wrong(void)
+{
+	int bad = neg_psd_failure(SIM_PSD_WRONG_STATE, 1) | neg_psd_failure(SIM_PSD_WRONG_STATE, 2);
+
+	printf("%s\n", bad ? "  neg-psd-wrong: harness FAILED the module (BAD)" : "  neg-psd-wrong: module fails as required");
+	return bad;
+}
+
+static int neg_dt(void)
+{
+	int c, ret, bad = 0;
+
+	for (c = 0; c < 8; c++) {
+		const char *what = "";
+
+		reset_all();
+		stage = "power";
+		confirm_power = true;
+		switch (c) {
+		case 0: node.reg_pa[0] += 0x1000000; what = "asc base moved"; break;
+		case 1: node.reg_size[1] -= 0x1000; what = "rvbar shorter"; break;
+		case 2: node.reg_pa[3] = psd_pa(0) + 0x100; what = "psd0 on the next slot"; break;
+		case 3: node.reg_pa[4] = 0x303a15200ULL; what = "psd1 on a GPU slot"; break;
+		case 4: node.mbox_num = 0; what = "mailbox number 0 (the first overlay's value)"; break;
+		case 5: node.ane_type = 1; what = "wrong ane-type"; break;
+		case 6: node.reg_name[2] = "mailbox"; what = "reg-names mbox missing"; break;
+		case 7: node.has_num = false; what = "no mailbox number"; break;
+		}
+		ret = probe_now();
+		if (ret == 0 || !strstr(sim_log, "verdict=FAIL reason=dt-window-mismatch")) {
+			printf("    %s: probe returned %d without a dt-window-mismatch FAIL\n", what, ret);
+			bad = 1;
+		}
+		if (sim_n_events || sim_n_iomap) {
+			printf("    %s: bus access or mapping before the check (events %d, iomap %d)\n", what, sim_n_events, sim_n_iomap);
+			bad = 1;
+		}
+	}
+	printf("%s\n", bad ? "  neg-dt: harness FAILED the module (BAD)" : "  neg-dt: module refuses as required");
+	return bad;
+}
+
+static int neg_args(void)
+{
+	int bad = 0, ret;
+
+	reset_all();
+	optin = NULL;
+	ret = probe_now();
+	if (ret != -EPERM || sim_n_events || sim_n_iomap) { printf("    unset optin\n"); bad = 1; }
+	reset_all();
+	optin = "t8142";
+	ret = probe_now();
+	if (ret != -EPERM || sim_n_events || sim_n_iomap) { printf("    wrong optin\n"); bad = 1; }
+	reset_all();
+	stage = "boot";
+	ret = probe_now();
+	if (ret != -EINVAL || sim_n_events || sim_n_iomap) { printf("    stage=boot must not exist\n"); bad = 1; }
+	reset_all();
+	stage = "power";
+	confirm_power = true;
+	psd_state = 6;
+	ret = probe_now();
+	if (ret != -EINVAL || writes() || !result("power", "REFUSED", "psd_state must be 0 to 5 and psd_slots 1 or 2")) { printf("    psd_state 6\n"); bad = 1; }
+	reset_all();
+	stage = "power";
+	confirm_power = true;
+	psd_slots = 3;
+	ret = probe_now();
+	if (ret != -EINVAL || writes()) { printf("    psd_slots 3\n"); bad = 1; }
+	reset_all();
+	stage = "power";
+	confirm_power = true;
+	psd_slots = 0;
+	ret = probe_now();
+	if (ret != -EINVAL || writes()) { printf("    psd_slots 0\n"); bad = 1; }
+	printf("%s\n", bad ? "  neg-args: harness FAILED the module (BAD)" : "  neg-args: module refuses as required");
+	return bad;
+}
+
+int main(int argc, char **argv)
+{
+	const char *mode = argc > 1 ? argv[1] : "pos";
+
+	if (!strcmp(mode, "pos")) {
+		printf("sim-h18 positive controls:\n");
+		pos_dt();
+		pos_psd();
+		pos_refuse();
+		pos_power();
+		printf("%s\n", fails ? "SIM-TEST: FAILED" : "SIM-TEST: all positive controls PASS");
+	} else if (!strcmp(mode, "neg-psd-never")) {
+		fails = neg_never();
+	} else if (!strcmp(mode, "neg-psd-wrong")) {
+		fails = neg_wrong();
+	} else if (!strcmp(mode, "neg-dt")) {
+		fails = neg_dt();
+	} else if (!strcmp(mode, "neg-args")) {
+		fails = neg_args();
+	} else {
+		fprintf(stderr, "usage: sim_h18 [pos|neg-psd-never|neg-psd-wrong|neg-dt|neg-args]\n");
+		return 2;
+	}
+	return fails ? 1 : 0;
+}

@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- `ane/h18` is an opt-in bring-up module for the ANE0 of the T8152 (Mac mini M6). It has three stages and no firmware path. `stage=dt` checks the device tree windows against the SoC row and touches no register. `stage=psd` reads the two PSD slot windows (slots 30 and 31, the ADT power gates of the ANE) and writes nothing. `stage=power` needs `confirm_power=1`. It requests a PSD state on slot 30 (and 31 with `psd_slots=2`), waits for each acknowledge the way the kernel PSD driver does, and only then reads CPU_STATUS, ASC_STATUS and IORVBAR. It never touches CPU_CONTROL and writes nothing in the ASC windows. Every address is logged before its access. The live M6 ADT shows that iBoot preloads the firmware (`segment-ranges` of `/arm-io/ane`), so a later change maps it and releases the core. The PSD state the ANE slots need is not known, and state 0 is a guess. The mailbox channel is not verified either, so `read_mbox=1` reads three candidates. The module builds W=1 clean against the M6 kernel tree. The userspace sim has positive and negative controls and five mutants that must fail. Nothing ran on an M6.
+
 ## 0.4.10 (2026-10-23)
 
 - `ane_h15` attaches each of the ANE's five power domains by id and links them with `RPM_ACTIVE` device links, the pattern `ane_t6021` uses (#173). Before, only the driver core's automatic attach ran, which handles one domain, so stage 1 stopped at `pm_runtime_get_sync` with `-EACCES`. The contributor reports stage 0 and stage 1 passing on a 16-inch M3 Pro (T6030). We did not run it on hardware.

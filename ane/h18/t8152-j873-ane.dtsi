@@ -1,0 +1,33 @@
+// SPDX-License-Identifier: GPL-2.0+ OR MIT
+/*
+ * Apple T8152 (M6) J873: the ANE0 node for the ane_h18 bring-up module (stages dt, psd, power).
+ *
+ * Every window is a live ADT value (/arm-io/ane reg, plus 0x200000000 as in t8152-j873.dts):
+ *   asc    ADT 0x219600000 size 0x74000   ASC wrapper
+ *   rvbar  ADT 0x219050000 size 0x4000    IORVBAR
+ *   mbox   ADT 0x116000000 size 0x1c000   Postoffice mailboxes
+ *   psd0/1 PSD slots 30 and 31 (ADT power-gates [30, 31] of /arm-io/ane; gate values under 170 are PSD slot
+ *          numbers) at 0x303a10000 + (slot << 8), the layout of t8152-j873-psd.dtsi.
+ * The node has no power-domains property: attaching a PSD domain would write the slot requests before the
+ * module's stage runs. The module reads and writes the two slot windows itself, only as its stage allows.
+ * No interrupts, no DART, no iommus: stages dt, psd and power use none. The ANE DART is dart,gen3 with
+ * manual availability and hangs the bus until its power chain is up (the USB DART story), so it stays out.
+ */
+
+/ {
+	soc {
+		ane0: ane@419600000 {
+			compatible = "apple,t8152-ane";
+			reg = <0x4 0x19600000 0x0 0x74000>,
+			      <0x4 0x19050000 0x0 0x4000>,
+			      <0x3 0x16000000 0x0 0x1c000>,
+			      <0x3 0x03a11e00 0x0 0x100>,
+			      <0x3 0x03a11f00 0x0 0x100>;
+			reg-names = "asc", "rvbar", "mbox", "psd0", "psd1";
+			apple,ane-type = <784>;
+			msgbox-mailbox-num = <12>;
+			msgbox-using-postoffice;
+			status = "okay";
+		};
+	};
+};
