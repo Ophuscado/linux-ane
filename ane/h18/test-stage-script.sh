@@ -41,8 +41,17 @@ expect "step 3 after step 1 only refused" 2 bash "$S" 3 0123abcd GO
 FAKE_STAGE=psd expect "step 2 passes" 0 bash "$S" 2 0123abcd
 grep -q 'stage=psd' "$T/insmod.args" && echo "  PASS step 2 loads stage=psd" || { echo "  FAIL step 2 args"; fails=$((fails + 1)); }
 FAKE_STAGE=power expect "step 3 passes with GO" 0 bash "$S" 3 0123abcd GO
-grep -q 'stage=power confirm_power=1 psd_state=0 psd_slots=1' "$T/insmod.args" && echo "  PASS step 3 args: slot 30 only, state 0" || { echo "  FAIL step 3 args"; fails=$((fails + 1)); }
+grep -q 'stage=power confirm_power=1 psd_state=1 psd_slots=1' "$T/insmod.args" && echo "  PASS step 3 default args: slot 30 only, state 1" || { echo "  FAIL step 3 args"; fails=$((fails + 1)); }
 expect "step 3 twice on one boot refused" 2 bash "$S" 3 0123abcd GO
+rm -f "$T/work/step3-run-0123abcd"
+sleep 1
+FAKE_STAGE=power expect "step 3 with an explicit state 2 passes" 0 bash "$S" 3 0123abcd GO 2
+grep -q 'psd_state=2 psd_slots=1' "$T/insmod.args" && echo "  PASS step 3 explicit state 2" || { echo "  FAIL step 3 state 2"; fails=$((fails + 1)); }
+rm -f "$T/work/step3-run-0123abcd"
+expect "step 3 with state 9 refused" 2 bash "$S" 3 0123abcd GO 9
+[ ! -e "$T/work/step3-run-0123abcd" ] && echo "  PASS a refused state leaves no step 3 marker" || { echo "  FAIL marker after refused state"; fails=$((fails + 1)); }
+rm -f "$T/work/step3-run-0123abcd"
+sleep 1
 touch "$T/loaded"
 expect "module already loaded refused" 2 bash "$S" 1 0123abcd
 rm -f "$T/loaded"

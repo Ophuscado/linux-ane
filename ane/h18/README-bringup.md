@@ -12,7 +12,7 @@ firmware path: no IORVBAR write, no CPU RUN, no mailbox write. The ANE firmware 
   them. No mapping and no MMIO.
 - `stage=psd`: read only. Map the two PSD slot windows (slots 30 and 31) and read VALID, then STATUS when VALID is
   set. The proven PSD probe does the same two reads. No write.
-- `stage=power`: needs `confirm_power=1`. Request PSD state `psd_state` (default 0, run) on the first `psd_slots`
+- `stage=power`: needs `confirm_power=1`. Request PSD state `psd_state` (module default 0, the stage script passes 1) on the first `psd_slots`
   slots (default 1, slot 30 only) and wait for each acknowledge as `drivers/pmdomain/apple/pmgr-psd.c` does. Only
   after every requested slot acknowledged, read CPU_STATUS, ASC_STATUS and IORVBAR (and the Postoffice status word
   of three candidate channels with `read_mbox=1`). Then request state 6 again unless `keep_on=1`. Every write and
@@ -29,8 +29,10 @@ GPU (`t8152-j873-psd.dtsi`, `t8152-j873-psd-gpu.dtsi`). The ADT has no PMGR powe
 
 ## Not known
 
-- The PSD state each ANE slot needs. The GPU uses 0 then 2, the USB blocks 0. State 0 on slot 30 is a guess until
-  the AppleT8152PMGR kext decode gives the states.
+- The PSD state each ANE slot needs. The kext decode (`w74-t8152-ane-rows.md`) names slot 30 ANE0_CPU_BLOCKIN and slot
+  31 ANE0_SYS_0, reads "on" as request value 1 (or 2) from the shared threshold lists, and says which value the ANE
+  driver passes is not decoded. The GPU uses 0 for its cluster slot and 2 for its ASC slots, the USB blocks 0. The stage
+  script requests state 1 on slot 30 first; `psd_state` takes 0 to 5 without a rebuild.
 - Whether the ASC wrapper answers once slots 30 and 31 run. The ANE also has `clock-ids` 329, 328 and 375, which this
   module does not touch.
 - The Postoffice channel of this ANE. The T8152 driver deliverable gives `msgbox_using_postoffice + (msgbox_mailbox_num
@@ -59,7 +61,7 @@ gating, not any M6 behavior.
 
 ## Stage script
 
-`m6-ane-stage.sh <1|2|3> <boot-id prefix> [GO]` runs one stage as root and collects the log in a new directory under
+`m6-ane-stage.sh <1|2|3> <boot-id prefix> [GO [state]]` runs one stage as root and collects the log in a new directory under
 `/var/tmp/m6-ane`. It refuses on a kernel release other than 7.1.12-aurora-m6usb-ARCH, a boot id that does not match,
 a missing ANE node, a module whose sha256 is not the pinned one, and a module that is already loaded. It enforces the
 order per boot: step 2 needs a step 1 PASS, step 3 needs a step 2 PASS and the literal argument `GO`, and step 3 runs once
@@ -77,6 +79,6 @@ Stop at the first unexpected result and keep the log. A hang costs one reboot: h
 
 1. `insmod ane_h18.ko optin=t8152` (stage `dt`). Expect `RESULT stage=dt ... verdict=PASS reason=dt-windows-match`.
 2. `insmod ane_h18.ko optin=t8152 stage=psd`. Expect one `psd0` and one `psd1` line with their valid and status words.
-3. `insmod ane_h18.ko optin=t8152 stage=power confirm_power=1`. Slot 30 only, state 0. Expect `psd0 ... state 0
+3. `insmod ane_h18.ko optin=t8152 stage=power confirm_power=1 psd_state=1`. Slot 30 only. Expect `psd0 ... state 1
    acknowledged`, then the ASC words, then the return to state 6.
 4. Only after step 3 passed: `psd_slots=2`, then `read_mbox=1`.

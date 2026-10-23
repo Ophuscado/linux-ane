@@ -1,10 +1,12 @@
 #!/bin/bash
 # SPDX-License-Identifier: GPL-2.0-only OR MIT
 # m6-ane-stage.sh: run ONE ane_h18 stage on the M6 (T8152), as root, and collect the log.
-#   m6-ane-stage.sh <1|2|3> <boot-id prefix> [GO]
+#   m6-ane-stage.sh <1|2|3> <boot-id prefix> [GO [state]]
 # Step 1 = stage dt (no MMIO), step 2 = stage psd (read-only PSD slots 30 and 31), step 3 = stage power with
-# confirm_power=1 (requests PSD state 0 on slot 30 only, then reads CPU_STATUS, ASC_STATUS, IORVBAR).
-# Step 3 needs the literal third argument GO (the word of Main or w74 on the PSD state) and a step 2 PASS on this boot.
+# confirm_power=1 (requests PSD state <state> on slot 30 only, then reads CPU_STATUS, ASC_STATUS, IORVBAR).
+# The state defaults to 1: the AppleT8152PMGR decode (w74-t8152-ane-rows.md) reads "on" as request 1 (or 2) for these slots,
+# and names 1 as the first experiment. 0 is the value proven for the ATC USB slot 71 and GPU slot 3, 2 is the GPU ASC value.
+# Step 3 needs the literal third argument GO (the word of Main) and a step 2 PASS on this boot.
 # Order is enforced per boot: step 2 needs a step 1 PASS marker, step 3 a step 2 PASS marker, in the work directory.
 # Refuses on: wrong kernel release, boot id not matching, missing ANE node, a module whose sha256 is not the pinned one,
 # a module already loaded, a reused run directory. Writes only under $WORK. A hang costs one reboot.
@@ -25,9 +27,11 @@ LSMOD=${LSMOD:-lsmod}
 step=${1:-}
 bid=${2:-}
 go=${3:-}
+state=${4:-1}
 die() { echo "m6-ane-stage: REFUSED: $*" >&2; exit 2; }
 
-case "$step" in 1|2|3) ;; *) die "usage: $0 <1|2|3> <boot-id prefix> [GO]" ;; esac
+case "$step" in 1|2|3) ;; *) die "usage: $0 <1|2|3> <boot-id prefix> [GO [state]]" ;; esac
+case "$state" in 0|1|2|3|4|5) ;; *) die "state must be 0 to 5" ;; esac
 [ -n "$bid" ] || die "boot id prefix required"
 [ "$UNAME_R" = "$WANT_UNAME" ] || die "kernel release $UNAME_R, want $WANT_UNAME"
 boot=$(tr -d '-' < "$BOOT_ID_FILE" | cut -c1-8)
@@ -56,7 +60,7 @@ mkdir "$run"
 case "$step" in
   1) args="optin=t8152 stage=dt" ;;
   2) args="optin=t8152 stage=psd" ;;
-  3) args="optin=t8152 stage=power confirm_power=1 psd_state=0 psd_slots=1"; : > "$WORK/step3-run-$boot" ;;
+  3) args="optin=t8152 stage=power confirm_power=1 psd_state=$state psd_slots=1"; : > "$WORK/step3-run-$boot" ;;
 esac
 echo "insmod $KO $args" | tee -a "$run/header.txt"
 timeout 60 $INSMOD "$KO" $args > "$run/insmod.out" 2>&1
