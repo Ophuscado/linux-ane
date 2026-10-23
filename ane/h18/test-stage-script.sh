@@ -98,6 +98,23 @@ sleep 1
 FAKE_STAGE=boot FAKE_VERDICT=FAIL expect "a failed step 4 gives rc 1" 1 bash "$S" 4 0123abcd GO
 grep -q 'reboot' "$T/out" && echo "  PASS a failed step 4 says to reboot" || { echo "  FAIL step 4 reboot message"; fails=$((fails + 1)); }
 rm -f "$T/work/step4-run-0123abcd"
+# after a step 4 ran, no ANE step of any number may start until a reboot
+touch "$T/work/step4-run-0123abcd"
+expect "step 1 after a step 4 is refused" 2 bash "$S" 1 0123abcd
+expect "step 2 after a step 4 is refused" 2 bash "$S" 2 0123abcd
+expect "step 3 after a step 4 is refused" 2 bash "$S" 3 0123abcd GO
+grep -q 'step 4 already ran' "$T/out" && echo "  PASS the refusal names the step 4 marker" || { echo "  FAIL step 4 marker message"; fails=$((fails + 1)); }
+rm -f "$T/work/step4-run-0123abcd"
+# a step 3 PASS does not survive a later step 3 that fails
+touch "$T/work/step2-pass-0123abcd"
+sleep 1
+FAKE_STAGE=power expect "step 3 passes before the retry" 0 bash "$S" 3 0123abcd GO
+sleep 1
+FAKE_STAGE=power FAKE_VERDICT=FAIL expect "the retried step 3 fails" 1 bash "$S" 3 0123abcd GO
+[ ! -e "$T/work/step3-pass-0123abcd" ] && echo "  PASS a new step 3 removes the old PASS marker" || { echo "  FAIL stale step 3 PASS marker"; fails=$((fails + 1)); }
+sleep 1
+FAKE_STAGE=boot expect "step 4 after a failed step 3 retry is refused" 2 bash "$S" 4 0123abcd GO
+rm -f "$T/work/step3-run-0123abcd"
 sleep 1
 # stale RESULT line from an earlier step must not count (insmod does nothing: FAKE_NOOP)
 rm -f "$T/work/step3-run-0123abcd"

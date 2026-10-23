@@ -68,6 +68,7 @@ case "$(tr -d '-' < "$BOOT_ID_FILE")" in "$bid"*) ;; *) die "boot id $boot does 
 [ "$(sha256sum "$KO" | cut -c1-64)" = "$KO_SHA256" ] || die "module sha256 is not the pinned $KO_SHA256"
 if $LSMOD | grep -q '^ane_h18 '; then die "ane_h18 is already loaded; rmmod it and reboot if step 3 ran"; fi
 mkdir -p "$WORK"
+[ ! -e "$WORK/step4-run-$boot" ] || die "step 4 already ran on boot $boot: reboot before any ANE step, the core may still be running"
 if [ "$step" = 2 ] && [ ! -e "$WORK/step1-pass-$boot" ]; then die "step 1 has not passed on boot $boot"; fi
 if [ "$step" = 3 ]; then
   [ "$go" = GO ] || die "step 3 needs the third argument GO (the go-ahead on the PSD state)"
@@ -77,7 +78,7 @@ fi
 
 if [ "$step" = 4 ]; then
   [ "$go" = GO ] || die "step 4 needs the third argument GO (the operator's go-ahead)"
-  [ -e "$WORK/step3-pass-$boot" ] || die "step 3 has not passed on boot $boot"
+  [ -e "$WORK/step3-pass-$boot" ] && [ ! -e "$WORK/step3-run-$boot" ] || die "step 3 has not passed on boot $boot, or a later step 3 did not finish cleanly"
   [ ! -e "$WORK/step4-run-$boot" ] || die "step 4 already ran on boot $boot: reboot first, the core may still be running"
 fi
 
@@ -95,7 +96,7 @@ case "$step" in
   3) args="optin=t8152 stage=power confirm_power=1 psd_state=$state psd_slots=$slots"
      [ "$mbox" = 1 ] && args="$args read_mbox=1"
      [ "$ctrl" = 1 ] && args="$args read_ctrl=1"
-     : > "$WORK/step3-run-$boot" ;;
+     rm -f "$WORK/step3-pass-$boot"; : > "$WORK/step3-run-$boot" ;;
   4) args="optin=t8152 stage=boot confirm_power=1 confirm_boot=1 psd_state=$state psd_slots=$slots boot_wait_ms=$wait_ms"; : > "$WORK/step4-run-$boot" ;;
 esac
 case "$step" in 1) want_stage=dt ;; 2) want_stage=psd ;; 3) want_stage=power ;; 4) want_stage=boot ;; esac
