@@ -11,7 +11,7 @@
  *           The proven PSD probe does exactly these two reads. No write.
  *   power : needs confirm_power=1. Request PSD state `psd_state` (default 0, run) on the first `psd_slots`
  *           slots (default 1: slot 30 only), wait for each acknowledge as pmgr-psd.c does, then read
- *           CPU_STATUS, ASC_STATUS and IORVBAR (and the mailbox status word with read_mbox=1), then put the
+ *           CPU_STATUS, ASC_STATUS and IORVBAR (CPU_CONTROL with read_ctrl=1, the mailbox status words with read_mbox=1), then put the
  *           slots back to state 6 unless keep_on=1. Every write and read address is logged BEFORE the access.
  *
  * Nothing autoloads: there is no MODULE_DEVICE_TABLE, and probe returns -EPERM unless optin=t8152.
@@ -62,6 +62,10 @@ MODULE_PARM_DESC(keep_on, "Stage=power: leave the slots running after the reads.
 static bool read_mbox;
 module_param(read_mbox, bool, 0444);
 MODULE_PARM_DESC(read_mbox, "Stage=power: also read the Postoffice status word of this ANE's channel.");
+
+static bool read_ctrl;
+module_param(read_ctrl, bool, 0444);
+MODULE_PARM_DESC(read_ctrl, "Stage=power: also read CPU_CONTROL (ASC + 0x44). Read only, never written. Default off.");
 
 static unsigned int psd_timeout_ms = 1000;
 module_param(psd_timeout_ms, uint, 0444);
@@ -288,7 +292,7 @@ static u32 ane_h18_po_chan(const struct ane_h18_soc *s, unsigned int cand)
 static int ane_h18_stage_power(struct ane_h18 *ane)
 {
 	const struct ane_h18_soc *s = ane->soc;
-	u32 cpu_status = 0, asc_status = 0, rv_lo = 0, rv_hi = 0, po[ANE_H18_PO_NCAND] = { 0 };
+	u32 cpu_status = 0, asc_status = 0, cpu_ctrl = 0, rv_lo = 0, rv_hi = 0, po[ANE_H18_PO_NCAND] = { 0 };
 	unsigned int i;
 	int ret = 0;
 
@@ -313,11 +317,13 @@ static int ane_h18_stage_power(struct ane_h18 *ane)
 	ret = ane_h18_read(ane, "CPU_STATUS", ane->asc, s->asc_pa, ANE_H18_ASC_CPU_STATUS, s->asc_size, &cpu_status);
 	if (!ret)
 		ret = ane_h18_read(ane, "ASC_STATUS", ane->asc, s->asc_pa, ANE_H18_ASC_STATUS, s->asc_size, &asc_status);
+	if (!ret && read_ctrl)
+		ret = ane_h18_read(ane, "CPU_CONTROL", ane->asc, s->asc_pa, ANE_H18_ASC_CPU_CONTROL, s->asc_size, &cpu_ctrl);
 	if (!ret)
 		ret = ane_h18_read(ane, "IORVBAR_LO", ane->rvbar, s->rvbar_pa, ANE_H18_RVBAR_OFF, s->rvbar_size, &rv_lo);
 	if (!ret)
 		ret = ane_h18_read(ane, "IORVBAR_HI", ane->rvbar, s->rvbar_pa, ANE_H18_RVBAR_OFF + 4, s->rvbar_size, &rv_hi);
-	/* The channel of this ANE in the Postoffice block is not verified: the T8152 deliverable gives
+	/* The channel of this ANE in the Postoffice block is not verified: the lab notebook's T8152 driver notes give
 	 * "msgbox_using_postoffice + (msgbox_mailbox_num << 1)" (channel 25), a review reads the same expression as the
 	 * packed pair that makes it channel 12, and the SMC node does not fit either. Read the status word of all
 	 * three candidate channels (12, 24, 25); they are in one block, the same window, and the log decides. */
@@ -336,6 +342,8 @@ static int ane_h18_stage_power(struct ane_h18 *ane)
 	}
 	dev_info(ane->dev, "ane_h18 power cpu_status=%#x asc_status=%#x iorvbar=%#llx psd_state=%u slots=%u keep_on=%d\n",
 		 cpu_status, asc_status, ((u64)rv_hi << 32) | rv_lo, psd_state, psd_slots, keep_on);
+	if (read_ctrl)
+		dev_info(ane->dev, "ane_h18 cpu_control=%#x\n", cpu_ctrl);
 	if (read_mbox)
 		dev_info(ane->dev, "ane_h18 po_status ch%u=%#x ch%u=%#x ch%u=%#x\n", ane_h18_po_chan(s, 0), po[0], ane_h18_po_chan(s, 1),
 			 po[1], ane_h18_po_chan(s, 2), po[2]);

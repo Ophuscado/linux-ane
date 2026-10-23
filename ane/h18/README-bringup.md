@@ -1,6 +1,6 @@
 # ane/h18: OPT-IN EXPERIMENTAL H18 ANE0 bring-up for the T8152 (Mac mini M6, J873g)
 
-Nothing in this directory is installed, autoloaded or shipped as working support. No M6 has run this module. It has no
+Nothing in this directory is installed, autoloaded or shipped as working support. It ran once on an M6 (see "Measured"). It has no
 firmware path: no IORVBAR write, no CPU RUN, no mailbox write. The ANE firmware is preloaded by iBoot (the ADT
 `/arm-io/ane` carries `segment-ranges`), and booting it is a later change.
 
@@ -14,11 +14,12 @@ firmware path: no IORVBAR write, no CPU RUN, no mailbox write. The ANE firmware 
   set. The proven PSD probe does the same two reads. No write.
 - `stage=power`: needs `confirm_power=1`. Request PSD state `psd_state` (module default 0, the stage script passes 1) on the first `psd_slots`
   slots (default 1, slot 30 only) and wait for each acknowledge as `drivers/pmdomain/apple/pmgr-psd.c` does. Only
-  after every requested slot acknowledged, read CPU_STATUS, ASC_STATUS and IORVBAR (and the Postoffice status word
-  of three candidate channels with `read_mbox=1`). Then request state 6 again unless `keep_on=1`. Every write and
+  after every requested slot acknowledged, read CPU_STATUS, ASC_STATUS and IORVBAR (and CPU_CONTROL with `read_ctrl=1`,
+  and the Postoffice status word of three candidate channels with `read_mbox=1`). Then request state 6 again unless `keep_on=1`. Every write and
   read address is logged before the access, so a hang leaves the last address in the log.
 
-The module never reads or writes CPU_CONTROL (ASC + 0x44) and writes nothing in the ASC, IORVBAR or mailbox windows.
+The module reads CPU_CONTROL (ASC + 0x44) only with `read_ctrl=1`. It never writes it, and it writes nothing in the ASC, IORVBAR or
+mailbox windows.
 
 ## Why the ANE is powered by PSD slots
 
@@ -29,17 +30,25 @@ GPU (`t8152-j873-psd.dtsi`, `t8152-j873-psd-gpu.dtsi`). The ADT has no PMGR powe
 
 ## Not known
 
-- The PSD state each ANE slot needs. The kext decode (`w74-t8152-ane-rows.md`) names slot 30 ANE0_CPU_BLOCKIN and slot
+- The PSD state each ANE slot needs. The AppleT8152PMGR kext decode in the lab receipts names slot 30 ANE0_CPU_BLOCKIN and slot
   31 ANE0_SYS_0, reads "on" as request value 1 (or 2) from the shared threshold lists, and says which value the ANE
   driver passes is not decoded. The GPU uses 0 for its cluster slot and 2 for its ASC slots, the USB blocks 0. The stage
   script requests state 1 on slot 30 first; `psd_state` takes 0 to 5 without a rebuild.
-- Whether the ASC wrapper answers once slots 30 and 31 run. The ANE also has `clock-ids` 329, 328 and 375, which this
-  module does not touch.
-- The Postoffice channel of this ANE. The T8152 driver deliverable gives `msgbox_using_postoffice + (msgbox_mailbox_num
+- Whether the ASC core is running or halted, and what the bits of CPU_STATUS mean on this chip. The ANE also has `clock-ids` 329,
+  328 and 375, which this module does not touch.
+- The Postoffice channel of this ANE. The lab notebook's T8152 driver notes give `msgbox_using_postoffice + (msgbox_mailbox_num
   << 1)`, which is channel 25 for mailbox number 12. A review reads the same expression as channel 12. The SMC node
   fits neither. `read_mbox=1` reads the status word of channels 12, 24 and 25, and the log decides.
 - Everything about the DART. It is `dart,gen3` with manual availability, and the first read of such a DART hangs the
   bus until its power chain is up. The overlay has no DART node.
+
+## Measured
+
+Mac mini M6, 2026-10-23, kernel 7.1.12-aurora-m6usb-ARCH. `stage=psd`: slots 30 and 31 both read VALID 0. `stage=power` with
+`psd_state=1 psd_slots=1`: REQUEST=1 on slot 30 was acknowledged after 0.85 ms (valid 1, status 1). With only slot 30 on, the
+ASC wrapper answered: CPU_STATUS 0xa, ASC_STATUS 0xa, IORVBAR 0x10000000001, which is the DART-side address of the preloaded
+firmware text with the valid bit set. Then REQUEST=6 was acknowledged. No bus fault. This run did not read CPU_CONTROL, slot 31,
+the mailbox or the DART.
 
 ## Build and sim
 

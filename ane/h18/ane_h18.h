@@ -8,7 +8,7 @@
  *   true). Each ADT address plus 0x200000000 is the physical address, the translation the kernel tree's
  *   t8152-j873 device tree uses (linux-aurora, j873 tip 4513ee61d6a0, "translated ADT addresses").
  * - ASC wrapper register offsets: the macOS 27.0 (26A434) kernelcache AppleA7IOP-ASCWrap-v8 decode in the
- *   T8152 driver deliverable (lab notebook, w73, 2026-10-19). Not re-derived here.
+ *   macOS 27.0 kernelcache decode in the lab notebook (2026-10-19). Not re-derived here.
  * - PSD slot window layout and request protocol: drivers/pmdomain/apple/pmgr-psd.c of the same kernel tree,
  *   proven on this board for slot 71 (ATC0 USB).
  * INFERENCE, not measured: that ANE slots 30 and 31 accept state 0 (run) and what the ASC wrapper reads
@@ -31,7 +31,8 @@
 #define ANE_H18_PSD_P6_RAIL	6
 #define ANE_H18_NPSD		2
 
-/* ASC wrapper (reg[0]) offsets. CPU_CONTROL (+0x44) is deliberately absent: this module never reads or writes it. */
+/* ASC wrapper (reg[0]) offsets. CPU_CONTROL (+0x44) is read only with read_ctrl=1 and is never written by this module. */
+#define ANE_H18_ASC_CPU_CONTROL	0x0044
 #define ANE_H18_ASC_CPU_STATUS	0x0048
 #define ANE_H18_ASC_STATUS	0x8048
 /* IORVBAR (reg[1]) is a 64-bit register at +0, read as two 32-bit words. */

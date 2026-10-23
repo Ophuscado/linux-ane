@@ -104,6 +104,7 @@ static void reset_all(void)
 	psd_slots = 1;
 	keep_on = false;
 	read_mbox = false;
+	read_ctrl = false;
 	psd_timeout_ms = 1000;
 	memset(&pdev, 0, sizeof(pdev));
 	memset(&node, 0, sizeof(node));
@@ -236,7 +237,7 @@ static void pos_power(void)
 	chk(first_asc_read() > first_write() && first_asc_read() < last_write(), "P4 power: ASC reads sit after the first write and before the rail-gate write");
 	chk(events_in(sim_asc_pa, sim_asc_size, 0) == 2 && events_in(sim_rvbar_pa, sim_rvbar_size, 0) == 2, "P4 power: two ASC reads, two IORVBAR reads");
 	chk(events_in(sim_mbox_pa, sim_mbox_size, 0) == 0, "P4 power: no mailbox read without read_mbox");
-	chk(events_in(sim_asc_pa + 0x44, 4, 0) == 0 && events_in(sim_asc_pa, sim_asc_size, 1) == 0, "P4 power: CPU_CONTROL never read, ASC window never written");
+	chk(events_in(sim_asc_pa + 0x44, 4, 0) == 0 && events_in(sim_asc_pa, sim_asc_size, 1) == 0, "P4 power: CPU_CONTROL not read by default, ASC window never written");
 	chk(log_count("CRIT: ane_h18 write") == writes(), "P4 power: every write was logged before it");
 	chk(log_count("CRIT: ane_h18 read CPU_STATUS") == 1 && log_count("CRIT: ane_h18 read ASC_STATUS") == 1 &&
 	    log_count("CRIT: ane_h18 read IORVBAR_LO") == 1 && log_count("CRIT: ane_h18 read IORVBAR_HI") == 1,
@@ -264,6 +265,15 @@ static void pos_power(void)
 	keep_on = true;
 	ret = probe_now();
 	chk(ret == 0 && writes() == 1 && sim_psd_state[0] == 0, "P6 keep_on: one write, the slot stays at state 0");
+
+	/* read_ctrl: CPU_CONTROL is read once, still never written */
+	reset_all();
+	stage = "power";
+	confirm_power = true;
+	read_ctrl = true;
+	ret = probe_now();
+	chk(ret == 0 && events_in(sim_asc_pa + 0x44, 4, 0) == 1 && events_in(sim_asc_pa, sim_asc_size, 1) == 0 && log_count("CRIT: ane_h18 read CPU_CONTROL pa=0x419600044") == 1,
+	    "P8 read_ctrl: CPU_CONTROL read once, logged before, ASC window never written");
 
 	/* read_mbox: the three candidate channels, exact addresses */
 	reset_all();

@@ -42,8 +42,16 @@ FAKE_STAGE=psd expect "step 2 passes" 0 bash "$S" 2 0123abcd
 grep -q 'stage=psd' "$T/insmod.args" && echo "  PASS step 2 loads stage=psd" || { echo "  FAIL step 2 args"; fails=$((fails + 1)); }
 FAKE_STAGE=power expect "step 3 passes with GO" 0 bash "$S" 3 0123abcd GO
 grep -q 'stage=power confirm_power=1 psd_state=1 psd_slots=1' "$T/insmod.args" && echo "  PASS step 3 default args: slot 30 only, state 1" || { echo "  FAIL step 3 args"; fails=$((fails + 1)); }
-expect "step 3 twice on one boot refused" 2 bash "$S" 3 0123abcd GO
+sleep 1
+FAKE_STAGE=power expect "a second step 3 after a clean PASS is allowed" 0 bash "$S" 3 0123abcd GO 1 2 1 1
+grep -q 'psd_state=1 psd_slots=2 read_mbox=1 read_ctrl=1' "$T/insmod.args" && echo "  PASS step 3 extra arguments: two slots, mailbox, CPU_CONTROL" || { echo "  FAIL step 3 extra args"; fails=$((fails + 1)); }
+sleep 1
+FAKE_STAGE=power FAKE_VERDICT=FAIL expect "a failed step 3 gives rc 1" 1 bash "$S" 3 0123abcd GO
+sleep 1
+expect "a step 3 after a failed one is refused until reboot" 2 bash "$S" 3 0123abcd GO
 rm -f "$T/work/step3-run-0123abcd"
+expect "slots 3 refused" 2 bash "$S" 3 0123abcd GO 1 3
+expect "mbox 2 refused" 2 bash "$S" 3 0123abcd GO 1 1 2
 sleep 1
 FAKE_STAGE=power expect "step 3 with an explicit state 2 passes" 0 bash "$S" 3 0123abcd GO 2
 grep -q 'psd_state=2 psd_slots=1' "$T/insmod.args" && echo "  PASS step 3 explicit state 2" || { echo "  FAIL step 3 state 2"; fails=$((fails + 1)); }
