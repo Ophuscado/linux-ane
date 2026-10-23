@@ -35,11 +35,18 @@
 #define ANE_H18_ASC_CPU_CONTROL	0x0044
 #define ANE_H18_ASC_CPU_STATUS	0x0048
 #define ANE_H18_ASC_STATUS	0x8048
+/* CPU_CONTROL bit 4 starts the core (the AppleASCWrapV8 decode in the lab notebook; m1n1's R_CPU_CONTROL.RUN is the same bit).
+ * CPU_STATUS: bit 0 RUNNING, bit 1 STOPPED (m1n1 R_CPU_STATUS). The board read 0xa before the core ever ran. */
+#define ANE_H18_CPU_RUN		(1u << 4)
+#define ANE_H18_ST_RUNNING	(1u << 0)
+#define ANE_H18_ST_STOPPED	(1u << 1)
 /* IORVBAR (reg[1]) is a 64-bit register at +0, read as two 32-bit words. */
 #define ANE_H18_RVBAR_OFF	0x0
 /* Postoffice (reg[2]): 0x80 bytes per channel, status word at +0x20 of the channel. */
 #define ANE_H18_PO_STRIDE	0x80
 #define ANE_H18_PO_STATUS	0x20
+#define ANE_H18_PO_OUTBOX	0x00	/* 16 bytes, four 32-bit words; the last word read pops the message (m1n1 OUTBOX1) */
+#define ANE_H18_PO_MAXMSG	8	/* at most this many messages are read per run */
 #define ANE_H18_PO_NCAND	3	/* candidate channels, see ane_h18_stage_power() */
 
 struct ane_h18_soc {
@@ -54,6 +61,7 @@ struct ane_h18_soc {
 	u64 engine_pa;
 	u32 engine_size;
 	u32 mbox_num;		/* ADT msgbox-mailbox-num */
+	u64 rvbar_expect;	/* IORVBAR as iBoot leaves it: entry 0x10000000000 (the segment-ranges remap) | valid bit. Measured on the board. */
 	u32 psd_slot[ANE_H18_NPSD];
 };
 

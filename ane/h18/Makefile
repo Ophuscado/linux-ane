@@ -41,6 +41,9 @@ sim-negative-dt: sim/sim_h18
 sim-negative-args: sim/sim_h18
 	./sim/sim_h18 neg-args
 
+sim-negative-boot: sim/sim_h18
+	./sim/sim_h18 neg-boot
+
 # Mutation controls: build a copy of the real module with one sed edit and REQUIRE the named harness mode to fail it.
 # $(call mutant,<name>,<sed script>,<marker>,<harness mode>)
 COMMA := ,
@@ -78,13 +81,27 @@ sim-mutation-noack:
 sim-mutation-nogate:
 	$(call mutant,nogate,s/writel(state$(COMMA) ane->psd\[i\] + ANE_H18_PSD_REQUEST);/writel(state$(COMMA) ane->psd[i] + ANE_H18_PSD_REQUEST); return 0; \/* NEG: no wait *\//,NEG: no wait,neg-psd-never)
 
-sim-all: sim-test sim-negative-psd-never sim-negative-psd-wrong sim-negative-dt sim-negative-args \
-	sim-mutation-noconfirm sim-mutation-nowindow sim-mutation-noundo sim-mutation-noack sim-mutation-nogate
+# stage=boot runs without confirm_boot=1
+sim-mutation-noconfirmboot:
+	$(call mutant,noconfirmboot,s/if (!confirm_power || !confirm_boot) {/if (!confirm_power) {/,if (!confirm_power) {,neg-boot)
+
+# stage=boot starts the core without comparing IORVBAR with the value iBoot leaves
+NOPRE_SED := s/!= s->rvbar_expect) {/!= s->rvbar_expect \&\& 0 \/* NEG: IORVBAR not compared *\/) {/
+sim-mutation-nopreflight:
+	$(call mutant,nopreflight,$(NOPRE_SED),NEG: IORVBAR not compared,neg-boot)
+
+# stage=boot never clears RUN again
+sim-mutation-nohalt:
+	$(call mutant,nohalt,s/writel(ctrl \& ~ANE_H18_CPU_RUN, ane->asc + ANE_H18_ASC_CPU_CONTROL);/\/* NEG: RUN never cleared *\//,NEG: RUN never cleared,pos)
+
+sim-all: sim-test sim-negative-psd-never sim-negative-psd-wrong sim-negative-dt sim-negative-args sim-negative-boot \
+	sim-mutation-noconfirm sim-mutation-nowindow sim-mutation-noundo sim-mutation-noack sim-mutation-nogate \
+	sim-mutation-noconfirmboot sim-mutation-nopreflight sim-mutation-nohalt
 
 clean:
 	$(MAKE) -C $(KERNELDIR) M=$(PWD) clean
 	rm -f sim/sim_h18
 
-.PHONY: default modules sim-test sim-negative-psd-never sim-negative-psd-wrong sim-negative-dt sim-negative-args \
+.PHONY: sim-negative-boot sim-mutation-noconfirmboot sim-mutation-nopreflight sim-mutation-nohalt default modules sim-test sim-negative-psd-never sim-negative-psd-wrong sim-negative-dt sim-negative-args \
 	sim-mutation-noconfirm sim-mutation-nowindow sim-mutation-noundo sim-mutation-noack sim-mutation-nogate sim-all clean
 endif

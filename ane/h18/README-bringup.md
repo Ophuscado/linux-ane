@@ -1,8 +1,8 @@
 # ane/h18: OPT-IN EXPERIMENTAL H18 ANE0 bring-up for the T8152 (Mac mini M6, J873g)
 
-Nothing in this directory is installed, autoloaded or shipped as working support. It ran once on an M6 (see "Measured"). It has no
-firmware path: no IORVBAR write, no CPU RUN, no mailbox write. The ANE firmware is preloaded by iBoot (the ADT
-`/arm-io/ane` carries `segment-ranges`), and booting it is a later change.
+Nothing in this directory is installed, autoloaded or shipped as working support. Stages dt, psd and power ran once on an M6 (see "Measured"). Stage boot has not run on any machine.
+The module never writes IORVBAR or a mailbox. The ANE firmware is preloaded by iBoot (the ADT
+`/arm-io/ane` carries `segment-ranges`) and iBoot programs IORVBAR.
 
 ## What it does
 
@@ -18,8 +18,15 @@ firmware path: no IORVBAR write, no CPU RUN, no mailbox write. The ANE firmware 
   and the Postoffice status word of three candidate channels with `read_mbox=1`). Then request state 6 again unless `keep_on=1`. Every write and
   read address is logged before the access, so a hang leaves the last address in the log.
 
-The module reads CPU_CONTROL (ASC + 0x44) only with `read_ctrl=1`. It never writes it, and it writes nothing in the ASC, IORVBAR or
-mailbox windows.
+The module reads CPU_CONTROL (ASC + 0x44) with `read_ctrl=1` and in stage boot. It writes CPU_CONTROL only in stage boot, and writes nothing
+else in the ASC, IORVBAR or mailbox windows.
+
+- `stage=boot`: needs `confirm_power=1` and `confirm_boot=1`. Powers the slots like `power`, then refuses unless CPU_STATUS says STOPPED
+  (and not RUNNING), CPU_CONTROL.RUN is clear and IORVBAR is exactly 0x10000000001, the value the board showed. Then it writes
+  CPU_CONTROL with RUN set (the one write to the ASC window), reads CPU_STATUS every 10 ms for `boot_wait_ms` (default 300) and the
+  status words of the three candidate Postoffice channels, reads the outbox of any channel that holds a message (at most 8 messages,
+  raw 16 bytes logged), writes CPU_CONTROL with RUN clear and waits for STOPPED. If the core does not stop, the PSD slots stay on
+  and a reboot is required. The module sends no mailbox message in this stage.
 
 ## Why the ANE is powered by PSD slots
 
@@ -39,6 +46,8 @@ GPU (`t8152-j873-psd.dtsi`, `t8152-j873-psd-gpu.dtsi`). The ADT has no PMGR powe
 - The Postoffice channel of this ANE. The lab notebook's T8152 driver notes give `msgbox_using_postoffice + (msgbox_mailbox_num
   << 1)`, which is channel 25 for mailbox number 12. A review reads the same expression as channel 12. The SMC node
   fits neither. `read_mbox=1` reads the status word of channels 12, 24 and 25, and the log decides.
+- Whether the core can fetch its firmware at all: the ANE DART is off at this point and nothing here programs it. Stage boot shows what
+  the core does with IORVBAR as iBoot left it. If it never reports RUNNING or posts no message, the DART mapping is the next suspect.
 - Everything about the DART. It is `dart,gen3` with manual availability, and the first read of such a DART hangs the
   bus until its power chain is up. The overlay has no DART node.
 
@@ -93,3 +102,4 @@ Stop at the first unexpected result and keep the log. A hang costs one reboot: h
 3. `insmod ane_h18.ko optin=t8152 stage=power confirm_power=1 psd_state=1`. Slot 30 only. Expect `psd0 ... state 1
    acknowledged`, then the ASC words, then the return to state 6.
 4. Only after step 3 passed: `psd_slots=2`, then `read_mbox=1`.
+5. Only after step 4 of the stage script's order (two slots, mailbox, CPU_CONTROL) passed: `m6-ane-stage.sh 4`, which runs stage boot once per boot.

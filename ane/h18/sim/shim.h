@@ -52,6 +52,7 @@ static inline void rec_log(const char *fmt, ...)
 #define dev_err(d, ...)   do { (void)(d); rec_log("ERR: " __VA_ARGS__); } while (0)
 #define dev_warn(d, ...)  do { (void)(d); rec_log("WARN: " __VA_ARGS__); } while (0)
 #define dev_crit(d, ...)  do { (void)(d); rec_log("CRIT: " __VA_ARGS__); } while (0)
+#define dev_emerg(d, ...) do { (void)(d); rec_log("EMERG: " __VA_ARGS__); } while (0)
 
 /* ---- fake device tree node ---- */
 #define SIM_MAX_REG 8
@@ -137,6 +138,17 @@ extern u32 sim_psd_slot[SIM_NPSD];	/* slot numbers, set by the harness */
 extern u32 sim_psd_state[SIM_NPSD];	/* current state, 6 at start */
 extern u32 sim_psd_valid[SIM_NPSD];
 extern u32 sim_psd_initial_valid[SIM_NPSD];
+/* ASC core model for stage boot */
+extern u32 sim_cpu_status, sim_cpu_ctrl, sim_run_status;
+extern u64 sim_rvbar_val;
+extern int sim_core_running, sim_core_stuck;
+extern int sim_ctrl_writes;
+#define SIM_PO_CH 64
+#define SIM_PO_Q 24
+extern u32 sim_po_msg[SIM_PO_CH][SIM_PO_Q][4];
+extern int sim_po_n[SIM_PO_CH], sim_po_head[SIM_PO_CH];
+extern int sim_start_chan;		/* channel that receives sim_start_msgs messages when RUN is set; -1 = none */
+extern int sim_start_msgs;
 extern u64 sim_asc_pa, sim_rvbar_pa, sim_mbox_pa;
 extern u32 sim_asc_size, sim_rvbar_size, sim_mbox_size;
 
@@ -185,9 +197,33 @@ static inline u32 bus_read(u64 pa)
 		}
 	} else if (sim_in(pa, sim_asc_pa, sim_asc_size) || sim_in(pa, sim_rvbar_pa, sim_rvbar_size) ||
 		   sim_in(pa, sim_mbox_pa, sim_mbox_size)) {
-		/* the ASC blocks need PSD slot 0 running (the first requested slot) */
-		if (sim_psd_state[0] != 0) {
+		/* the ASC blocks need PSD slot 0 powered (any state but 6) */
+		if (sim_psd_state[0] == 6) {
 			sim_faults++;
+		} else if (pa == sim_asc_pa + 0x48) {
+			v = sim_cpu_status;
+		} else if (pa == sim_asc_pa + 0x44) {
+			v = sim_cpu_ctrl;
+		} else if (pa == sim_rvbar_pa) {
+			v = (u32)sim_rvbar_val;
+		} else if (pa == sim_rvbar_pa + 4) {
+			v = (u32)(sim_rvbar_val >> 32);
+		} else if (sim_in(pa, sim_mbox_pa, sim_mbox_size)) {
+			u64 o = pa - sim_mbox_pa;
+			u32 ch = (u32)(o / 0x80), r = (u32)(o % 0x80);
+
+			v = 0;
+			if (ch < SIM_PO_CH) {
+				if (r == 0x20) {
+					v = (u32)(sim_po_n[ch] > 15 ? 15 : sim_po_n[ch]);	/* a 4-bit count */
+				} else if (r < 0x10 && sim_po_n[ch] > 0) {
+					v = sim_po_msg[ch][sim_po_head[ch]][r / 4];
+					if (r == 0xc) {		/* the last word read pops the message */
+						sim_po_head[ch]++;
+						sim_po_n[ch]--;
+					}
+				}
+			}
 		} else {
 			v = (pa & 0xffff) | 0x10000;	/* distinguishable fake data */
 		}
@@ -211,6 +247,31 @@ static inline void bus_write(u64 pa, u32 v)
 		} else if (sim_psd_mode[i] == SIM_PSD_WRONG_STATE) {
 			sim_psd_state[i] = 4;
 			sim_psd_valid[i] = 1;
+		}
+		return;
+	}
+	if (i < 0 && pa == sim_asc_pa + 0x44 && sim_psd_state[0] != 6) {
+		sim_ctrl_writes++;
+		sim_cpu_ctrl = v;
+		if (v & 0x10) {
+			sim_core_running = 1;
+			sim_cpu_status = sim_run_status;
+			if (sim_start_chan >= 0) {
+				int k;
+
+				for (k = 0; k < sim_start_msgs && sim_po_n[sim_start_chan] < SIM_PO_Q; k++) {
+					int slot = (sim_po_head[sim_start_chan] + sim_po_n[sim_start_chan]) % SIM_PO_Q;
+
+					sim_po_msg[sim_start_chan][slot][0] = 0x1000 + k;
+					sim_po_msg[sim_start_chan][slot][1] = 0;
+					sim_po_msg[sim_start_chan][slot][2] = 0x100;
+					sim_po_msg[sim_start_chan][slot][3] = 0;
+					sim_po_n[sim_start_chan]++;
+				}
+			}
+		} else if (!sim_core_stuck) {
+			sim_core_running = 0;
+			sim_cpu_status = 0xa;
 		}
 		return;
 	}

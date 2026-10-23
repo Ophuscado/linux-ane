@@ -22,6 +22,12 @@ u32 sim_psd_initial_valid[SIM_NPSD];
 u64 sim_asc_pa = 0x419600000ULL, sim_rvbar_pa = 0x419050000ULL, sim_mbox_pa = 0x316000000ULL;
 u32 sim_asc_size = 0x74000, sim_rvbar_size = 0x4000, sim_mbox_size = 0x1c000;
 unsigned long sim_jiffies;
+u32 sim_cpu_status = 0xa, sim_cpu_ctrl, sim_run_status = 0x9;
+u64 sim_rvbar_val = 0x10000000001ULL;
+int sim_core_running, sim_core_stuck, sim_ctrl_writes;
+u32 sim_po_msg[SIM_PO_CH][SIM_PO_Q][4];
+int sim_po_n[SIM_PO_CH], sim_po_head[SIM_PO_CH];
+int sim_start_chan = -1, sim_start_msgs;
 
 #include "../ane_h18_soc.c"
 #include "../ane_h18_main.c"
@@ -105,6 +111,18 @@ static void reset_all(void)
 	keep_on = false;
 	read_mbox = false;
 	read_ctrl = false;
+	confirm_boot = false;
+	boot_wait_ms = 300;
+	sim_cpu_status = 0xa;
+	sim_cpu_ctrl = 0;
+	sim_run_status = 0x9;
+	sim_rvbar_val = 0x10000000001ULL;
+	sim_core_running = sim_core_stuck = sim_ctrl_writes = 0;
+	memset(sim_po_msg, 0, sizeof(sim_po_msg));
+	memset(sim_po_n, 0, sizeof(sim_po_n));
+	memset(sim_po_head, 0, sizeof(sim_po_head));
+	sim_start_chan = -1;
+	sim_start_msgs = 0;
 	psd_timeout_ms = 1000;
 	memset(&pdev, 0, sizeof(pdev));
 	memset(&node, 0, sizeof(node));
@@ -399,6 +417,137 @@ static int neg_dt(void)
 	return bad;
 }
 
+
+static void boot_setup(void)
+{
+	reset_all();
+	stage = "boot";
+	confirm_power = true;
+	confirm_boot = true;
+	psd_slots = 2;
+	psd_state = 1;
+}
+
+static int ctrl_write_events(void) { return events_in(sim_asc_pa + 0x44, 4, 1); }
+
+static void pos_boot(void)
+{
+	char seq[512], want[512];
+	int ret, i;
+
+	/* happy path: the core starts, reports running, posts two messages on channel 25, stops on request */
+	boot_setup();
+	sim_start_chan = 25;
+	sim_start_msgs = 2;
+	ret = probe_now();
+	chk(ret == 0 && result("boot", "PASS", "core-ran-and-stopped"), "B1 boot: PASS core-ran-and-stopped");
+	write_seq(seq, sizeof(seq));
+	snprintf(want, sizeof(want), "%llx=1 %llx=1 %llx=16 %llx=0 %llx=6 %llx=6 ", (unsigned long long)psd_pa(0) + 0x90, (unsigned long long)psd_pa(1) + 0x90,
+		 (unsigned long long)sim_asc_pa + 0x44, (unsigned long long)sim_asc_pa + 0x44, (unsigned long long)psd_pa(1) + 0x90, (unsigned long long)psd_pa(0) + 0x90);
+	if (strcmp(seq, want))
+		printf("    got  %s\n    want %s\n", seq, want);
+	chk(!strcmp(seq, want), "B1 boot: writes are exactly PSD 30 and 31 on, CONTROL=16 (0x10), CONTROL=0, PSD 31 and 30 off");
+	chk(sim_faults == 0, "B1 boot: zero faults");
+	chk(log_count("ane_h18 msg ch25 msg0=0x1000 msg1=0x100") == 1 && log_count("ane_h18 msg ch25 msg0=0x1001 msg1=0x100") == 1, "B1 boot: both messages logged with their raw words");
+	chk(log_count("running_seen=1 messages=2") == 1 && sim_core_running == 0 && sim_cpu_status == 0xa, "B1 boot: running seen, two messages, core stopped at the end");
+	{
+		int first_run = -1, k;
+
+		for (k = 0; k < sim_n_events; k++)
+			if (sim_events[k].write && sim_events[k].pa == sim_asc_pa + 0x44 && sim_events[k].val == 0x10)
+				first_run = k;
+		chk(first_run > 0 && first_run > first_asc_read(), "B1 boot: the RUN write comes after the preflight reads");
+	}
+	chk(log_count("CRIT: ane_h18 write CPU_CONTROL=0x10") == 1 && log_count("CRIT: ane_h18 write CPU_CONTROL=0 ") == 1, "B1 boot: both CPU_CONTROL writes logged before");
+	chk(events_in(sim_rvbar_pa, sim_rvbar_size, 1) == 0 && events_in(sim_mbox_pa, sim_mbox_size, 1) == 0, "B1 boot: IORVBAR and the mailbox are never written");
+	ane_h18_remove(&pdev);
+	chk(sim_n_iomap == sim_n_iounmap, "B1 boot: windows released on remove after a clean stop");
+
+	/* message cap */
+	boot_setup();
+	sim_start_chan = 25;
+	sim_start_msgs = 20;
+	ret = probe_now();
+	if (log_count("ane_h18 msg ch25") != ANE_H18_PO_MAXMSG)
+		printf("    msg lines: %d\n", log_count("ane_h18 msg ch25"));
+	chk(ret == 0 && log_count("ane_h18 msg ch25") == ANE_H18_PO_MAXMSG, "B2 boot: at most 8 messages are read");
+
+	/* messages on the other candidate channels are seen too */
+	boot_setup();
+	sim_start_chan = 12;
+	sim_start_msgs = 1;
+	ret = probe_now();
+	chk(ret == 0 && log_count("ane_h18 msg ch12") == 1, "B3 boot: a message on candidate channel 12 is read");
+
+	/* the core never reports running: PASS with its own reason, still stopped at the end */
+	boot_setup();
+	sim_run_status = 0x2a;
+	ret = probe_now();
+	chk(ret == 0 && result("boot", "PASS", "core-never-reported-running"), "B4 boot: no RUNNING bit gives PASS core-never-reported-running");
+	(void)i;
+}
+
+static int neg_boot(void)
+{
+	int bad = 0, ret;
+	char seq[256];
+
+	/* refusals: no write of any kind */
+	boot_setup();
+	confirm_boot = false;
+	ret = probe_now();
+	if (ret != -EPERM || writes() || !result("boot", "REFUSED", "confirm_power=1 and confirm_boot=1 required")) { printf("    no confirm_boot\n"); bad = 1; }
+	boot_setup();
+	confirm_power = false;
+	ret = probe_now();
+	if (ret != -EPERM || writes()) { printf("    boot without confirm_power\n"); bad = 1; }
+	boot_setup();
+	boot_wait_ms = 5;
+	ret = probe_now();
+	if (ret != -EINVAL || writes()) { printf("    boot_wait_ms 5\n"); bad = 1; }
+
+	/* preflight: each deviation stops before the RUN write and puts the slots back */
+	{
+		int c;
+
+		for (c = 0; c < 4; c++) {
+			const char *what = "";
+
+			boot_setup();
+			switch (c) {
+			case 0: sim_rvbar_val = 0x10000000000ULL; what = "IORVBAR without the valid bit"; break;
+			case 1: sim_rvbar_val = 0x20000000001ULL; what = "IORVBAR at another address"; break;
+			case 2: sim_cpu_status = 0x9; what = "the core already reports RUNNING"; break;
+			case 3: sim_cpu_ctrl = 0x10; what = "CPU_CONTROL.RUN already set"; break;
+			}
+			ret = probe_now();
+			write_seq(seq, sizeof(seq));
+			if (ret != -EBUSY || ctrl_write_events() || !result("boot", "FAIL", "preflight-not-as-iboot-left-it") || sim_psd_state[0] != 6 || sim_psd_state[1] != 6) {
+				printf("    %s: ret %d, control writes %d, writes '%s'\n", what, ret, ctrl_write_events(), seq);
+				bad = 1;
+			}
+			if (sim_n_iomap != sim_n_iounmap) { printf("    %s: leaked a window\n", what); bad = 1; }
+		}
+	}
+	/* a slot that does not acknowledge: no ASC access, no CONTROL write */
+	boot_setup();
+	sim_psd_mode[1] = SIM_PSD_NEVER;
+	ret = probe_now();
+	if (ret != -ETIMEDOUT || ctrl_write_events() || first_asc_read() >= 0 || sim_psd_state[0] != 6) { printf("    PSD never acknowledges\n"); bad = 1; }
+
+	/* a core that does not stop: FAIL, slots stay on, the module keeps its mappings and refuses to claim a clean state */
+	boot_setup();
+	sim_core_stuck = 1;
+	ret = probe_now();
+	write_seq(seq, sizeof(seq));
+	if (ret == 0 || !result("boot", "FAIL", "core-not-stopped") || sim_psd_state[0] == 6 || sim_psd_state[1] == 6 || log_count("reboot required") < 1 || sim_n_iounmap != 0) {
+		printf("    stuck core: ret %d writes '%s' psd %u %u iounmap %d\n", ret, seq, sim_psd_state[0], sim_psd_state[1], sim_n_iounmap);
+		bad = 1;
+	}
+	printf("%s\n", bad ? "  neg-boot: harness FAILED the module (BAD)" : "  neg-boot: module refuses and fails as required");
+	return bad;
+}
+
 static int neg_args(void)
 {
 	int bad = 0, ret;
@@ -412,9 +561,9 @@ static int neg_args(void)
 	ret = probe_now();
 	if (ret != -EPERM || sim_n_events || sim_n_iomap) { printf("    wrong optin\n"); bad = 1; }
 	reset_all();
-	stage = "boot";
+	stage = "run";
 	ret = probe_now();
-	if (ret != -EINVAL || sim_n_events || sim_n_iomap) { printf("    stage=boot must not exist\n"); bad = 1; }
+	if (ret != -EINVAL || sim_n_events || sim_n_iomap) { printf("    stage=run must not exist\n"); bad = 1; }
 	reset_all();
 	stage = "power";
 	confirm_power = true;
@@ -447,6 +596,7 @@ int main(int argc, char **argv)
 		pos_psd();
 		pos_refuse();
 		pos_power();
+		pos_boot();
 		printf("%s\n", fails ? "SIM-TEST: FAILED" : "SIM-TEST: all positive controls PASS");
 	} else if (!strcmp(mode, "neg-psd-never")) {
 		fails = neg_never();
@@ -454,10 +604,12 @@ int main(int argc, char **argv)
 		fails = neg_wrong();
 	} else if (!strcmp(mode, "neg-dt")) {
 		fails = neg_dt();
+	} else if (!strcmp(mode, "neg-boot")) {
+		fails = neg_boot();
 	} else if (!strcmp(mode, "neg-args")) {
 		fails = neg_args();
 	} else {
-		fprintf(stderr, "usage: sim_h18 [pos|neg-psd-never|neg-psd-wrong|neg-dt|neg-args]\n");
+		fprintf(stderr, "usage: sim_h18 [pos|neg-psd-never|neg-psd-wrong|neg-dt|neg-boot|neg-args]\n");
 		return 2;
 	}
 	return fails ? 1 : 0;
