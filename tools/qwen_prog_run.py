@@ -13,6 +13,7 @@ to <work>/<name>.f16; use --out NAME=FILE to select another destination.
 """
 
 import argparse
+import ctypes
 import json
 import os
 import select
@@ -43,26 +44,64 @@ def load_input(path: Path, shape, transpose=False):
     return arr
 
 
+def check_strides(shape, strides, nbytes):
+    """Refuse strides that overlap or run past a buffer of nbytes."""
+    n, c, h, w = shape
+    if strides[3] != 2 or strides[2] < 2 * w or strides[1] < strides[2] * h or \
+            strides[0] < strides[1] * c or any(s % 2 for s in strides) or \
+            (n - 1) * strides[0] + (c - 1) * strides[1] + (h - 1) * strides[2] + 2 * w > nbytes:
+        raise Refuse(f"strides {strides} do not hold shape {list(shape)} in {nbytes} B")
+
+
 def surface_view(buf, shape, strides):
     """The NCHW fp16 view of a surface at the tensor-descriptor byte strides
     [batch, plane, row, element]; refuses strides that overlap or run past
     the buffer."""
-    n, c, h, w = shape
-    if strides[3] != 2 or strides[2] < 2 * w or strides[1] < strides[2] * h or \
-            strides[0] < strides[1] * c or any(s % 2 for s in strides) or \
-            (n - 1) * strides[0] + (c - 1) * strides[1] + (h - 1) * strides[2] + 2 * w > buf.nbytes:
-        raise Refuse(f"strides {strides} do not hold shape {list(shape)} in {buf.nbytes} B")
+    check_strides(shape, strides, buf.nbytes)
     return np.lib.stride_tricks.as_strided(buf, shape=tuple(shape), strides=tuple(strides))
+
+
+_FAST = {"mod": None, "tried": False}
+
+
+def _fast_pack():
+    """tools/surface_pack (C, bit-identical to the numpy path) unless SURFACE_PACK=0 or it cannot be built."""
+    if not _FAST["tried"]:
+        _FAST["tried"] = True
+        if os.environ.get("SURFACE_PACK", "1") != "0":
+            try:
+                sys.path.insert(0, str(Path(__file__).resolve().parent))
+                import surface_pack
+                surface_pack.build()
+                _FAST["mod"] = surface_pack
+            except Exception:  # no C compiler or no write access to the cache: the numpy path below gives the same bytes
+                _FAST["mod"] = None
+    return _FAST["mod"]
+
+
+def _fast_ok(shape, strides):
+    """The C code assumes the batch stride is plane count times the plane stride (always so for n = 1)."""
+    return shape[0] == 1 or strides[0] == shape[1] * strides[1]
 
 
 def pack_surface(arr, strides, alloc_bytes):
     """The tensor at the descriptor strides, zero elsewhere in the BO."""
+    sp = _fast_pack()
+    if sp is not None and _fast_ok(arr.shape, strides):
+        check_strides(arr.shape, strides, alloc_bytes)
+        surf = np.zeros(alloc_bytes // 2, dtype=np.float16)
+        sp.pack_into((ctypes.c_char * surf.nbytes).from_buffer(surf), arr, {"shape": arr.shape, "strides": strides})
+        return surf
     surf = np.zeros(alloc_bytes // 2, dtype=np.float16)
     surface_view(surf, arr.shape, strides)[...] = arr
     return surf
 
 
 def unpack_surface(raw, shape, strides):
+    sp = _fast_pack()
+    if sp is not None and _fast_ok(shape, strides):
+        check_strides(shape, strides, len(raw))
+        return sp.unpack(raw, {"shape": shape, "strides": strides})
     return surface_view(np.frombuffer(raw, dtype=np.float16), shape, strides).copy()
 
 

@@ -134,3 +134,25 @@ def test_a_stride_that_wraps_the_offset_is_refused_in_c():
     out = np.empty(8, dtype=np.float16)
     assert lib.surface_unpack(inner, 4096, out.ctypes.data, 1, 2, 1, 4, 2 ** 64 - 4, 8) == -1
 
+
+def test_qwen_prog_run_uses_the_c_pack_and_keeps_its_bytes_and_refusals(monkeypatch):
+    """pack_surface and unpack_surface of qwen_prog_run take the C path by default and give the bytes of the numpy path; bad strides still raise Refuse."""
+    import qwen_prog_run as qpr
+    rng = np.random.default_rng(7)
+    for shape, strides in (((1, 4, 2, 8), (4 * 64, 64, 32, 2)), ((1, 3, 5, 7), (0 + 3 * 5 * 16, 5 * 16, 16, 2)), ((2, 2, 3, 4), (2 * 3 * 16 + 32, 3 * 16, 16, 2))):
+        arr = rng.standard_normal(shape).astype(np.float32)
+        alloc = (shape[0] - 1) * strides[0] + shape[1] * strides[1] + 128
+        alloc += alloc % 2
+        fast = qpr.pack_surface(arr, list(strides), alloc)
+        monkeypatch.setenv("SURFACE_PACK", "0")
+        monkeypatch.setattr(qpr, "_FAST", {"mod": None, "tried": False})
+        slow = qpr.pack_surface(arr, list(strides), alloc)
+        assert fast.tobytes() == slow.tobytes()
+        assert np.array_equal(qpr.unpack_surface(fast.tobytes(), shape, list(strides)), qpr.unpack_surface(slow.tobytes(), shape, list(strides)))
+        monkeypatch.delenv("SURFACE_PACK")
+        monkeypatch.setattr(qpr, "_FAST", {"mod": None, "tried": False})
+    assert qpr._fast_pack() is sp
+    with pytest.raises(qpr.Refuse):
+        qpr.pack_surface(np.zeros((1, 2, 1, 4), dtype=np.float32), [64, 8, 8, 4], 64)
+    with pytest.raises(qpr.Refuse):
+        qpr.unpack_surface(bytes(16), (1, 2, 1, 4), [64, 8, 8, 4])

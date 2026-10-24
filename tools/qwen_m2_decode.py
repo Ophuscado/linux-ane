@@ -257,7 +257,7 @@ class Decoder:
         self.step_cpus = []     # the same, for the step in progress
         self.args = args
         self.resident_states = bool(getattr(args, "resident_states", False))
-        if self.resident_states and (not args.resident or getattr(args, "dump", None)):
+        if self.resident_states and (not getattr(args, "resident", False) or getattr(args, "dump", None)):
             # The dump check compares every state port; the states are not on the wire here.
             raise Refuse("--resident-states needs --resident and does not apply to --dump")
         self.manifest = manifest
@@ -268,7 +268,7 @@ class Decoder:
                                        lock_path=getattr(args, "session_lock",
                                                          None)
                                        or "/var/tmp/ane-run.lock") \
-            if args.resident else None
+            if getattr(args, "resident", False) else None
         self.configure(int(manifest["max_len"]))
 
     def configure(self, m):
