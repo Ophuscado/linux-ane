@@ -1,0 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0+ OR MIT
+/*
+ * Apple T8152 (M6) J873 with the ANE0 bring-up node: the board file plus t8152-j873-ane.dtsi.
+ * The node only binds when ane_h18.ko is loaded with optin=t8152; nothing touches the ANE at boot.
+ * Copy this file and the dtsi next to t8152-j873.dts in the kernel tree to build the DTB.
+ */
+
+#include "t8152-j873.dts"
+#include "t8152-j873-ane.dtsi"
