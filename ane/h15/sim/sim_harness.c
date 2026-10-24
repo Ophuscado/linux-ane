@@ -1213,6 +1213,8 @@ static void run_setup(const struct ane_h15_soc *s, const char *compat, u32 ctrl)
 	eng_set(s, s->cpu_control, ctrl);
 	eng_set(s, s->mbox + 0x830, 0xabc0);
 	eng_set(s, s->mbox + 0x838, 0x1234);
+	eng_set(s, s->mbox + 0x834, 0x11);	/* upper halves: a 32-bit read would lose them */
+	eng_set(s, s->mbox + 0x83c, 0x22);
 	dm_soc = s;
 	dm_stuck = dm_nostart = false;
 	dm_msgs_left = 0;
@@ -1319,7 +1321,8 @@ static void pos_run_case(const char *tag, u32 ctrl, int msgs_left, bool nostart,
 	chk(log_count("ane_h15 write CPU_CONTROL=") == n_want_w && log_count("ane_h15 read CPU_CONTROL") >= 1, name);
 	snprintf(name, sizeof(name), "%s: %d message(s) popped, raw words logged, never a mailbox write", tag, want_msgs);
 	chk(log_count("ane_h15 msg") == want_msgs &&
-	    (want_msgs == 0 || log_count("raw0=0xabc0 raw1=0x1234") == want_msgs) &&
+	    (want_msgs == 0 || log_count("raw0=0x110000abc0 raw1=0x2200001234") == want_msgs) &&
+	    eng_events_at(s, s->mbox + 0x834) == 0 && eng_events_at(s, s->mbox + 0x83c) == 0 &&
 	    eng_events_at(s, s->mbox + 0x830) == want_msgs && eng_events_at(s, s->mbox + 0x838) == want_msgs &&
 	    events_in(s->engine_pa + s->mbox, 0x1000, 1) == 0, name);
 	snprintf(name, sizeof(name), "%s: power claim released, no 'do NOT unload'", tag);

@@ -408,6 +408,22 @@ static int ane_h15_read_word(struct ane_h15 *ane, const char *name, u32 off,
 	return 0;
 }
 
+/* The v4 mailbox receive registers are 64-bit and pop on read (ane_t6021.h:138-147): one readq per register,
+ * never two 32-bit reads, which would take the message apart (and eat it). */
+static int ane_h15_read_word64(struct ane_h15 *ane, const char *name, u32 off, u64 *v)
+{
+	if ((off & 7) || !ane_h15_read_ok(ane->soc, off, 8)) {
+		dev_err(ane->dev, "ane_h15 refusing 64-bit read %s engine+%#x\n", name, off);
+		return -EPERM;
+	}
+	dev_crit(ane->dev, "ane_h15 read64 %s pa=%#llx off=%#x\n", name,
+		 ane->soc->engine_pa + off, off);
+	*v = readq_relaxed(ane->engine + off);
+	dev_info(ane->dev, "ane_h15 word64=%s pa=%#llx value=%#llx\n", name,
+		 ane->soc->engine_pa + off, *v);
+	return 0;
+}
+
 /* The static offsets hold only for the windows the SoC row describes.
  * Compare a live reg resource, the one of_iomap() mapped, with the row. */
 static bool ane_h15_window_ok(struct ane_h15 *ane, int idx, const char *what,
@@ -601,7 +617,8 @@ static int ane_h15_write_ctrl(struct ane_h15 *ane, u32 old, u32 val, const char 
 static int ane_h15_stage_run(struct ane_h15 *ane)
 {
 	const struct ane_h15_soc *s = ane->soc;
-	u32 st = 0, ctrl = 0, rv_lo = 0, rv_hi = 0, a2i = 0, i2a = 0, last = 0xffffffffu, m0, m1;
+	u32 st = 0, ctrl = 0, rv_lo = 0, rv_hi = 0, a2i = 0, i2a = 0, last = 0xffffffffu;
+	u64 m0, m1;
 	unsigned int waited, i, msgs = 0, started_seen = 0, posted = 0;
 	bool stopped = false;
 	int ret;
@@ -680,12 +697,12 @@ static int ane_h15_stage_run(struct ane_h15 *ane)
 		if (!(i2a & ANE_H15_MBOX_EMPTY) && msgs < ANE_H15_RUN_MAX_MSGS) {
 			posted = 1;
 			m0 = m1 = 0;
-			ret = ane_h15_read_word(ane, "MBOX_I2A_RECV0", s->mbox + ANE_H15_MBOX_I2A_RECV0, &m0);
+			ret = ane_h15_read_word64(ane, "MBOX_I2A_RECV0", s->mbox + ANE_H15_MBOX_I2A_RECV0, &m0);
 			if (!ret)
-				ret = ane_h15_read_word(ane, "MBOX_I2A_RECV1", s->mbox + ANE_H15_MBOX_I2A_RECV1, &m1);
+				ret = ane_h15_read_word64(ane, "MBOX_I2A_RECV1", s->mbox + ANE_H15_MBOX_I2A_RECV1, &m1);
 			if (ret)
 				break;
-			dev_info(ane->dev, "ane_h15 msg%u raw0=%#x raw1=%#x\n", msgs, m0, m1);
+			dev_info(ane->dev, "ane_h15 msg%u raw0=%#llx raw1=%#llx\n", msgs, m0, m1);
 			msgs++;
 		}
 	}

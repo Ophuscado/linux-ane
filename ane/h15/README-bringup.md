@@ -61,8 +61,8 @@ template is `ane/h16/`.
   set, RUNNING clear), RUN is clear, RVBAR equals `rvbar_expect` and both
   mailbox words read EMPTY. Then it sets CPU_CONTROL bit 4 (the macOS
   `_runCPU(true)` read-OR-write), watches CPU_STATUS and `MBOX_I2A_CTRL` every
-  10 ms for `run_wait_ms`, pops at most four I2A messages and logs the raw
-  words (it sends nothing, never answers a HELLO), and stops the core the macOS
+  10 ms for `run_wait_ms`, pops at most four I2A messages (one 64-bit read per receive register) and logs
+  the raw words (it sends nothing, never answers a HELLO), and stops the core the macOS
   way (clear bit 4, then bit 5). It never writes RVBAR, the mailbox or the
   DART. If the core does not report STOPPED afterwards it keeps the power
   domains and mappings, logs `reboot required`, and `remove()` refuses.

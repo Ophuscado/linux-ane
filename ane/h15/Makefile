@@ -162,6 +162,10 @@ sim-mutation-run-noclear:
 sim-mutation-run-nostopcheck:
 	$(call pd_mutant,run-nostopcheck,s/if (!stopped) {/if (0 \/* NEG: stuck core accepted *\/) {/,NEG: stuck core accepted,neg-run)
 
+# stage 4 pops mailbox messages with 32-bit reads (loses the upper halves)
+sim-mutation-run-pop32:
+	$(call pd_mutant,run-pop32,s/\*v = readq_relaxed(ane->engine + off);/*v = readl_relaxed(ane->engine + off); \/* NEG: 32-bit pop *\//,NEG: 32-bit pop,pos)
+
 sim-negative-nopsguard:
 	rm -rf /tmp/ane_h15-nopsguard && mkdir -p /tmp/ane_h15-nopsguard
 	cp -r sim /tmp/ane_h15-nopsguard/sim
@@ -224,5 +228,5 @@ clean:
 	sim-mutation-read-noconfirm sim-mutation-nofillrefusal \
 	sim-negative-run sim-mutation-run-noconfirm sim-mutation-run-norvbar \
 	sim-mutation-run-nomboxcheck sim-mutation-run-noclear \
-	sim-mutation-run-nostopcheck clean
+	sim-mutation-run-nostopcheck sim-mutation-run-pop32 clean
 endif

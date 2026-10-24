@@ -297,6 +297,25 @@ static inline void *of_iomap(struct device_node *n, int idx)
 	sim_n_iomap++;
 	return sim_bus_map(n->reg_pa[idx], n->reg_size[idx]);
 }
+/* One 64-bit access is ONE event (at the low address, hook applied there): the module must not split it. */
+static inline u64 bus_read64(u64 pa)
+{
+	struct sim_region *r = sim_region_find(pa);
+	u32 lo, hi;
+
+	if (!r || !sim_region_find(pa + 7)) {
+		sim_bus_faults++;
+		sim_event(0, pa, 0);
+		return 0xdeadbeefdeadbeefULL;
+	}
+	lo = r->mem[(pa - r->pa) >> 2];
+	hi = r->mem[((pa - r->pa) >> 2) + 1];
+	if (sim_read_hook)
+		lo = sim_read_hook(pa, lo);
+	sim_event(0, pa, lo);
+	return ((u64)hi << 32) | lo;
+}
+#define readq_relaxed(a) bus_read64((u64)(uintptr_t)(a))
 #define readl(a) bus_read((u64)(uintptr_t)(a))
 #define readl_relaxed(a) bus_read((u64)(uintptr_t)(a))
 #define writel(v, a) bus_write((u64)(uintptr_t)(a), (v))
