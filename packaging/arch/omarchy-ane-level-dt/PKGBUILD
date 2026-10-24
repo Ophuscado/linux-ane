@@ -29,13 +29,7 @@ package() {
 		sed -n '/^# BEGIN-CHECK$/,/^# END-CHECK$/p' "$startdir/omarchy-ane-level-dt.install"
 		cat << 'EOF'
 case "${1:-}" in
---guard)
-	if ! _level_check; then
-		rm -f /usr/lib/omarchy-mac-boot/dtb-overlays/t6001/omarchy-ane-level.dtbo
-		echo "omarchy-ane-level-check: the device trees changed; the level overlay was removed so m1n1 boots the kernel's device tree as it ships" >&2
-		exit 0
-	fi
-	;;
+--guard) _level_guard ;;
 *) _level_check ;;
 esac
 EOF

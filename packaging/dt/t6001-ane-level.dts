@@ -14,11 +14,12 @@
  * The power domains are the kernel's own phandles, written as numbers. A label on an existing node in an overlay gives that
  * node a new phandle while every other reference keeps the old number (fdtoverlay 1.7.2 does this), so no label is used.
  * The numbers are those of linux-aurora 7.1.12.aurora2-20261013.18 (ane_sys_cpu 0x15, ane_set1..4 0x19..0x1c, pms_sram 0x20);
- * packaging/level-check verifies against the installed device tree that each one still names the controller below, and the
- * package refuses to install its overlay against a kernel package whose device tree differs.
+ * the package (packaging/arch/omarchy-ane-level-dt) checks against the installed device trees that each one still names the
+ * controller below, and removes its overlay file after installation, and after a kernel update, when they do not.
  *   0x15 /soc/power-management@28e080000/power-controller@2c8  ane_sys_cpu
  *   0x19 .../power-controller@c010 ane_set1   0x1a .../@c018 ane_set2   0x1b .../@c020 ane_set3   0x1c .../@c028 ane_set4
  *   0x20 .../power-controller@2e0  pms_sram
+ * Evidence for the addresses and the sequence (exact sources, sha256): receipts/2026-10-24-ane-level-driver/README.md, section Evidence.
  */
 /dts-v1/;
 /plugin/;

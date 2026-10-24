@@ -1,6 +1,8 @@
-# omarchy-ane-level-dt install scriptlet. The device tree check between the markers is the single copy: package() extracts it
-# into /usr/bin/omarchy-ane-level-check, and pre_install runs it, so the package never installs its overlay against a device
-# tree the overlay was not written for.
+# omarchy-ane-level-dt install scriptlet. The device tree check and guard between the markers are the single copy: package() extracts
+# them into /usr/bin/omarchy-ane-level-check. libalpm does not stop an installation when a scriptlet fails, so the check is enforced
+# AFTER extraction: post_install and post_upgrade run the guard, which removes the overlay file when the installed device trees are
+# not the ones the overlay was written for. The pacman hook 95-omarchy-mac-dtb-overlays.hook then rebuilds m1n1 stage 2 in
+# PostTransaction, after the scriptlets, and so builds it without the overlay.
 #
 # BEGIN-CHECK
 _level_check() {
@@ -41,13 +43,20 @@ _level_check() {
 	done
 	return $_rc
 }
+_level_guard() {
+	# The overlay file is the only thing that reaches m1n1: no check, no overlay.
+	_overlay=${OMARCHY_ANE_LEVEL_OVERLAY:-/usr/lib/omarchy-mac-boot/dtb-overlays/t6001/omarchy-ane-level.dtbo}
+	if ! _level_check; then
+		rm -f "$_overlay"
+		echo "omarchy-ane-level-check: the device trees do not match; the level overlay was removed so m1n1 boots the kernel's device tree as it ships" >&2
+	fi
+	return 0
+}
 # END-CHECK
 
 pre_install() {
-	if ! _level_check; then
-		echo "omarchy-ane-level-dt: the installed linux-aurora device trees do not match the overlay; not installing" >&2
-		return 1
-	fi
+	_level_check || echo "omarchy-ane-level-dt: the installed linux-aurora device trees do not match the overlay; the guard removes the overlay after extraction" >&2
+	return 0
 }
 
 pre_upgrade() {
@@ -55,6 +64,8 @@ pre_upgrade() {
 }
 
 post_install() {
+	_level_guard
+	[ -e "${OMARCHY_ANE_LEVEL_OVERLAY:-/usr/lib/omarchy-mac-boot/dtb-overlays/t6001/omarchy-ane-level.dtbo}" ] || return 0
 	echo "omarchy-ane-level-dt: omarchy-mac-boot rebuilds m1n1 stage 2 with this overlay (95-omarchy-mac-dtb-overlays.hook); reboot to use it."
 	echo "  The overlay only matters with omarchy-ane-modules-aurora-12.6 (the ane driver that asks for level 1) and the PMP firmware running."
 }

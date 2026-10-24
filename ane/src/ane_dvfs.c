@@ -20,6 +20,9 @@
  * window (read entities at +reg*16, update space at +0x10000 + reg*8; PS-REQ reg 0xf8, PS-ACK
  * reg 0x100, PMP-STATUS reg 1, ANE level reg 0x10c).
  *
+ * Evidence for every address, offset and word above (kernelcache and trace hashes, run logs): receipts/2026-10-24-ane-level-driver/README.md,
+ * section Evidence; that receipt and this file were first committed together in 2bfb216.
+ *
  * Safety:
  *  - Optional. The DT must name both windows (reg-names "dvfs" and "ptd"); without them the
  *    driver behaves as before. Level control needs the PMP firmware running (PMP-STATUS reads 1)
