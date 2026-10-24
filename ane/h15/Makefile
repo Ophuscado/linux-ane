@@ -138,6 +138,54 @@ sim-mutation-read-nowindow:
 sim-mutation-read-noconfirm:
 	$(call pd_mutant,read-noconfirm,s/if (!confirm_read) {/if (0 \/* NEG: confirm_read ignored *\/) {/,NEG: confirm_read ignored,pos)
 
+# Stage 5 (confirm_run=1): the only stage with writes. neg-run = refusals + the stuck core.
+sim-negative-run: sim/sim_h15
+	./sim/sim_h15 neg-run
+
+# stage 5 runs without confirm_run=1
+sim-mutation-run-noconfirm:
+	$(call pd_mutant,run-noconfirm,s/if (!confirm_run) {/if (0 \/* NEG: confirm_run ignored *\/) {/,NEG: confirm_run ignored,neg-run)
+
+# stage 5 starts a core whose RVBAR is not the measured one
+sim-mutation-run-norvbar:
+	$(call pd_mutant,run-norvbar,s/(((u64)rv_hi << 32) | rv_lo) != s->rvbar_expect ||/0 \/* NEG: rvbar check skipped *\/ ||/,NEG: rvbar check skipped,neg-run)
+
+# stage 5 starts a core with stale mailbox state
+sim-mutation-run-nomboxcheck:
+	$(call pd_mutant,run-nomboxcheck,s/!(a2i \& ANE_H15_MBOX_EMPTY) || !(i2a \& ANE_H15_MBOX_EMPTY)/0 \/* NEG: mailbox check skipped *\//,NEG: mailbox check skipped,neg-run)
+
+# stage 5 never clears RUN again
+sim-mutation-run-noclear:
+	$(call pd_mutant,run-noclear,s/ctrl \& ~ANE_H15_CPU_RUN$(COMMA) "clear RUN"/ctrl$(COMMA) "clear RUN"/,ctrl$(COMMA) "clear RUN",pos)
+
+# stage 5 reports a core that never stopped as stopped (remove() would then unmap under it)
+sim-mutation-run-nostopcheck:
+	$(call pd_mutant,run-nostopcheck,s/if (!stopped) {/if (0 \/* NEG: stuck core accepted *\/) {/,NEG: stuck core accepted,neg-run)
+
+# stage 5 pops mailbox messages with 32-bit reads (loses the upper halves)
+sim-mutation-run-pop32:
+	$(call pd_mutant,run-pop32,s/\*v = readq_relaxed(ane->engine + off);/*v = readl_relaxed(ane->engine + off); \/* NEG: 32-bit pop *\//,NEG: 32-bit pop,pos)
+
+# Stage 4 (confirm_read=1): the read-only DART scan; neg-dart also holds the run stage's DART gate.
+sim-negative-dart: sim/sim_h15
+	./sim/sim_h15 neg-dart
+
+# stage 5 starts the core although no DART stream is enabled (the M6 silence)
+sim-mutation-run-nodartgate:
+	$(call pd_mutant,run-nodartgate,s/if (!live \&\& !run_unmapped) {/if (0 \/* NEG: DART gate skipped *\/) {/,NEG: DART gate skipped,neg-dart)
+
+# a stream counts as live without a valid TTBR
+sim-mutation-dart-nottbr:
+	$(call pd_mutant,dart-nottbr,s/(tcr \& 1) \&\& (ttbr \& 1) \&\& on/(tcr \& 1) \&\& on \/* NEG: ttbr valid ignored *\//,NEG: ttbr valid ignored,pos)
+
+# stage 4 reads the DART without confirm_read=1
+sim-mutation-dart-noconfirm:
+	$(call pd_mutant,dart-noconfirm,/^static int ane_h15_stage_dart/$(COMMA)/^}/ s/if (!confirm_read) {/if (0 \/* NEG: confirm_read ignored in dart *\/) {/,NEG: confirm_read ignored in dart,neg-dart)
+
+# a core that will not stop leaves the module unpinned (rmmod then frees the code under it)
+sim-mutation-run-nopin:
+	$(call pd_mutant,run-nopin,s/__module_get(THIS_MODULE);/\/* NEG: module not pinned *\//,NEG: module not pinned,neg-run)
+
 sim-negative-nopsguard:
 	rm -rf /tmp/ane_h15-nopsguard && mkdir -p /tmp/ane_h15-nopsguard
 	cp -r sim /tmp/ane_h15-nopsguard/sim
@@ -197,5 +245,10 @@ clean:
 	sim-negative-read-ps-stuck sim-negative-read-forbidden sim-negative-read-window \
 	sim-mutation-read-nowindow \
 	sim-mutation-read-noguard sim-mutation-read-nocheck \
-	sim-mutation-read-noconfirm sim-mutation-nofillrefusal clean
+	sim-mutation-read-noconfirm sim-mutation-nofillrefusal \
+	sim-negative-run sim-mutation-run-noconfirm sim-mutation-run-norvbar \
+	sim-mutation-run-nomboxcheck sim-mutation-run-noclear \
+	sim-mutation-run-nostopcheck sim-mutation-run-pop32 \
+	sim-negative-dart sim-mutation-run-nodartgate sim-mutation-dart-nottbr \
+	sim-mutation-dart-noconfirm sim-mutation-run-nopin clean
 endif
