@@ -2,12 +2,15 @@
 # SPDX-License-Identifier: GPL-2.0-only OR MIT
 # m6-ane-stage.sh: run ONE ane_h18 stage on the M6 (T8152), as root, and collect the log.
 #   m6-ane-stage.sh <1|2|3> <boot-id prefix> [GO [state [slots [mbox [ctrl]]]]]
-#   m6-ane-stage.sh 4 <boot-id prefix> GO [state [slots [wait_ms]]]
+#   m6-ane-stage.sh 4 <boot-id prefix> GO [state [slots [wait_ms [dart [hello]]]]]
 # Step 1 = stage dt (no MMIO), step 2 = stage psd (read-only PSD slots 30 and 31), step 3 = stage power with
 # confirm_power=1 (requests PSD state <state> on the first <slots> slots, default 1 = slot 30 only, then reads CPU_STATUS,
 # ASC_STATUS and IORVBAR; mbox=1 also reads the Postoffice status words of three candidate channels, ctrl=1 also reads CPU_CONTROL).
 # Step 4 = stage boot: starts the ANE core (CPU_CONTROL.RUN), watches it for wait_ms (default 300), reads at most 8 mailbox messages,
-# clears RUN again. It needs GO, a step 3 PASS on this boot, and runs once per boot: reboot before anything else after it.
+# clears RUN again. It also reads the status word of the alias-bank mailbox channel before RUN and watches that channel for messages.
+# dart=1 reads twelve words of the ANE DART before RUN (needs two slots); hello=1 answers the firmware's RTKit management HELLO
+# (version 12) and endpoint map in the half of that channel that is not the outbox, nothing else.
+# It needs GO, a step 3 PASS on this boot, and runs once per boot: reboot before anything else after it.
 # The state defaults to 1: the AppleT8152PMGR kext decode in the lab receipts reads "on" as request 1 (or 2) for these slots,
 # and names 1 as the first experiment. 0 is the value proven for the ATC USB slot 71 and GPU slot 3, 2 is the GPU ASC value.
 # Step 3 needs the literal third argument GO (the operator's go-ahead) and a step 2 PASS on this boot. It may run again on
@@ -29,7 +32,7 @@ fi
 
 WORK=${WORK:-/var/tmp/m6-ane}
 KO=${KO:-$WORK/ane_h18.ko}
-KO_SHA256=${KO_SHA256:-d9fbba8b424df64a19801cc921b14f31173e595204b54fd7d530f2c17e2b19a6}
+KO_SHA256=${KO_SHA256:-d84803112cae3a84933fb413787fdbfc4859ffe8e260de9f2a013081b44def0a}
 WANT_UNAME=${WANT_UNAME:-7.1.12-aurora-m6usb-ARCH}
 UNAME_R=${UNAME_R:-$(uname -r)}
 BOOT_ID_FILE=${BOOT_ID_FILE:-/proc/sys/kernel/random/boot_id}
@@ -47,6 +50,8 @@ slots=${5:-1}
 mbox=${6:-0}
 ctrl=${7:-0}
 wait_ms=${6:-300}
+dart=${7:-0}
+hello=${8:-0}
 die() { echo "m6-ane-stage: REFUSED: $*" >&2; exit 2; }
 
 case "$step" in 1|2|3|4) ;; *) die "usage: $0 <1|2|3|4> <boot-id prefix> [GO [state [slots [mbox [ctrl]]]]]" ;; esac
@@ -55,6 +60,8 @@ case "$slots" in 1|2) ;; *) die "slots must be 1 or 2" ;; esac
 if [ "$step" = 4 ]; then
   case "$wait_ms" in *[!0-9]*|"") die "wait_ms must be a number" ;; esac
   [ "$wait_ms" -ge 10 ] && [ "$wait_ms" -le 2000 ] || die "wait_ms must be 10 to 2000"
+  case "$dart$hello" in 00|01|10|11) ;; *) die "dart and hello must be 0 or 1" ;; esac
+  [ "$dart" = 0 ] || [ "$slots" = 2 ] || die "dart=1 needs two slots"
 else
   case "$mbox$ctrl" in 00|01|10|11) ;; *) die "mbox and ctrl must be 0 or 1" ;; esac
 fi
@@ -97,7 +104,10 @@ case "$step" in
      [ "$mbox" = 1 ] && args="$args read_mbox=1"
      [ "$ctrl" = 1 ] && args="$args read_ctrl=1"
      rm -f "$WORK/step3-pass-$boot"; : > "$WORK/step3-run-$boot" ;;
-  4) args="optin=t8152 stage=boot confirm_power=1 confirm_boot=1 psd_state=$state psd_slots=$slots boot_wait_ms=$wait_ms"; : > "$WORK/step4-run-$boot" ;;
+  4) args="optin=t8152 stage=boot confirm_power=1 confirm_boot=1 psd_state=$state psd_slots=$slots boot_wait_ms=$wait_ms alias_mbox=1"
+     [ "$dart" = 1 ] && args="$args read_dart=1"
+     [ "$hello" = 1 ] && args="$args rtkit_hello=1"
+     : > "$WORK/step4-run-$boot" ;;
 esac
 case "$step" in 1) want_stage=dt ;; 2) want_stage=psd ;; 3) want_stage=power ;; 4) want_stage=boot ;; esac
 n0=$($DMESG 2>&1 | grep -c 'ane_h18 RESULT')

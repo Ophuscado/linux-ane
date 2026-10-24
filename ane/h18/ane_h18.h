@@ -48,6 +48,23 @@
 #define ANE_H18_PO_OUTBOX	0x00	/* 16 bytes, four 32-bit words; the last word read pops the message (m1n1 OUTBOX1) */
 #define ANE_H18_PO_MAXMSG	8	/* at most this many messages are read per run */
 #define ANE_H18_PO_NCAND	3	/* candidate channels, see ane_h18_stage_power() */
+/* The alias bank: the same Postoffice window at +0x10000, channel 2 * msgbox-mailbox-num. For this ANE the ADT has msgbox-using-postoffice and no
+ * msgbox-using-alias, which the AppleASCWrapV8 constructor turns into base + 0x10000 and channel 2 * num (0x316010c00 for ANE0). */
+#define ANE_H18_PO_ALIAS_OFF	0x10000
+/* ANE DART (dart,gen3, instance 0): read only liveness words, see ane_h18_stage_boot(). */
+#define ANE_H18_DART_NREAD	12
+/* Postoffice channel layout used for the RTKit exchange: two 16 byte halves at +0x00 and +0x10 (one is the outbox, one the inbox; the lab receipts
+ * disagree which, so the half that holds the first message is taken as the outbox and the other as the inbox), status at +0x20: outbox count in
+ * bits 3:0, inbox credits in bits 11:8. */
+#define ANE_H18_PO_HALF_A	0x00
+#define ANE_H18_PO_HALF_B	0x10
+#define ANE_H18_PO_MAXSEND	4	/* at most this many management replies per run */
+/* RTKit management protocol (the Linux apple-rtkit dialect): message type in bits 59:52 of the first 64-bit word, endpoint in the low byte of the second. */
+#define ANE_H18_RTK_TYPE_SHIFT	52
+#define ANE_H18_RTK_HELLO	1
+#define ANE_H18_RTK_HELLO_REPLY	2
+#define ANE_H18_RTK_EPMAP	8	/* the reply has the same type */
+#define ANE_H18_RTK_VERSION	12	/* the version macOS and Linux answer with on this firmware family */
 
 struct ane_h18_soc {
 	const char *name;
@@ -60,6 +77,8 @@ struct ane_h18_soc {
 	u32 mbox_size;
 	u64 engine_pa;
 	u32 engine_size;
+	u64 dart_pa;		/* ANE DART instance 0 (ADT /arm-io/dart-ane reg[0]) */
+	u32 dart_size;
 	u32 mbox_num;		/* ADT msgbox-mailbox-num */
 	u64 rvbar_expect;	/* IORVBAR as iBoot leaves it: entry 0x10000000000 (the segment-ranges remap) | valid bit. Measured on the board. */
 	u32 psd_slot[ANE_H18_NPSD];

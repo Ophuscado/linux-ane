@@ -94,14 +94,35 @@ sim-mutation-nopreflight:
 sim-mutation-nohalt:
 	$(call mutant,nohalt,s/writel(ctrl \& ~ANE_H18_CPU_RUN, ane->asc + ANE_H18_ASC_CPU_CONTROL);/\/* NEG: RUN never cleared *\//,NEG: RUN never cleared,pos)
 
+# the RTKit reply is written without looking at the inbox credits
+sim-mutation-nocredit:
+	$(call mutant,nocredit,s/if (!(st \& 0xf00)) {/if (0 \/* NEG: credit ignored *\/) {/,NEG: credit ignored,pos)
+
+# the reply goes to the half that holds the firmware's message
+sim-mutation-wronghalf:
+	$(call mutant,wronghalf,s/tx = a_has ? ANE_H18_PO_HALF_B : ANE_H18_PO_HALF_A;/tx = a_has ? ANE_H18_PO_HALF_A : ANE_H18_PO_HALF_B; \/* NEG: wrong half *\//,NEG: wrong half,pos)
+
+# a HELLO whose version range excludes 12 is answered anyway
+sim-mutation-nover:
+	$(call mutant,nover,s/if (minv > ANE_H18_RTK_VERSION || maxv < ANE_H18_RTK_VERSION) {/if (0 \/* NEG: version not checked *\/) {/,NEG: version not checked,pos)
+
+# read_dart is allowed with one PSD slot
+sim-mutation-dartgate:
+	$(call mutant,dartgate,s/if (read_dart \&\& psd_slots != ANE_H18_NPSD) {/if (0 \/* NEG: DART gate off *\/) {/,NEG: DART gate off,neg-boot)
+
+# rtkit_hello is allowed without alias_mbox
+sim-mutation-hellogate:
+	$(call mutant,hellogate,s/if (rtkit_hello \&\& !alias_mbox) {/if (0 \/* NEG: hello gate off *\/) {/,NEG: hello gate off,neg-boot)
+
 sim-all: sim-test sim-negative-psd-never sim-negative-psd-wrong sim-negative-dt sim-negative-args sim-negative-boot \
 	sim-mutation-noconfirm sim-mutation-nowindow sim-mutation-noundo sim-mutation-noack sim-mutation-nogate \
-	sim-mutation-noconfirmboot sim-mutation-nopreflight sim-mutation-nohalt
+	sim-mutation-noconfirmboot sim-mutation-nopreflight sim-mutation-nohalt \
+	sim-mutation-nocredit sim-mutation-wronghalf sim-mutation-nover sim-mutation-dartgate sim-mutation-hellogate
 
 clean:
 	$(MAKE) -C $(KERNELDIR) M=$(PWD) clean
 	rm -f sim/sim_h18
 
-.PHONY: sim-negative-boot sim-mutation-noconfirmboot sim-mutation-nopreflight sim-mutation-nohalt default modules sim-test sim-negative-psd-never sim-negative-psd-wrong sim-negative-dt sim-negative-args \
+.PHONY: sim-mutation-nocredit sim-mutation-wronghalf sim-mutation-nover sim-mutation-dartgate sim-mutation-hellogate sim-negative-boot sim-mutation-noconfirmboot sim-mutation-nopreflight sim-mutation-nohalt default modules sim-test sim-negative-psd-never sim-negative-psd-wrong sim-negative-dt sim-negative-args \
 	sim-mutation-noconfirm sim-mutation-nowindow sim-mutation-noundo sim-mutation-noack sim-mutation-nogate sim-all clean
 endif
