@@ -63,8 +63,8 @@ template is `ane/h16/`.
   translation on and a valid TTBR. `PASS reason=dart-no-stream-enabled`
   means nothing is enabled: a started core could not fetch its firmware. It
   does not show whether the mapping covers the firmware, whether the core would
-  run, or anything about the mailbox. The same read has not been done on the
-  M6 (T8152); there the DART state at handoff is unmeasured.
+  run, or anything about the mailbox. On the M6 (T8152) the same kind of read (w7H, PR 183 and 185)
+  found every ENABLE_STREAMS word 0: iBoot left no stream enabled.
 - `stage=5` or `stage=run`: refused without `confirm_run=1`, with
   `run_wait_ms` outside 10 to 2000 (default 300), and on any SoC row whose
   `rvbar_expect` is 0 (only t6030 has a measured RVBAR, from stage 2 on a
@@ -73,7 +73,21 @@ template is `ane/h16/`.
   and both mailbox CTRL words and writes only if the core is stopped (STOPPED
   set, RUNNING clear), RUN is clear, RVBAR equals `rvbar_expect` and both
   mailbox words read EMPTY, and the stage 4 scan finds a live DART stream
-  (`run_unmapped=1` overrides this and expects silence). Then it sets CPU_CONTROL bit 4 (the macOS
+  (`run_unmapped=1` overrides this and expects silence). With `map_fw=1` it
+  first gives the core a DART mapping, the M6 module's pattern (PR 185): it
+  attaches the ANE to its DART through the iommu API (so the `apple-dart`
+  driver programs the DART and enables the stream) and `iommu_map()`s the two
+  firmware segments iBoot preloaded, TEXT read only at the RVBAR entry address
+  and DATA read+write right behind it, then runs the scan, which must now find
+  the stream. The physical addresses come from `fw_seg=TEXTPA:SIZE,DATAPA:SIZE`,
+  taken from the live ADT of the same boot (`ane/h15/h15-segments.py`), because
+  iBoot picks them and the Linux device tree does not carry them for the ANE
+  (m1n1 writes asc-firmware regions only for dcp, dcpext and ave). Each segment
+  must be 16 KiB aligned, at most 64 MiB, disjoint, and outside system RAM,
+  or the stage refuses before touching hardware. `map_fw=1` needs `iommus` in
+  the ANE node: `ane/h15/t6030-ane-dart-experimental.dts` (DART instance 0
+  enabled, stream 0 inferred). The mapping is undone after a clean stop and
+  kept when the core does not stop. Then it sets CPU_CONTROL bit 4 (the macOS
   `_runCPU(true)` read-OR-write), watches CPU_STATUS and `MBOX_I2A_CTRL` every
   10 ms for `run_wait_ms`, pops at most four I2A messages (one 64-bit read per receive register) and logs
   the raw words (it sends nothing, never answers a HELLO), and stops the core the macOS
@@ -277,7 +291,12 @@ The read-only DART scan:
     dmesg | grep ane_h15
 
 The run stage (writes CPU_CONTROL; T6030 only, refuses without a live DART
-stream, only after the maintainers' GO):
+stream, only after the maintainers' GO). With the DART overlay and `fw_seg`:
+
+    insmod ane/h15/ane_h15.ko optin=t6030 stage=5 confirm_run=1 map_fw=1 fw_seg=TEXTPA:SIZE,DATAPA:SIZE
+    dmesg | grep ane_h15
+
+Without them (only if stage 4 found a live stream):
 
     insmod ane/h15/ane_h15.ko optin=t6030 stage=5 confirm_run=1
     dmesg | grep ane_h15
@@ -293,6 +312,13 @@ stream, only after the maintainers' GO):
   version as "unknown"); the module's stage=3 plan to map the
   preload at the ADT remap IOVAs is the same mechanical path
   the T6021 W-series proved, but on M3 it has not run.
+- `map_fw=1`: no H15 run. The DART overlay has not been booted; an enabled DART node hung a
+  T6030 at boot before (PR 173) and this one relies on `power-domains` to prevent that. Stream 0 is
+  inferred. Whether iBoot's firmware phys addresses repeat between boots is not known, which is why
+  `fw_seg` must come from the same boot's ADT. Whether the T6030 firmware lays TEXT and DATA out
+  like the M6 (DATA IOVA = vm-base + TEXT size) is inferred; `h15-segments.py` refuses a dump where it
+  does not hold. Instance 0 of the four DART windows may not be enough for the firmware fetch (w7H's
+  open question on the M6).
 - Stage 5 reads CPU_CONTROL and writes it (bits 4 and 5 only). Nobody has run
   that on an H15 part. The M6 (T8152) result it is modelled on: the same RUN
   write cleared the STOPPED bit and left the core with no message, with the
