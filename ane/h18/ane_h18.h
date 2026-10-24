@@ -7,8 +7,11 @@
  *   power-gates [30, 31], clock-gates [30, 31], service-gates, msgbox-mailbox-num 12, msgbox-using-postoffice
  *   true). Each ADT address plus 0x200000000 is the physical address, the translation the kernel tree's
  *   t8152-j873 device tree uses (linux-aurora, j873 tip 4513ee61d6a0, "translated ADT addresses").
- * - ASC wrapper register offsets: the macOS 27.0 (26A434) kernelcache AppleA7IOP-ASCWrap-v8 decode in the
- *   macOS 27.0 kernelcache decode in the lab notebook (2026-10-19). Not re-derived here.
+ * - ASC wrapper register offsets (CPU_CONTROL 0x44, CPU_STATUS 0x48, ASC_STATUS 0x8048, IORVBAR at +0 of its block):
+ *   UNVERIFIED by any checked-in receipt. They come from a decode of the macOS 27.0 (26A434) kernelcache
+ *   AppleA7IOP-ASCWrap-v8 in the lab notebook (2026-10-19), which this repository does not carry. The board has
+ *   confirmed only that reads of CPU_STATUS, ASC_STATUS and IORVBAR at these offsets return sane values with the
+ *   PSD slots on (stage power) and that CPU_CONTROL reads 0 before the core runs (read_ctrl).
  * - PSD slot window layout and request protocol: drivers/pmdomain/apple/pmgr-psd.c of the same kernel tree,
  *   proven on this board for slot 71 (ATC0 USB).
  * INFERENCE, not measured: that ANE slots 30 and 31 accept state 0 (run) and what the ASC wrapper reads

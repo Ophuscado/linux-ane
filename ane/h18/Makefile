@@ -78,13 +78,17 @@ sim-mutation-noack:
 sim-mutation-nogate:
 	$(call mutant,nogate,s/writel(state$(COMMA) ane->psd\[i\] + ANE_H18_PSD_REQUEST);/writel(state$(COMMA) ane->psd[i] + ANE_H18_PSD_REQUEST); return 0; \/* NEG: no wait *\//,NEG: no wait,neg-psd-never)
 
+# a state 6 request that is not acknowledged does not fail the stage
+sim-mutation-nostate6:
+	$(call mutant,nostate6,s/if (!keep_on \&\& ane_h18_psd_off(ane)) {/if (!keep_on \&\& (ane_h18_psd_off(ane)$(COMMA) 0)) { \/* NEG: state 6 ack ignored *\//,NEG: state 6 ack ignored,neg-psd-never)
+
 sim-all: sim-test sim-negative-psd-never sim-negative-psd-wrong sim-negative-dt sim-negative-args \
-	sim-mutation-noconfirm sim-mutation-nowindow sim-mutation-noundo sim-mutation-noack sim-mutation-nogate
+	sim-mutation-noconfirm sim-mutation-nowindow sim-mutation-noundo sim-mutation-noack sim-mutation-nogate sim-mutation-nostate6
 
 clean:
 	$(MAKE) -C $(KERNELDIR) M=$(PWD) clean
 	rm -f sim/sim_h18
 
-.PHONY: default modules sim-test sim-negative-psd-never sim-negative-psd-wrong sim-negative-dt sim-negative-args \
+.PHONY: sim-mutation-nostate6 default modules sim-test sim-negative-psd-never sim-negative-psd-wrong sim-negative-dt sim-negative-args \
 	sim-mutation-noconfirm sim-mutation-nowindow sim-mutation-noundo sim-mutation-noack sim-mutation-nogate sim-all clean
 endif
