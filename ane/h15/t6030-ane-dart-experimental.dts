@@ -12,7 +12,11 @@
  * three-instance file has not been booted. If the machine hangs before display: power-cycle and boot without
  * the overlay. Stream 0 is the one stream the ADT names for the ANE (/arm-io/dart-ane sid = 0 and 15, bypass-15; the ane
  * node's iommu-parent is mapper-ane, reg 0); every working ANE overlay in this repo lists all its instances. All
- * three DART nodes use the one interrupt of the ADT (577), which the DART driver shares. Mirrors
+ * three DART nodes use the one interrupt of the ADT (577), which the DART driver shares. Sources: the ADT facts are from the
+ * same-boot ADT of a J516S (sha256 5cb4145e7c40bcb69ece333ce912c7956980e44977f7a369ab7ac459c3e79c0d, posted on issue 176 with
+ * h15-adt-nodes.py output); the shared interrupt is requested with IRQF_SHARED at drivers/iommu/apple-dart.c:3115 of that
+ * tester's kernel (source 77648eb7716845a7207ed6cdeadeea17b42c7a22, checked by the tester), where MAX_DARTS_PER_DEVICE is 8
+ * and apple_dart_of_xlate records distinct providers; the one-instance result is on issue 176 (module f65f676826209fc0fe8e5b9d09b7879280faee31). Mirrors
  * ane/h15/t8122-ane-experimental.dts; the engine and
  * pmgr bases are MEASURED (ADT 27.0): engine 0x308000000+0x2000000,
  * pmgr 0x350700000+0x18000. The ps word set is the same five words,
