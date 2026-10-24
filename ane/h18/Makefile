@@ -16,7 +16,7 @@ else
 	PWD := $(shell pwd)
 
 SIM_CC ?= cc
-SIM_CFLAGS ?= -g -O0 -Wall -Wextra -std=gnu11
+SIM_CFLAGS ?= -g -O0 -Wall -Wextra -Werror=return-type -std=gnu11
 
 default: modules
 

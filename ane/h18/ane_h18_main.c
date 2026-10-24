@@ -310,7 +310,7 @@ static int ane_h18_psd_off(struct ane_h18 *ane)
 			ane->rpm_held = false;
 			pm_runtime_put(ane->dev);
 		}
-		return;
+		return 0;
 	}
 	for (i = ANE_H18_NPSD - 1; i >= 0; i--) {
 		if (!ane->psd_on[i])
