@@ -41,7 +41,10 @@ struct iommu_domain sim_default_dom = { __IOMMU_DOMAIN_DMA_API };
 int sim_default_dom_none;
 int sim_hs_mode;	/* 0 the firmware answers the wake word, 1 it never answers */
 int sim_hs_block_ok, sim_hs_wakes;
-int sim_db_writes, sim_hs_table, sim_s3_mode, sim_cmd_mode, sim_cmds_seen, sim_table_bad;
+int sim_db_writes, sim_hs_table, sim_s3_mode, sim_cmd_mode, sim_cmds_seen, sim_table_bad, sim_chan_req;
+u32 sim_pend_val;
+int sim_ack_writes;
+u32 sim_ack_last;
 u32 sim_cmd_ops[8];
 u32 sim_credits_now = 1;
 int sim_rpm_enabled, sim_rpm_gets, sim_rpm_puts, sim_rpm_get_fail;
@@ -103,6 +106,14 @@ void sim_hs_react(void)
 			memcpy(t + c * 0x100 + 0x48, &ch[c].slots, 8);
 			memcpy(t + c * 0x100 + 0x50, &ring, 8);
 		}
+		if (sim_chan_req) {
+			u64 *sm = (u64 *)((u8 *)sim_dma[1].va + 0xae00);	/* the SHAREDMALLOC ring: a request nobody answered */
+
+			sm[0] = 0x1000;	/* a header that is an iova, with a size: no request has this shape */
+			sm[1] = 0x40;
+			sm[2] = 0;
+			sim_pend_val = 0x20;
+		}
 		sim_scr[0] = (u32)sim_dma[1].iova;
 		sim_scr[1] = (u32)(sim_dma[1].iova >> 32);
 		sim_scr[7] = ANE_H18_HS_READY;
@@ -122,6 +133,13 @@ void sim_s3_react(u32 v)
 {
 	if (v == ANE_H18_HS_READY && sim_s3_mode == 0)
 		sim_scr[3] = 0;
+	if (v == ANE_H18_HS_READY && sim_chan_req == 2 && sim_n_dma > 1) {
+		u64 *sm = (u64 *)((u8 *)sim_dma[1].va + 0xae00);
+
+		sm[0] = 0;	/* a MALLOC of 0x8000 bytes, mode 0: the firmware takes no command before it is answered */
+		sm[1] = 0x8000;
+		sm[2] = 0;
+	}
 }
 
 /* A doorbell write with a command on the IO ring (ring at IPC + 0x8800, 0x10 slots): the firmware takes the block named by a slot header with bit 0 clear,
@@ -133,6 +151,8 @@ void sim_db_react(u32 v)
 
 	if (v != BIT(1) || sim_n_dma < 4)
 		return;
+	if (sim_chan_req == 2 && !(((u64 *)((u8 *)sim_dma[1].va + 0xae00))[0] & 1))
+		return;	/* the firmware still waits for its memory */
 	ring = (u64 *)((u8 *)sim_dma[1].va + 0x8800);
 	for (k = 0; k < 0x10; k++) {
 		u64 hdr = ring[k * 8];
@@ -164,6 +184,13 @@ void sim_db_react(u32 v)
 		}
 		ring[k * 8 + 2] = 0;
 		ring[k * 8] = hdr | 1;
+		if (sim_chan_req == 2 && op == ANE_H18_CSNE_CONFIG_GET) {
+			u64 *sm = (u64 *)((u8 *)sim_dma[1].va + 0xae00);
+
+			sm[8] = sm[0] & ~1ULL;	/* the firmware gives its buffer back: a FREE in slot 1 */
+			sm[9] = 0;
+			sm[10] = 0;
+		}
 		return;
 	}
 }
@@ -262,7 +289,10 @@ static void reset_all(void)
 	hs_wait_ms = 50;
 	sim_scr_model = sim_n_dma = sim_dma_fail = sim_default_dom_none = sim_hs_mode = sim_hs_block_ok = sim_hs_wakes = 0;
 	hs_chan = hs_cmds = false;
-	sim_db_writes = sim_hs_table = sim_s3_mode = sim_cmd_mode = sim_cmds_seen = sim_table_bad = 0;
+	sim_db_writes = sim_hs_table = sim_s3_mode = sim_cmd_mode = sim_cmds_seen = sim_table_bad = sim_chan_req = 0;
+	sim_pend_val = 0;
+	sim_ack_writes = 0;
+	sim_ack_last = 0;
 	memset(sim_dma, 0, sizeof(sim_dma));
 	map_fw = false;
 	sim_rpm_enabled = sim_rpm_gets = sim_rpm_puts = sim_rpm_get_fail = 0;
@@ -1004,7 +1034,7 @@ static void pos_boot(void)
 		int pass, k, w3 = -1, db = -1, nsc3, nh2t, ok;
 		u8 *ipc;
 
-		for (pass = 0; pass < 11; pass++) {
+		for (pass = 0; pass < 13; pass++) {
 			kboot_setup();
 			alias_mbox = true;
 			rtkit_hello = true;
@@ -1028,6 +1058,8 @@ static void pos_boot(void)
 			if (pass == 8) sim_table_bad = 100;
 			if (pass == 9) sim_table_bad = 101;
 			if (pass == 10) sim_table_bad = 102;
+			if (pass == 11) { sim_chan_req = 1; sim_cmd_mode = 1; }
+			if (pass == 12) sim_chan_req = 2;
 			ret = probe_now();
 			ipc = sim_n_dma > 1 ? sim_dma[1].va : NULL;
 			nsc3 = 0;
@@ -1039,7 +1071,7 @@ static void pos_boot(void)
 			nh2t = log_count("hs chan ");
 			ok = result("boot", "PASS", "core-handshook-and-stopped");
 			if (pass == 0) {
-				chk(ret == 0 && ok && nsc3 == 1 && sim_db_writes == 0 && nh2t == 8, "CH1 hs_chan=1: table of 8 rings checked, SCRATCH3 written once, firmware cleared it, no doorbell");
+				chk(ret == 0 && ok && nsc3 == 1 && sim_db_writes == 0 && nh2t == 8 && log_count("chan snapshot after SCRATCH3: IPI pending = 0\n") == 1 && log_count("chan snapshot after SCRATCH3: TERMINAL +") == 0 && log_pos("read IPI pending pa=0x4198ac000") > 0 && log_pos("read IPI pending pa=0x4198ac000") < log_pos("IPI pending = 0\n"), "CH1 hs_chan=1: table of 8 rings checked, SCRATCH3 written once, firmware cleared it, no doorbell, snapshot with the pending address logged before its read");
 				chk(log_count("SCRATCH3 reads 0 after") == 1 && sim_n_dma == 3 && log_count("write doorbell") == 0, "CH1 hs_chan=1: no command surface allocated, no doorbell write");
 			}
 			if (pass == 1) {
@@ -1055,6 +1087,23 @@ static void pos_boot(void)
 				chk(ret == -EIO && result("boot", "FAIL", "handshake-channel-step-failed") && sim_cmds_seen == 1, "CH5 a failing acknowledgement (+6 = 2) is a FAIL, CONFIG_GET is not sent");
 			if (pass == 5)
 				chk(ret == -EINVAL && result("boot", "REFUSED", "hs_chan=1 needs handshake=1 and hs_cmds=1 needs hs_chan=1") && writes() == 0, "CH6 hs_cmds=1 without hs_chan=1 is refused before any write");
+			if (pass == 12) {
+				u64 *sm = sim_n_dma > 1 ? (u64 *)((u8 *)sim_dma[1].va + 0xae00) : NULL;
+				int fw = -1, lv = 0;
+
+				for (k = 0; k < sim_n_dma; k++) {
+					lv += sim_dma[k].live;
+					if (sm && sim_dma[k].size == 0x8000)
+						fw = k;
+				}
+				chk(ret == 0 && ok && sim_cmds_seen == 2 && sm && (sm[0] & 1) && sm[2] == 1 && fw >= 0, "CH11 a firmware MALLOC on the SHAREDMALLOC ring is answered (header = dma | 1, ordinal 1): the command that waited for it completes");
+				chk(sm && sm[8] == 1 && sm[9] == 0 && fw >= 0 && !sim_dma[fw].live && log_count("fw FREE of iova") == 1 && lv == 0, "CH11 the firmware's later FREE is answered (header 1), the buffer it returned is freed, nothing is left allocated after the stop");
+				chk(sim_db_writes == 4 && log_count("write doorbell BIT(5) pa=0x4198a4000 to answer the MALLOC") == 1 && log_count("write doorbell BIT(5) pa=0x4198a4000 to answer the FREE") == 1, "CH11 two command doorbells and two SHAREDMALLOC doorbells (bit 5), each address logged before the write");
+			}
+			if (pass == 11)
+				chk(ret == -EIO && log_count("chan snapshot after SCRATCH3: IPI pending = 0x20") == 1 && log_count("chan snapshot after the failed PRINT_ENABLE: IPI pending = 0x20") == 1 &&
+				    log_count("chan snapshot after SCRATCH3: SHAREDMALLOC +0 = 0x1000 0x40") == 1 && sim_ack_writes > 0 && sim_ack_last == 0x20 && log_count("write IPI ack=0x20") > 0 && log_count("chan snapshot after the failed PRINT_ENABLE: IO slot 0 = ") == 1,
+				    "CH10 a request nobody answered on the SHAREDMALLOC ring and the IO slot show up in the snapshots after S3 and after the failed command");
 			if (pass == 10)
 				chk(ret == -EPROTO && result("boot", "FAIL", "handshake-channel-step-failed") && nsc3 == 0 && sim_db_writes == 0 && sim_cmds_seen == 0, "CH9 a ring address near 2^64 that wraps the old bound check: FAIL, nothing written");
 			if (pass == 8 || pass == 9)

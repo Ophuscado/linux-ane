@@ -222,8 +222,13 @@ extern int sim_scr_model;
 extern void sim_hs_react(void);
 extern void sim_s3_react(u32 v);		/* the modelled firmware sees the wake word */
 #define SIM_DB_PA 0x4198a4000ULL
+#define SIM_PEND_PA 0x4198ac000ULL
+#define SIM_ACK_PA 0x4198b0000ULL
+extern int sim_ack_writes;
+extern u32 sim_ack_last;
 extern void sim_db_react(u32 v);	/* the modelled firmware sees a doorbell write */
 extern int sim_db_writes;
+extern u32 sim_pend_val;
 extern int sim_credit_mode;	/* 1: every host TX message uses the only free slot, the slot returns at the next sleep */
 extern u32 sim_credits_now;
 extern u64 sim_asc_pa, sim_rvbar_pa, sim_mbox_pa;
@@ -350,6 +355,12 @@ static inline u32 bus_read(u64 pa)
 			v = sim_scr[(pa - SIM_SCRATCH_PA - 0x24) / 4];
 		else
 			v = 0x5c000000u | (u32)(pa & 0xffff);
+	} else if (sim_in(pa, SIM_PEND_PA, 0x1000)) {
+		/* the IPI pending page, readable with both PSD slots on */
+		if (sim_psd_state[0] == 6 || sim_psd_state[1] == 6)
+			sim_faults++;
+		else
+			v = sim_pend_val;
 	} else if (sim_in(pa, SIM_DART_PA, SIM_DART_SIZE)) {
 		/* the DART block is only reachable with both ANE PSD slots on */
 		if (sim_psd_state[0] == 6 || sim_psd_state[1] == 6)
@@ -438,6 +449,11 @@ static inline void bus_write(u64 pa, u32 v)
 			sim_hs_react();
 		if (pa == SIM_SCRATCH_PA + 0x30)
 			sim_s3_react(v);
+		return;
+	}
+	if (i < 0 && sim_in(pa, SIM_ACK_PA, 0x1000) && sim_psd_state[0] != 6 && sim_psd_state[1] != 6) {
+		sim_ack_writes++;
+		sim_ack_last = v;
 		return;
 	}
 	if (i < 0 && sim_in(pa, SIM_DB_PA, 0x1000) && sim_psd_state[0] != 6 && sim_psd_state[1] != 6) {
