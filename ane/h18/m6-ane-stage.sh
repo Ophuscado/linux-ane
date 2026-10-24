@@ -3,7 +3,7 @@
 # m6-ane-stage.sh: run ONE ane_h18 stage on the M6 (T8152), as root, and collect the log.
 #   m6-ane-stage.sh <1|2|3> <boot-id prefix> [GO [state [slots [mbox [ctrl]]]]]
 #   m6-ane-stage.sh 4 <boot-id prefix> GO [state [slots [wait_ms [dart [hello [scratch]]]]]]
-#   m6-ane-stage.sh 5 <boot-id prefix> GO [state [slots [wait_ms [dart [hello [scratch [handshake [chan [dinst [premap]]]]]]]]]]   (chan 0 to 4; dinst = mask of DART instances 0 to 3 to read, premap = send PREMAP_BUFFER)
+#   m6-ane-stage.sh 5 <boot-id prefix> GO [state [slots [wait_ms [dart [hello [scratch [handshake [chan [dinst [premap [props]]]]]]]]]]]   (chan 0 to 4; dinst = mask of DART instances 0 to 3 to read, premap = send PREMAP_BUFFER, props = send the five CH_PROPERTY_WRITE commands)
 # Step 1 = stage dt (no MMIO), step 2 = stage psd (read-only PSD slots 30 and 31), step 3 = stage power with
 # confirm_power=1 (requests PSD state <state> on the first <slots> slots, default 1 = slot 30 only, then reads CPU_STATUS,
 # ASC_STATUS and IORVBAR; mbox=1 also reads the Postoffice status words of three candidate channels, ctrl=1 also reads CPU_CONTROL).
@@ -46,7 +46,7 @@ fi
 
 WORK=${WORK:-/var/tmp/m6-ane}
 KO=${KO:-$WORK/ane_h18.ko}
-KO_SHA256=${KO_SHA256:-6c4cd64ec3698e1c72ad4105cc400e221ea09ff843c5b90f2dd2c041d3eb690c}
+KO_SHA256=${KO_SHA256:-8354da542bf30810f6491333fb9e116237959ab717bdf7d98dd9a24ceea7bc55}
 PROG=${PROG:-$WORK/ane_h18_prog.bin}
 PROG_SHA256=${PROG_SHA256:-dcd6c5b87e92458e855031c70772121963ceb463cea08e212170ffa4bc2d3bfc}
 FWDIR=${FWDIR:-/lib/firmware}
@@ -76,6 +76,7 @@ handshake=${10:-0}
 chan=${11:-0}
 dinst=${12:-0}
 premap=${13:-0}
+props=${14:-0}
 die() { echo "m6-ane-stage: REFUSED: $*" >&2; exit 2; }
 
 case "$step" in 1|2|3|4) ;; *) die "usage: $0 <1|2|3|4> <boot-id prefix> [GO [state [slots [mbox [ctrl]]]]]" ;; esac
@@ -89,8 +90,10 @@ if [ "$step" = 4 ]; then
   case "$chan" in 0|1|2|3|4) ;; *) die "chan must be 0 to 4" ;; esac
   case "$dinst" in [0-9]|1[0-5]) ;; *) die "dinst (DART instance mask) must be 0 to 15" ;; esac
   case "$premap" in 0|1) ;; *) die "premap must be 0 or 1" ;; esac
+  case "$props" in 0|1) ;; *) die "props must be 0 or 1" ;; esac
   [ "$dinst" = 0 ] || { [ "$chan" = 4 ] && [ "$dart" = 1 ]; } || die "dinst needs chan=4 and dart=1"
   [ "$premap" = 0 ] || [ "$chan" = 4 ] || die "premap needs chan=4"
+  [ "$props" = 0 ] || [ "$chan" -ge 3 ] || die "props needs chan=3 or 4"
   [ "$chan" = 0 ] || [ "$handshake" = 1 ] || die "chan=1 or 2 needs handshake=1"
   if [ "$handshake" = 1 ]; then
     [ "$fw" = 1 ] && [ "$scratch" = 1 ] && { [ "$hello" = 3 ] || [ "$hello" = 4 ]; } || die "handshake=1 needs step 5, scratch=1 and hello 3 or 4"
@@ -158,6 +161,7 @@ case "$step" in
      [ "$chan" = 4 ] && args="$args hs_prog=1"
      [ "$dinst" = 0 ] || args="$args dart_inst=$dinst"
      [ "$premap" = 0 ] || args="$args hs_premap=1"
+     [ "$props" = 0 ] || args="$args hs_props=1"
      [ "$hello" = 0 ] || args="$args rtkit_hello=1"
      [ "$hello" -ge 2 ] && args="$args rtkit_start=1"
      [ "$hello" = 3 ] && args="$args rtkit_stop=1"
