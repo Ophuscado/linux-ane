@@ -226,6 +226,7 @@ static void reset_all(void)
 	confirm_boot = false;
 	confirm_read = false;
 	confirm_run = false;
+	run_scratch = false;
 	run_unmapped = false;
 	sim_module_gets = 0;
 	map_fw = false;
@@ -1385,6 +1386,53 @@ static void pos_run(void)
 	pos_run_case("R5 T6030 core does not leave STOPPED", 0x0, 0, true, 0, w0, 2);
 }
 
+/* stage 5 with run_scratch=1: eight SCRATCH words read before RUN and again after the wait, never written;
+ * without the parameter the SCRATCH window is not touched at all */
+static void pos_run_scratch(void)
+{
+	const struct ane_h15_soc *s = &ane_t6030_soc;
+	const u32 off = 0x1840050u;	/* ANE_H15_SCRATCH_OFF, the kext's T6030 case */
+	unsigned int rstage;
+	char verdict[32], reason[128];
+	int i, first, k, n_touch, before_first = 0, ret;
+	u32 w[8];
+
+	run_setup(s, "apple,t6030-ane", 0x0);
+	ret = probe_now();
+	for (i = 0, n_touch = 0; i < 8; i++)
+		n_touch += eng_events_at(s, off + 4 * i);
+	chk(ret == 0 && n_touch == 0 && log_count("ane_h15 scratch") == 0,
+	    "RS1 run_scratch off: no SCRATCH word is read, none is logged");
+	ane_h15_remove(&pdev);
+
+	run_setup(s, "apple,t6030-ane", 0x0);
+	run_scratch = true;
+	for (i = 0; i < 8; i++)
+		eng_set(s, off + 4 * i, 0x100 + i);
+	eng_set(s, off + 4 * 7, 0x08042006);
+	ret = probe_now();
+	chk(ret == 0 && parse_result(&rstage, verdict, sizeof(verdict), reason, sizeof(reason)) && rstage == 5 &&
+	    !strcmp(verdict, "PASS") && !strcmp(reason, "core-started-and-stopped"),
+	    "RS2 run_scratch on: the verdict of stage 5 is unchanged");
+	for (i = 0, n_touch = 0; i < 8; i++)
+		n_touch += eng_events_at(s, off + 4 * i) == 2;
+	chk(n_touch == 8 && events_in(s->engine_pa + off, 0x20, 1) == 0,
+	    "RS3 each of the eight words is read exactly twice and never written");
+	chk(log_count("ane_h15 scratch before RUN: S0=0x100 S1=0x101") == 1 &&
+	    log_count("ane_h15 scratch after the wait: S0=0x100") == 1 &&
+	    log_count("S7=0x8042006") == 2,
+	    "RS4 one 'before RUN' line and one 'after the wait' line with the eight values");
+	run_writes(s, w, 8, &first);
+	for (k = 0; k < first && k < sim_n_events && k < SIM_MAX_EVENTS; k++)
+		if (!sim_events[k].write && sim_events[k].pa == s->engine_pa + off)
+			before_first++;
+	chk(first > 0 && before_first == 1,
+	    "RS5 SCRATCH0 is read once before the first CPU_CONTROL write (the 'before RUN' dump)");
+	chk(events_in(0, ~0ULL, 1) == events_in(s->engine_pa + s->cpu_control, 4, 1) && sim_bus_faults == 0,
+	    "RS6 the only writes are the CPU_CONTROL values, no fault");
+	ane_h15_remove(&pdev);
+}
+
 static int neg_run(void)
 {
 	const struct ane_h15_soc *s = &ane_t6030_soc;
@@ -2451,6 +2499,7 @@ int main(int argc, char **argv)
 		pos_multi_pd();
 		pos_stage2();
 		pos_run();
+		pos_run_scratch();
 		pos_dart();
 		pos_map();
 		pos_rtkit();

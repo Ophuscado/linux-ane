@@ -106,6 +106,10 @@ template is `ane/h16/`.
   DART. If the core does not report STOPPED afterwards it keeps the power
   domains and mappings, logs `reboot required`, `remove()` refuses and the module is pinned
   with `__module_get` (an `rmmod` would otherwise free the code under a running core).
+  `run_scratch=1` (stage 5 only, off by default) adds a read-only dump of the eight SCRATCH words at engine + 0x1840050 to + 0x184006c: one line before RUN
+  and one after the wait, `ane_h15 scratch before RUN: S0=... S7=...` and `ane_h15 scratch after the wait: ...`. It writes nothing. The offsets are the macOS kext's T6030 case
+  and have not been read on an M3. On the M2 (T6021) the macOS kext waits for `0x08042006` in SCRATCH7 after it starts the firmware (`ane/t6021/ane_t6021.h`); whether this firmware writes it is what the dump is for.
+  Clearing RUN does not stop a core that has started (see the stage 5 results below), so a run with a started core still ends in `core-not-stopped` and needs a reboot.
 
 - `stage=6` or `stage=rtkit`: stage 5 (all of its gates, `map_fw`, `fw_seg`) plus an RTKit management
   session over the ASC mailbox, behind `confirm_run=1` AND `confirm_rtkit=1`. It is the first stage that

@@ -171,6 +171,11 @@ module_param(run_wait_ms, uint, 0444);
 MODULE_PARM_DESC(run_wait_ms,
 		 "Stage=run: how long the core runs before RUN is cleared again, ms (10 to 2000). Default 300.");
 
+static bool run_scratch;
+module_param(run_scratch, bool, 0444);
+MODULE_PARM_DESC(run_scratch,
+		 "Stage=run (5) only: read the eight SCRATCH words, read only, once before RUN and once after the wait, and log them. Off by default. The offsets come from the macOS kext's T6030 case and have not been read on an M3.");
+
 static char *fw_path;
 module_param(fw_path, charp, 0444);
 MODULE_PARM_DESC(fw_path,
@@ -1225,6 +1230,19 @@ static u32 ane_h15_scr_peek(struct ane_h15 *ane, unsigned int i)
 	return readl_relaxed(ane->engine + ANE_H15_SCRATCH_OFF + 4 * i);
 }
 
+/* Stage 5, run_scratch=1: the eight SCRATCH words on one line, read only. */
+static void ane_h15_scr_dump(struct ane_h15 *ane, const char *when)
+{
+	u32 v[ANE_H15_SCRATCH_N];
+	unsigned int i;
+
+	for (i = 0; i < ANE_H15_SCRATCH_N; i++)
+		if (ane_h15_scr_rd(ane, i, &v[i]))
+			return;
+	dev_info(ane->dev, "ane_h15 scratch %s: S0=%#x S1=%#x S2=%#x S3=%#x S4=%#x S5=%#x S6=%#x S7=%#x\n", when,
+		 v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7]);
+}
+
 static int ane_h15_scr_wr(struct ane_h15 *ane, unsigned int i, u32 v)
 {
 	u32 off = ANE_H15_SCRATCH_OFF + 4 * i;
@@ -1700,6 +1718,9 @@ static int ane_h15_run_common(struct ane_h15 *ane, unsigned int stg)
 		return -EBUSY;
 	}
 
+	if (stg == 5 && run_scratch)
+		ane_h15_scr_dump(ane, "before RUN");
+
 	/* Start the core. From here a reboot may be needed. */
 	ane->fw_started = true;
 	ane->fw_touched = true;
@@ -1742,6 +1763,8 @@ static int ane_h15_run_common(struct ane_h15 *ane, unsigned int stg)
 			msgs++;
 		}
 	}
+	if (stg == 5 && run_scratch)
+		ane_h15_scr_dump(ane, "after the wait");
 	/* Stop the core the macOS way: clear RUN, then bit 5, each from a fresh read. */
 	if (ane_h15_read_ctrl(ane, &ctrl) == 0 &&
 	    ane_h15_write_ctrl(ane, ctrl, ctrl & ~ANE_H15_CPU_RUN, "clear RUN") == 0) {
