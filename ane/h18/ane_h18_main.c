@@ -90,6 +90,10 @@ static bool alias_mbox;
 module_param(alias_mbox, bool, 0444);
 MODULE_PARM_DESC(alias_mbox, "Stage=boot: also watch the alias-bank Postoffice channel (window + 0x10000, channel 2 * mailbox number). Default off.");
 
+static bool read_scratch;
+module_param(read_scratch, bool, 0444);
+MODULE_PARM_DESC(read_scratch, "Stage=boot: read the eight SCRATCH words of the engine block (engine + 0x18a0024) before RUN, when AP power ON is acknowledged and before the shutdown. Read only. Default off.");
+
 static bool map_fw;
 module_param(map_fw, bool, 0444);
 MODULE_PARM_DESC(map_fw, "Stage=boot: before RUN, attach the ANE to its DART through the iommu API and map the two preloaded firmware segments at their IOVAs. Needs power-domains and iommus in the node. Default off.");
@@ -124,6 +128,7 @@ struct ane_h18 {
 	void __iomem *rvbar;
 	void __iomem *mbox;
 	void __iomem *dart;
+	void __iomem *scratch;
 	struct iommu_domain *domain;
 	bool kpsd;		/* the node has power-domains: the kernel's PSD driver owns the slots, this module only holds a runtime PM reference */
 	bool rpm_held;
@@ -233,6 +238,7 @@ static void ane_h18_unmap(struct ane_h18 *ane)
 	if (ane->rvbar) { iounmap(ane->rvbar); ane->rvbar = NULL; }
 	if (ane->mbox) { iounmap(ane->mbox); ane->mbox = NULL; }
 	if (ane->dart) { iounmap(ane->dart); ane->dart = NULL; }
+	if (ane->scratch) { iounmap(ane->scratch); ane->scratch = NULL; }
 }
 
 static int ane_h18_map_psd(struct ane_h18 *ane, const int *idx)
@@ -581,6 +587,24 @@ static void ane_h18_po_store16(void __iomem *p, const u32 w[4])
 #endif
 }
 
+/* Read the eight SCRATCH words and log them under a phase tag. Read only; every address is logged before its read. */
+static void ane_h18_read_scratch_words(struct ane_h18 *ane, const char *phase)
+{
+	const struct ane_h18_soc *s = ane->soc;
+	unsigned int i;
+	u32 v;
+
+	if (!ane->scratch)
+		return;
+	for (i = 0; i < ANE_H18_SCRATCH_N; i++) {
+		char nm[32];
+
+		snprintf(nm, sizeof(nm), "SCRATCH%u_%s", i, phase);
+		if (ane_h18_read(ane, nm, ane->scratch, s->scratch_pa, ANE_H18_SCRATCH_OFF + 4 * i, s->scratch_size, &v))
+			break;
+	}
+}
+
 /* Store one RTKit management message (endpoint 0) in TX as one paired store, if a TX slot is free. */
 static int ane_h18_rtkit_tx_now(struct ane_h18 *ane, u32 chan_off, const char *tag, u64 msg0)
 {
@@ -712,6 +736,7 @@ static int ane_h18_rtkit_step(struct ane_h18 *ane, u32 chan_off, const char *tag
 			unsigned int i;
 
 			ane->rtk_ap_on = true;
+			ane_h18_read_scratch_words(ane, "apon");
 
 			/* the coprocessor is running now: start the application endpoints it announced */
 			ane->rtk_app_started = true;
@@ -819,6 +844,7 @@ static int ane_h18_stage_boot(struct ane_h18 *ane)
 			}
 		}
 	}
+	ane_h18_read_scratch_words(ane, "pre");
 	/* Start the core. From here a reboot may be needed. */
 	dev_crit(ane->dev, "ane_h18 write CPU_CONTROL=%#x pa=%#llx (RUN)\n", ctrl | ANE_H18_CPU_RUN, s->asc_pa + ANE_H18_ASC_CPU_CONTROL);
 	ane->fw_started = true;
@@ -853,6 +879,7 @@ static int ane_h18_stage_boot(struct ane_h18 *ane)
 			msgs += ane_h18_po_pop(ane, chan_off, tag, po);
 		}
 	}
+	ane_h18_read_scratch_words(ane, "end");
 	if (rtkit_stop && ane->rtk_ap_on) {
 		/* RTKit shutdown as apple_rtkit_shutdown does it: AP power state QUIESCED, then IOP power state SLEEP once that is acknowledged, then wait for the
 		 * IOP acknowledgement (or an idle message). rtkit_stop=2 sends OFF on both sides instead (apple_rtkit_poweroff), which cannot be restarted. */
@@ -966,6 +993,15 @@ static int ane_h18_probe(struct platform_device *pdev)
 		dev_err(&pdev->dev, "ane_h18 of_iomap of an ASC window failed\n");
 		ret = -ENXIO;
 		goto out;
+	}
+	if (read_scratch && stage_idx == ANE_H18_STAGE_BOOT) {
+		/* Mapping only; the words are read after both PSD slots acknowledged. */
+		ane->scratch = ioremap(ane->soc->scratch_pa, ane->soc->scratch_size);
+		if (!ane->scratch) {
+			dev_err(&pdev->dev, "ane_h18 ioremap of the SCRATCH page failed\n");
+			ret = -ENXIO;
+			goto out;
+		}
 	}
 	if (read_dart && stage_idx == ANE_H18_STAGE_BOOT) {
 		/* Mapping only; nothing reads the DART before both PSD slots acknowledged. */

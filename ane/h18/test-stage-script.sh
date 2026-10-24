@@ -139,6 +139,13 @@ FAKE_STAGE=boot expect "step 4 with hello=4 passes" 0 bash "$S" 4 0123abcd GO 1 
 grep -q 'rtkit_hello=1 rtkit_start=1 rtkit_stop=2' "$T/insmod.args" && echo "  PASS hello=4 args: hello, start and stop=2" || { echo "  FAIL hello=4 args"; fails=$((fails + 1)); }
 rm -f "$T/work/step4-run-0123abcd"
 sleep 1
+# the scratch flag of step 4
+expect "step 4 with scratch=2 refused" 2 bash "$S" 4 0123abcd GO 1 2 800 0 0 2
+sleep 1
+FAKE_STAGE=boot expect "step 4 with scratch=1 passes" 0 bash "$S" 4 0123abcd GO 1 2 800 0 2 1
+grep -q 'read_scratch=1 rtkit_hello=1 rtkit_start=1' "$T/insmod.args" && echo "  PASS scratch=1 args carry read_scratch=1" || { echo "  FAIL scratch args"; fails=$((fails + 1)); }
+rm -f "$T/work/step4-run-0123abcd"
+sleep 1
 # after a step 4 ran, no ANE step of any number may start until a reboot
 touch "$T/work/step4-run-0123abcd"
 expect "step 1 after a step 4 is refused" 2 bash "$S" 1 0123abcd

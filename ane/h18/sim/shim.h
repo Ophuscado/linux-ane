@@ -159,6 +159,8 @@ extern int sim_core_running, sim_core_stuck;
 extern int sim_ctrl_writes;
 #define SIM_PO_CH 600	/* the alias bank channel of ANE0 is window offset 0x10c00 = channel 536 */
 #define SIM_DART_PA 0x419800000ULL
+#define SIM_SCRATCH_PA 0x4198a0000ULL
+#define SIM_SCRATCH_SIZE 0x1000
 #define SIM_DART_SIZE 0xc000
 #define SIM_PO_Q 24
 extern u32 sim_po_msg[SIM_PO_CH][SIM_PO_Q][4];
@@ -291,6 +293,12 @@ static inline u32 bus_read(u64 pa)
 		} else {
 			v = (pa & 0xffff) | 0x10000;	/* distinguishable fake data */
 		}
+	} else if (sim_in(pa, SIM_SCRATCH_PA, SIM_SCRATCH_SIZE)) {
+		/* the engine block page is only reachable with both ANE PSD slots on */
+		if (sim_psd_state[0] == 6 || sim_psd_state[1] == 6)
+			sim_faults++;
+		else
+			v = 0x5c000000u | (u32)(pa & 0xffff);
 	} else if (sim_in(pa, SIM_DART_PA, SIM_DART_SIZE)) {
 		/* the DART block is only reachable with both ANE PSD slots on */
 		if (sim_psd_state[0] == 6 || sim_psd_state[1] == 6)

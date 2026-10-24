@@ -46,6 +46,9 @@ else in the ASC, IORVBAR or mailbox windows.
     acknowledgement arrives, as `apple_rtkit_shutdown` does, and wait up to 600 ms for the IOP acknowledgement. That pair can be restarted. Whether it lets
     the core reach STOPPED is not known. `rtkit_stop=2` sends OFF (0x0) on both sides instead, as `apple_rtkit_poweroff` does. The board stopped the
     core with that pair. The core cannot be restarted after it.
+  - `read_scratch=1`: read the eight SCRATCH words of the engine block (engine + 0x18a0024 to +0x18a0040, the registers the macOS kext uses for the
+    boot-args handshake of this SoC, from its decode) three times: before RUN, when AP power ON is acknowledged and before the shutdown. Read only, each
+    address logged before its read. Whether the block can be read on this board is not known, and a read the block does not answer can hang or reset the machine, as the DART read can.
   - `rtkit_hello=1` (needs `alias_mbox=1`): answer the firmware's RTKit management HELLO with version 12 and its endpoint map, nothing else. The
     reply goes to TX as one paired 16 byte store. No reply is sent without a free TX slot, for a message of another type or endpoint, or when the
     firmware's version range excludes 12. At most four replies per run.

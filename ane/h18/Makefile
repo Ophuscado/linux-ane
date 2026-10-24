@@ -96,7 +96,7 @@ sim-mutation-nohalt:
 
 # the RTKit reply is written without looking at the inbox credits
 sim-mutation-nocredit:
-	$(call mutant,nocredit,s/if (!(st \& 0xf00)) {/if (0 \/* NEG: credit ignored *\/) {/,NEG: credit ignored,pos)
+	$(call mutant,nocredit,s/if (!(st \& 0xf00))/if (0 \/* NEG: credit ignored *\/)/,NEG: credit ignored,pos)
 
 # the reply is written to RX, the half the firmware's message came from
 sim-mutation-wronghalf:
