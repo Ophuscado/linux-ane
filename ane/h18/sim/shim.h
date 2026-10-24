@@ -132,6 +132,9 @@ struct platform_driver {
 
 #define GFP_KERNEL 0
 #define SZ_16K 0x4000UL
+#define GFP_ZERO_UNUSED 0
+static inline void *kzalloc(size_t n, int gfp) { (void)gfp; return calloc(1, n); }
+static inline void kfree(const void *p) { free((void *)p); }
 /* request_firmware: the harness hands out sim_fw_data (sim_fw_size bytes) unless sim_fw_err is set */
 struct firmware { size_t size; const u8 *data; };
 extern const u8 *sim_fw_data;
@@ -386,7 +389,7 @@ static inline u32 bus_read(u64 pa)
 			sim_faults++;
 		else
 			v = sim_pend_val;
-	} else if (sim_in(pa, SIM_DART_PA, SIM_DART_SIZE)) {
+	} else if (sim_in(pa, SIM_DART_PA, SIM_DART_SIZE) || sim_in(pa, SIM_DART_PA + 0x20000, SIM_DART_SIZE) || sim_in(pa, SIM_DART_PA + 0x40000, SIM_DART_SIZE) || sim_in(pa, SIM_DART_PA + 0x60000, SIM_DART_SIZE)) {
 		/* the DART block is only reachable with both ANE PSD slots on */
 		if (sim_psd_state[0] == 6 || sim_psd_state[1] == 6)
 			sim_faults++;
