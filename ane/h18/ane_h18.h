@@ -125,6 +125,12 @@ static inline enum ane_h18_mal_kind ane_h18_mal_classify(u64 hdr, u64 size, u64 
 #define ANE_H18_PROG_MAX_BYTES	0xc000000	/* all buffers together, 192 MiB */
 #define ANE_H18_PROG_COOKIE	0xADD0	/* the call cookie of the T6021 driver, returned in the IO_T2H events */
 #define ANE_H18_PROG_PRIORITY	2
+#define ANE_H18_CSNE_PREMAP_BUFFER	0x20d	/* 0x3490 bytes, type 2 for the inference request pool: the kext sends it at init, before any call */
+#define ANE_H18_PREMAP_LEN	0x3490
+#define ANE_H18_PREMAP_POOL	0x3898	/* one inference request, rounded to a page for the surface */
+#define ANE_H18_PREMAP_BLOCK	0x4000	/* command block size with hs_premap */
+#define ANE_H18_DART_INSTANCES	4	/* ADT dart-ane reg[0..3], 0xc000 each, 0x20000 apart; the DAPF at 0x419810000 is not read */
+#define ANE_H18_DART_INST_STRIDE	0x20000
 #define ANE_H18_DART_EXC_WORDS	8	/* words of the DART exception bitmap read (256 streams) */
 #define ANE_H18_DART_EXC_MAXSID	256	/* streams whose 0x40 byte record lies inside the DART window (0xc000) */
 #define ANE_H18_DART_EXC_SIDS	8	/* at most this many stream records printed */

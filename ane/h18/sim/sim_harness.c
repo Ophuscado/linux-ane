@@ -66,7 +66,7 @@ static u8 sim_blob[0x8000];
 static size_t sim_blob_len;
 int sim_prog_mode, sim_prog_n, sim_prog_loaded, sim_prog_created, sim_t2h_back, sim_out_written, sim_t2h_posted;
 u32 sim_prog_ops[16];
-int sim_pub_wait;
+int sim_pub_wait, sim_premapped;
 
 /* the file: sections 1 to 5 and 7 (the add program's six), buffers 5 and 6 as inputs and 4 as the output, 0x4000 bytes each; input 5 starts with 0xaa bytes */
 static void make_blob(void)
@@ -151,6 +151,25 @@ static u16 sim_prog_cmd(u16 op, u8 *blk)
 	memcpy(&prog, blk + 8, 4);
 	memcpy(&proc, blk + 0xc, 4);
 	switch (op) {
+	case 0x20d: {
+		u32 a1, ty, f54, f58, f60;
+		u64 f68, pool, sec;
+
+		if (sim_prog_mode == 7)
+			return 3;
+		memcpy(&a1, blk + 8, 4);
+		memcpy(&ty, blk + 0x10, 4);
+		memcpy(&f54, blk + 0x54, 4);
+		memcpy(&f58, blk + 0x58, 4);
+		memcpy(&f60, blk + 0x60, 4);
+		memcpy(&f68, blk + 0x68, 8);
+		memcpy(&pool, blk + 0x70, 8);
+		memcpy(&sec, blk + 0x78, 8);
+		if (a1 != 1 || ty != 2 || f54 != 1 || !(f58 & 1) || f60 != 4 || f68 != 1 || !sim_buf_ok(pool, 0x3898) || sec != 0x4000)
+			return 7;
+		sim_premapped = 1;
+		return 0;
+	}
 	case 0x200:
 		if (sim_prog_mode == 1)
 			return 3;
@@ -433,7 +452,7 @@ void sim_db_react(u32 v)
 
 			memcpy(blk + 6, &bad, 2);
 		}
-		if (op >= 0x200 && op <= 0x204) {
+		if ((op >= 0x200 && op <= 0x204) || op == 0x20d) {
 			u16 ack = sim_prog_cmd(op, blk);
 
 			if (ack == 0xffff)	/* the modelled firmware does not answer this one */
@@ -562,8 +581,10 @@ static void reset_all(void)
 	hs_cfg_size = 0x380000;
 	hs_wait_ms = 50;
 	sim_scr_model = sim_n_dma = sim_dma_fail = sim_default_dom_none = sim_hs_mode = sim_hs_block_ok = sim_hs_wakes = 0;
-	hs_chan = hs_cmds = hs_start = hs_prog = false;
-	sim_pub_wait = sim_prog_mode = sim_prog_n = sim_prog_loaded = sim_prog_created = sim_t2h_back = sim_out_written = sim_t2h_posted = 0;
+	hs_chan = hs_cmds = hs_start = hs_prog = hs_premap = false;
+	dart_inst = 0;
+	premap_second = 0;
+	sim_premapped = sim_pub_wait = sim_prog_mode = sim_prog_n = sim_prog_loaded = sim_prog_created = sim_t2h_back = sim_out_written = sim_t2h_posted = 0;
 	sim_fw_err = sim_fw_released = sim_fw_requests = 0;
 	make_blob();
 	sim_db_writes = sim_hs_table = sim_s3_mode = sim_cmd_mode = sim_cmds_seen = sim_table_bad = sim_chan_req = 0;
@@ -1370,7 +1391,7 @@ static void pos_boot(void)
 		int pass, k, w3 = -1, db = -1, nsc3, nh2t, ok;
 		u8 *ipc;
 
-		for (pass = 0; pass < 28; pass++) {
+		for (pass = 0; pass < 33; pass++) {
 			kboot_setup();
 			alias_mbox = true;
 			rtkit_hello = true;
@@ -1412,6 +1433,11 @@ static void pos_boot(void)
 			if (pass == 25) sim_prog_mode = 5;
 			if (pass == 26) sim_prog_mode = 6;
 			if (pass == 27) read_dart = true;
+			if (pass == 28) { read_dart = true; hs_premap = true; dart_inst = 0xf; }
+			if (pass == 29) { hs_premap = true; sim_prog_mode = 7; }
+			if (pass == 30) { hs_prog = false; hs_premap = true; }
+			if (pass == 31) dart_inst = 0x2;
+			if (pass == 32) { read_dart = true; dart_inst = 0x10; }
 			ret = probe_now();
 			ipc = sim_n_dma > 1 ? sim_dma[1].va : NULL;
 			nsc3 = 0;
@@ -1454,6 +1480,30 @@ static void pos_boot(void)
 					    "PG9 a call without a finish event: FAIL, nothing is unloaded (the firmware may be hung), the stop still runs");
 				if (pass == 23)
 					chk(ret == -EIO && sim_prog_n == 3 && sim_prog_ops[1] == 0x202 && sim_prog_ops[2] == 0x201 && !sim_prog_loaded, "PG10 CREATE_PROCESS refused: the program is destroyed, no call");
+				if (pass == 28) {
+					int dr1 = 0, dw1 = 0;
+
+					for (kk = 0; kk < sim_n_events; kk++)
+						if (sim_events[kk].pa >= SIM_DART_PA + 0x20000 && sim_events[kk].pa < SIM_DART_PA + 0x20000 * 4 && (sim_events[kk].pa & 0x1ffff) < SIM_DART_SIZE) {
+							if (sim_events[kk].write)
+								dw1++;
+							else
+								dr1++;
+						}
+					chk(ret == 0 && ok && sim_prog_n == 6 && sim_prog_ops[0] == 0x20d && sim_prog_ops[1] == 0x200 && sim_premapped && log_count("PREMAP_BUFFER reply +0:") == 1 && log_count("PREMAP_BUFFER pool iova=") == 1,
+					    "PG19 hs_premap=1: PREMAP_BUFFER (0x20d, type 2, one pool of the request size, the pool size as second value) goes before LOAD_PROGRAM and is answered, the program runs after it");
+					chk(dw1 == 0 && sim_faults == 0 && dr1 == 3 * 2 * (5 + 5 * 5) && log_count("DART 1 before LOAD_PROGRAM stream 11: status 0xda0082c0 +4 0xda0082c4 addr 0xda0082ccda0082c8 +0x10 0xda0082d0") == 1 && log_count("DART 3 after the call stream 15: status") == 1 && log_count("DART 0 after the call +0xc00 = ") == 1,
+					    "PG20 dart_inst=0xf: instances 1 to 3 are mapped and read, before LOAD_PROGRAM and after the call (five registers and the records of streams 0, 10, 11, 13 and 15 each), no write");
+				}
+				if (pass == 29)
+					chk(ret == 0 && ok && sim_prog_n == 6 && sim_prog_ops[0] == 0x20d && sim_prog_ops[1] == 0x200 && !sim_premapped && log_count("PREMAP_BUFFER was refused, going on with LOAD_PROGRAM") == 1,
+					    "PG21 PREMAP_BUFFER refused by the firmware (acknowledgement 3): logged, the program runs anyway");
+				if (pass == 30)
+					chk(ret == -EINVAL && result("boot", "REFUSED", "hs_premap=1 needs hs_prog=1; dart_inst needs hs_prog=1 and read_dart=1 and is a mask of instances 0 to 3") && writes() == 0, "PG22 hs_premap=1 without hs_prog=1 is refused before any write");
+				if (pass == 31)
+					chk(ret == -EINVAL && result("boot", "REFUSED", "hs_premap=1 needs hs_prog=1; dart_inst needs hs_prog=1 and read_dart=1 and is a mask of instances 0 to 3") && writes() == 0, "PG22 dart_inst without read_dart=1 is refused before any write");
+				if (pass == 32)
+					chk(ret == -EINVAL && result("boot", "REFUSED", "hs_premap=1 needs hs_prog=1; dart_inst needs hs_prog=1 and read_dart=1 and is a mask of instances 0 to 3") && writes() == 0, "PG22 dart_inst with a bit above instance 3 is refused before any write");
 				if (pass == 27) {
 					int dw = 0, dr = 0;
 

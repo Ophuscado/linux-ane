@@ -192,6 +192,17 @@ sleep 1
 FAKE_STAGE=boot expect "step 5 with chan=4 passes" 0 bash "$S" 5 0123abcd GO 1 2 800 0 3 1 1 4
 grep -q 'hs_chan=1 hs_cmds=1 hs_start=1 hs_prog=1' "$T/insmod.args" && echo "  PASS chan=4 args carry hs_start and hs_prog" || { echo "  FAIL chan=4 args"; fails=$((fails + 1)); }
 [ "$(sha256sum "$T/fw/ane_h18_prog.bin" | cut -c1-64)" = "$PSHA" ] && echo "  PASS chan=4 installed the pinned program file" || { echo "  FAIL chan=4 install"; fails=$((fails + 1)); }
+rm -f "$T/work/step4-run-0123abcd"
+sleep 1
+# dinst and premap: only with chan=4, dinst only with dart=1
+expect "step 5 with premap=1 and chan=3 refused" 2 bash "$S" 5 0123abcd GO 1 2 800 1 3 1 1 3 0 1
+sleep 1
+expect "step 5 with dinst=2 and dart=0 refused" 2 bash "$S" 5 0123abcd GO 1 2 800 0 3 1 1 4 2 0
+sleep 1
+expect "step 5 with dinst=16 refused" 2 bash "$S" 5 0123abcd GO 1 2 800 1 3 1 1 4 16 0
+sleep 1
+FAKE_STAGE=boot expect "step 5 with chan=4, dinst=2 and premap=1 passes" 0 bash "$S" 5 0123abcd GO 1 2 800 1 3 1 1 4 2 1
+grep -q 'hs_prog=1 dart_inst=2 hs_premap=1' "$T/insmod.args" && echo "  PASS dinst and premap args reach the module" || { echo "  FAIL dinst/premap args"; fails=$((fails + 1)); }
 rm -f "$T/work/step4-run-0123abcd" "$T/dt/soc/ane@419600000/iommus" "$T/dt/soc/ane@419600000/power-domains"
 sleep 1
 # after a step 4 ran, no ANE step of any number may start until a reboot

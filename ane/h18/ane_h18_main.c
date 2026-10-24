@@ -120,6 +120,18 @@ static bool hs_start;
 module_param(hs_start, bool, 0444);
 MODULE_PARM_DESC(hs_start, "Stage=boot with hs_cmds=1: send the commands in the kext's order, PRINT_ENABLE, START, CONFIG_GET, RESOURCE_INFO_GET, and log the RESOURCE_INFO_GET reply. START starts the firmware's services and can bring more memory requests. Default off: PRINT_ENABLE and CONFIG_GET only.");
 
+static unsigned int dart_inst;
+module_param(dart_inst, uint, 0444);
+MODULE_PARM_DESC(dart_inst, "hs_prog=1 with read_dart=1: a bit mask of ANE DART instances 0 to 3 whose ENABLE_STREAMS, TCR, TTBR, exception bitmap and the records of streams 0, 10, 11, 13 and 15 are read, read only, before LOAD_PROGRAM and after the call. Instances 1 to 3 are mapped here (ADT dart-ane reg[1..3]). Default 0.");
+
+static bool hs_premap;
+module_param(hs_premap, bool, 0444);
+MODULE_PARM_DESC(hs_premap, "hs_prog=1: send PREMAP_BUFFER (0x20d, type 2) for one inference request pool before LOAD_PROGRAM, as the macOS kext does at init. The reply is logged. Default off.");
+
+static unsigned long long premap_second;
+module_param(premap_second, ullong, 0444);
+MODULE_PARM_DESC(premap_second, "hs_premap=1: the second address value of the command (+0x78). 0 sends the pool size, which is a guess: the kext's value comes from a virtual call that is not decoded.");
+
 static bool hs_prog;
 module_param(hs_prog, bool, 0444);
 MODULE_PARM_DESC(hs_prog, "Stage=boot with hs_start=1: load the program file prog_fw (made by ane-prog-pack from an ANEC), LOAD_PROGRAM, CREATE_PROCESS and PROCEDURE_CALL on the IO ring with the T6021 wire format, wait for the IO_T2H events, then TERMINATE_PROCESS and DESTROY_PROGRAM. The file is checked and the buffers are allocated before the first command. Default off.");
@@ -162,6 +174,7 @@ struct ane_h18 {
 	void __iomem *rvbar;
 	void __iomem *mbox;
 	void __iomem *dart;
+	void __iomem *dartx[ANE_H18_DART_INSTANCES];	/* instances 1 to 3 with dart_inst, [0] unused (ane->dart is instance 0) */
 	void __iomem *scratch;
 	void __iomem *doorbell;
 	void __iomem *ipi_pending;
@@ -206,7 +219,7 @@ struct ane_h18 {
 		struct { u32 id; u64 size, off; } sec[ANE_H18_PROG_MAX_SECS];
 		struct { u32 id, dir; u64 size, doff, dsize; } io[ANE_H18_PROG_MAX_IO];
 	} pd;
-	struct ane_h18_hs_buf pg_sec[ANE_H18_PROG_MAX_SECS], pg_io[ANE_H18_PROG_MAX_IO];
+	struct ane_h18_hs_buf pg_sec[ANE_H18_PROG_MAX_SECS], pg_io[ANE_H18_PROG_MAX_IO], pg_pool;
 };
 
 static void ane_h18_result(struct ane_h18 *ane, const char *stg, const char *verdict, const char *reason)
@@ -302,6 +315,8 @@ static void ane_h18_unmap(struct ane_h18 *ane)
 	if (ane->rvbar) { iounmap(ane->rvbar); ane->rvbar = NULL; }
 	if (ane->mbox) { iounmap(ane->mbox); ane->mbox = NULL; }
 	if (ane->dart) { iounmap(ane->dart); ane->dart = NULL; }
+	for (i = 1; i < ANE_H18_DART_INSTANCES; i++)
+		if (ane->dartx[i]) { iounmap(ane->dartx[i]); ane->dartx[i] = NULL; }
 	if (ane->scratch) { iounmap(ane->scratch); ane->scratch = NULL; }
 	if (ane->prog_blob) { release_firmware(ane->prog_blob); ane->prog_blob = NULL; }
 	if (ane->doorbell) { iounmap(ane->doorbell); ane->doorbell = NULL; }
@@ -726,6 +741,10 @@ static void ane_h18_hs_free(struct ane_h18 *ane)
 			dma_free_coherent(ane->dev, ane->pg_io[i].size, ane->pg_io[i].va, ane->pg_io[i].iova);
 			ane->pg_io[i].va = NULL;
 		}
+	if (ane->pg_pool.va) {
+		dma_free_coherent(ane->dev, ane->pg_pool.size, ane->pg_pool.va, ane->pg_pool.iova);
+		ane->pg_pool.va = NULL;
+	}
 	if (ane->prog_blob) {
 		release_firmware(ane->prog_blob);
 		ane->prog_blob = NULL;
@@ -1234,8 +1253,15 @@ static void ane_h18_prog_settle(struct ane_h18 *ane, unsigned int ms, unsigned i
  * ANE_H18_DART_EXC_SIDS streams with a bit set their record at 0x8000 + 0x40 * sid (status, +4, address lo and hi, +0x10, AXI id and user words at +0x18 to +0x24). Needs read_dart=1
  * (the DART window is mapped). The first run of a program on the M6 ended in an unhandled DART interrupt: the kernel handler ignores the streams it does not own, so this
  * is where the stream and the address of the fault show. Nothing is written. */
+static void ane_h18_dart_inst(struct ane_h18 *ane, unsigned int k, const char *when);
+
 static void ane_h18_dart_exc(struct ane_h18 *ane, const char *when)
 {
+	unsigned int k;
+
+	for (k = 0; k < ANE_H18_DART_INSTANCES; k++)
+		if (dart_inst & BIT(k))
+			ane_h18_dart_inst(ane, k, when);
 	static const u32 fixed[] = { 0x100, 0x104, 0x170, 0x174, 0x1c0 };
 	static const u32 rec[] = { 0x0, 0x4, 0x8, 0xc, 0x10, 0x18, 0x1c, 0x20, 0x24 };
 	u32 pend[ANE_H18_DART_EXC_WORDS], i, w, bit, shown = 0;
@@ -1265,6 +1291,67 @@ static void ane_h18_dart_exc(struct ane_h18 *ane, const char *when)
 				 (u64)v[3] << 32 | v[2], v[4], v[5], v[6], v[7], v[8]);
 			shown++;
 		}
+}
+
+/* Read only: ENABLE_STREAMS, TCR, TTBR, the first two words of the exception bitmap and the records of streams 0, 10, 11, 13 and 15 of DART instance k (0 to 3), the
+ * layout the macOS Gen3 driver reads per instance. +0x704 is not read: the fork's own comment says it is outside the gen3 capture list. Needs the instance mapped. */
+static void ane_h18_dart_inst(struct ane_h18 *ane, unsigned int k, const char *when)
+{
+	static const u32 regs[] = { 0xc00, 0x1000, 0x1400, 0x4000, 0x4004 };
+	static const u32 sids[] = { 0, 10, 11, 13, 15 };
+	static const u32 rec[] = { 0x0, 0x4, 0x8, 0xc, 0x10 };
+	void __iomem *base = k ? ane->dartx[k] : ane->dart;
+	u64 pa = ane->soc->dart_pa + (u64)k * ANE_H18_DART_INST_STRIDE;
+	unsigned int i, j;
+
+	if (!base) {
+		dev_info(ane->dev, "ane_h18 prog: DART instance %u (%s) not mapped, not read\n", k, when);
+		return;
+	}
+	dev_crit(ane->dev, "ane_h18 prog: reading DART instance %u (%s), pa=%#llx +0xc00..+0x4004 and +0x8000 + 0x40 * stream for streams 0, 10, 11, 13, 15, read only\n", k, when, pa);
+	for (i = 0; i < ARRAY_SIZE(regs); i++)
+		dev_info(ane->dev, "ane_h18 prog: DART %u %s +%#x = %#x\n", k, when, regs[i], readl(base + regs[i]));
+	for (i = 0; i < ARRAY_SIZE(sids); i++) {
+		u32 v[ARRAY_SIZE(rec)];
+
+		for (j = 0; j < ARRAY_SIZE(rec); j++)
+			v[j] = readl(base + 0x8000 + 0x40 * sids[i] + rec[j]);
+		dev_info(ane->dev, "ane_h18 prog: DART %u %s stream %u: status %#x +4 %#x addr %#llx +0x10 %#x\n", k, when, sids[i], v[0], v[1], (u64)v[3] << 32 | v[2], v[4]);
+	}
+}
+
+/* PREMAP_BUFFER (0x20d), as the macOS kext sends it at init for the inference request pool: a 0x3490 byte command, type 2, one request of 0x3898 bytes in a surface of the
+ * DART's page size. The layout is the decode's: +8 1, +0x10 type, +0x54 1, +0x58 1, +0x60 4, +0x68 1, +0x70 the pool address, +0x78 a second value (premap_second, or the
+ * pool size: which of the two values the kext passes is not decoded). A refusal (acknowledgement not zero) is logged and the program stage goes on. */
+static int ane_h18_premap(struct ane_h18 *ane, struct ane_h18_ring *io)
+{
+	struct ane_h18_hs_buf *b = &ane->pg_pool;
+	u64 second, addr, one = 1;
+	u32 u1 = 1, type = 2, four = 4;
+	u8 *cmd, *blk;
+	int ret;
+
+	ret = ane_h18_hs_alloc(ane, b, ALIGN(ANE_H18_PREMAP_POOL, SZ_16K), "PREMAP pool");
+	if (ret)
+		return ret;
+	cmd = kzalloc(ANE_H18_PREMAP_LEN, GFP_KERNEL);
+	if (!cmd)
+		return -ENOMEM;
+	second = premap_second ? premap_second : b->size;
+	addr = b->iova;
+	memcpy(cmd + 8, &u1, 4);
+	memcpy(cmd + 0x10, &type, 4);
+	memcpy(cmd + 0x54, &u1, 4);
+	memcpy(cmd + 0x58, &u1, 4);
+	memcpy(cmd + 0x60, &four, 4);
+	memcpy(cmd + 0x68, &one, 8);
+	memcpy(cmd + 0x70, &addr, 8);
+	memcpy(cmd + 0x78, &second, 8);
+	dev_info(ane->dev, "ane_h18 prog: PREMAP_BUFFER pool iova=%#llx size=%#zx second=%#llx\n", (u64)b->iova, b->size, second);
+	ret = ane_h18_cmd_body(ane, io, ANE_H18_CSNE_PREMAP_BUFFER, ANE_H18_PREMAP_LEN, false, 0, cmd + 8, ANE_H18_PREMAP_LEN - 8, &blk);
+	kfree(cmd);
+	ane_h18_prog_dump(ane, "PREMAP_BUFFER reply", (u8 *)ane->hs_cmd.va, 0x80);
+	return ret;
 }
 
 /* One program on the IO ring after START: allocate the section and buffer surfaces from the file, LOAD_PROGRAM, CREATE_PROCESS, PROCEDURE_CALL, wait for the
@@ -1305,6 +1392,16 @@ static int ane_h18_prog_run(struct ane_h18 *ane, struct ane_h18_ring *io)
 	}
 	wmb();
 	ane_h18_dart_exc(ane, "before LOAD_PROGRAM");
+	if (hs_premap) {
+		ret = ane_h18_premap(ane, io);
+		if (ret == -EPROTO) {
+			dev_warn(ane->dev, "ane_h18 prog: PREMAP_BUFFER was refused, going on with LOAD_PROGRAM\n");
+			ret = 0;
+		} else if (ret) {
+			goto fail;
+		}
+		ane_h18_prog_settle(ane, 20, &t2h);
+	}
 
 	/* LOAD_PROGRAM */
 	memset(cmd, 0, sizeof(cmd));
@@ -1544,7 +1641,7 @@ static int ane_h18_chan_step(struct ane_h18 *ane, const struct ane_h18_hs_buf *t
 	/* The kext takes every command block from the pool surface, the one that holds the init block and that the firmware was told about at block +0x58 and +0x60. */
 	ane->hs_cmd.va = (u8 *)ane->hs_pool.va + ANE_H18_CMD_POOL_OFF;
 	ane->hs_cmd.iova = ane->hs_pool.iova + ANE_H18_CMD_POOL_OFF;
-	ane->hs_cmd.size = hs_prog ? ANE_H18_PROG_BLOCK : ANE_H18_CMD_BLOCK;
+	ane->hs_cmd.size = hs_premap ? ANE_H18_PREMAP_BLOCK : hs_prog ? ANE_H18_PROG_BLOCK : ANE_H18_CMD_BLOCK;
 	ane->hs_cmd_in_pool = true;
 	dev_info(ane->dev, "ane_h18 hs surface CMD inside POOL at +%#x iova=%#llx size=%#zx\n", ANE_H18_CMD_POOL_OFF, (u64)ane->hs_cmd.iova, ane->hs_cmd.size);
 	{
@@ -1936,6 +2033,10 @@ static int ane_h18_stage_boot(struct ane_h18 *ane)
 		}
 		dev_info(ane->dev, "ane_h18 prog: %s is valid: %u sections, %u buffers\n", prog_fw, ane->pd.nsec, ane->pd.nio);
 	}
+	if ((hs_premap && !hs_prog) || (dart_inst && (!hs_prog || !read_dart)) || (dart_inst & ~(BIT(ANE_H18_DART_INSTANCES) - 1))) {
+		ane_h18_result(ane, "boot", "REFUSED", "hs_premap=1 needs hs_prog=1; dart_inst needs hs_prog=1 and read_dart=1 and is a mask of instances 0 to 3");
+		return -EINVAL;
+	}
 	if (handshake && (!map_fw || !rtkit_start || !rtkit_stop || !read_scratch || hs_wait_ms < 10 || hs_wait_ms > 5000 || !hs_cfg_size || hs_cfg_size > 0x10000000)) {
 		ane_h18_result(ane, "boot", "REFUSED", "handshake=1 needs map_fw=1, rtkit_start=1, rtkit_stop=1 or 2, read_scratch=1, hs_wait_ms 10 to 5000, hs_cfg_size 1 to 0x10000000");
 		return -EINVAL;
@@ -2109,7 +2210,7 @@ static int ane_h18_stage_boot(struct ane_h18 *ane)
 static int ane_h18_probe(struct platform_device *pdev)
 {
 	struct ane_h18 *ane;
-	unsigned int stage_idx;
+	unsigned int stage_idx, k;
 	int idx[3 + ANE_H18_NPSD];
 	int ret;
 
@@ -2188,6 +2289,16 @@ static int ane_h18_probe(struct platform_device *pdev)
 			dev_err(&pdev->dev, "ane_h18 ioremap of the DART window failed\n");
 			ret = -ENXIO;
 			goto out;
+		}
+		for (k = 1; k < ANE_H18_DART_INSTANCES; k++) {
+			if (!(dart_inst & BIT(k)))
+				continue;
+			ane->dartx[k] = ioremap(ane->soc->dart_pa + (u64)k * ANE_H18_DART_INST_STRIDE, ane->soc->dart_size);
+			if (!ane->dartx[k]) {
+				dev_err(&pdev->dev, "ane_h18 ioremap of the DART instance %u window failed\n", k);
+				ret = -ENXIO;
+				goto out;
+			}
 		}
 	}
 	ret = stage_idx == ANE_H18_STAGE_BOOT ? ane_h18_stage_boot(ane) : ane_h18_stage_power(ane);
