@@ -61,12 +61,21 @@
  * moved with one paired access (ldp from RX, stp to TX); four separate 32-bit accesses are not what that driver does on this SoC. */
 #define ANE_H18_PO_RX		0x00
 #define ANE_H18_PO_TX		0x10
-#define ANE_H18_PO_MAXSEND	4	/* at most this many management replies per run */
+#define ANE_H18_PO_MAXSEND	12	/* at most this many management messages sent per run */
 /* RTKit management protocol (the Linux apple-rtkit dialect): message type in bits 59:52 of the first 64-bit word, endpoint in the low byte of the second. */
 #define ANE_H18_RTK_TYPE_SHIFT	52
 #define ANE_H18_RTK_HELLO	1
 #define ANE_H18_RTK_HELLO_REPLY	2
+#define ANE_H18_RTK_STARTEP	5
+#define ANE_H18_RTK_IOP_PWR_ACK	7
 #define ANE_H18_RTK_EPMAP	8	/* the reply has the same type */
+#define ANE_H18_RTK_AP_PWR	0xb	/* SET_AP_PWR_STATE */
+#define ANE_H18_RTK_PWR_ON	0x20
+#define ANE_H18_RTK_PWR_OFF	0x00
+#define ANE_H18_RTK_IOP_IDLE	0xc
+#define ANE_H18_RTK_SET_IOP_PWR	6
+#define ANE_H18_RTK_STOP_WAIT_MS	600	/* how long the shutdown handshake waits for the IOP idle message */
+#define ANE_H18_RTK_APP_EP	0x20	/* endpoints from here are application endpoints, started only once the coprocessor runs */
 #define ANE_H18_RTK_VERSION	12	/* the version macOS and Linux answer with on this firmware family */
 
 /* A firmware segment the boot loader left in DRAM (ADT /arm-io/ane segment-ranges: physical address, size, and the IOVA the firmware is linked at in the

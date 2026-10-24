@@ -11,6 +11,8 @@
 # clears RUN again. It also reads the status word of the alias-bank mailbox channel before RUN and watches that channel for messages.
 # dart=1 reads twelve words of the ANE DART before RUN (needs two slots); hello=1 answers the firmware's RTKit management HELLO
 # (version 12) and endpoint map in the TX half of that channel (RX +0x00, TX +0x10), one paired 16 byte access per message, nothing else.
+# hello=2 also starts the system endpoints (crash log and the like), answers the firmware's IOP power state acknowledgement with AP power state ON, and
+# starts the application endpoints once the AP power state is acknowledged. hello=3 also runs the RTKit shutdown (AP and IOP power state OFF) before RUN is cleared.
 # Step 5 is step 4 with map_fw=1, for a DTB that has the ANE DART: it needs power-domains and iommus in the ANE node, attaches the ANE to
 # its DART through the iommu API and maps the two preloaded firmware segments before RUN. The state and slots arguments are ignored there
 # (the kernel's PSD driver owns the slots). Step 5 counts as step 4: it needs a step 3 PASS and runs once per boot.
@@ -36,7 +38,7 @@ fi
 
 WORK=${WORK:-/var/tmp/m6-ane}
 KO=${KO:-$WORK/ane_h18.ko}
-KO_SHA256=${KO_SHA256:-8e2cfb139a52fdba75d0026ebae1d3f848baeb3c56a40c2494d189ff4051d483}
+KO_SHA256=${KO_SHA256:-7401e9efa6dbfde66bc5d4018fea69761ecccd93a042a86380158c265deee0ca}
 WANT_UNAME=${WANT_UNAME:-7.1.12-aurora-m6usb-ARCH}
 UNAME_R=${UNAME_R:-$(uname -r)}
 BOOT_ID_FILE=${BOOT_ID_FILE:-/proc/sys/kernel/random/boot_id}
@@ -66,7 +68,7 @@ case "$slots" in 1|2) ;; *) die "slots must be 1 or 2" ;; esac
 if [ "$step" = 4 ]; then
   case "$wait_ms" in *[!0-9]*|"") die "wait_ms must be a number" ;; esac
   [ "$wait_ms" -ge 10 ] && [ "$wait_ms" -le 2000 ] || die "wait_ms must be 10 to 2000"
-  case "$dart$hello" in 00|01|10|11) ;; *) die "dart and hello must be 0 or 1" ;; esac
+  case "$dart$hello" in 00|01|02|03|10|11|12|13) ;; *) die "dart must be 0 or 1 and hello 0 to 3 (2 also starts the endpoints, 3 also runs the RTKit shutdown)" ;; esac
   if [ "$fw" = 1 ]; then
     [ -e "$DT_NODE/iommus" ] && [ -e "$DT_NODE/power-domains" ] || die "step 5 needs a DTB with iommus and power-domains in the ANE node"
   fi
@@ -98,7 +100,7 @@ if [ "$step" = 4 ]; then
   [ ! -e "$WORK/step4-run-$boot" ] || die "step 4 already ran on boot $boot: reboot first, the core may still be running"
 fi
 
-run="$WORK/run-$(date -u +%Y%m%dT%H%M%SZ)-step$step-boot$boot"
+run="$WORK/run-$(date -u +%Y%m%dT%H%M%SZ)-p$$-step$step-boot$boot"
 [ ! -e "$run" ] || die "run directory exists"
 mkdir "$run"
 {
@@ -116,7 +118,9 @@ case "$step" in
   4) args="optin=t8152 stage=boot confirm_power=1 confirm_boot=1 psd_state=$state psd_slots=$slots boot_wait_ms=$wait_ms alias_mbox=1"
      [ "$dart" = 1 ] && args="$args read_dart=1"
      [ "$fw" = 1 ] && args="$args map_fw=1"
-     [ "$hello" = 1 ] && args="$args rtkit_hello=1"
+     [ "$hello" = 0 ] || args="$args rtkit_hello=1"
+     [ "$hello" -ge 2 ] && args="$args rtkit_start=1"
+     [ "$hello" = 3 ] && args="$args rtkit_stop=1"
      : > "$WORK/step4-run-$boot" ;;
 esac
 case "$step" in 1) want_stage=dt ;; 2) want_stage=psd ;; 3) want_stage=power ;; 4) want_stage=boot ;; esac

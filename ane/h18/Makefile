@@ -130,6 +130,14 @@ sim-mutation-noundomap:
 sim-mutation-norpmput:
 	$(call mutant,norpmput,s/pm_runtime_put(ane->dev);/\/* NEG: no put *\//,NEG: no put,pos)
 
+# the shutdown handshake is skipped
+sim-mutation-nostop:
+	$(call mutant,nostop,s/if (rtkit_stop \&\& ane->rtk_ap_on) {/if (0 \/* NEG: no shutdown *\/) {/,NEG: no shutdown,pos)
+
+# AP power ON is sent for any IOP power acknowledgement, whatever its state
+sim-mutation-noackstate:
+	$(call mutant,noackstate,s/!ane->rtk_ap_on \&\& (msg0 \& 0xff) == ANE_H18_RTK_PWR_ON/!ane->rtk_ap_on \&\& 1 \/* NEG: ack state ignored *\//,NEG: ack state ignored,pos)
+
 # a state 6 request that is not acknowledged does not fail the stage
 sim-mutation-nostate6:
 	$(call mutant,nostate6,s/if (!keep_on \&\& ane_h18_psd_off(ane)) {/if (!keep_on \&\& (ane_h18_psd_off(ane)$(COMMA) 0)) { \/* NEG: state 6 ack ignored *\//,NEG: state 6 ack ignored,neg-psd-never)
@@ -139,12 +147,13 @@ sim-all: sim-test sim-negative-psd-never sim-negative-psd-wrong sim-negative-dt 
 	sim-mutation-noconfirmboot sim-mutation-nopreflight sim-mutation-nohalt \
 	sim-mutation-nocredit sim-mutation-wronghalf sim-mutation-nover sim-mutation-dartgate sim-mutation-hellogate \
 	sim-mutation-mapgate sim-mutation-nofail sim-mutation-noundomap sim-mutation-norpmput \
+	sim-mutation-nostop sim-mutation-noackstate \
 	sim-mutation-nostate6
 
 clean:
 	$(MAKE) -C $(KERNELDIR) M=$(PWD) clean
 	rm -f sim/sim_h18
 
-.PHONY: sim-mutation-nostate6 sim-mutation-mapgate sim-mutation-nofail sim-mutation-noundomap sim-mutation-norpmput sim-mutation-nocredit sim-mutation-wronghalf sim-mutation-nover sim-mutation-dartgate sim-mutation-hellogate sim-negative-boot sim-mutation-noconfirmboot sim-mutation-nopreflight sim-mutation-nohalt default modules sim-test sim-negative-psd-never sim-negative-psd-wrong sim-negative-dt sim-negative-args \
+.PHONY: sim-mutation-nostate6 sim-mutation-nostop sim-mutation-noackstate sim-mutation-mapgate sim-mutation-nofail sim-mutation-noundomap sim-mutation-norpmput sim-mutation-nocredit sim-mutation-wronghalf sim-mutation-nover sim-mutation-dartgate sim-mutation-hellogate sim-negative-boot sim-mutation-noconfirmboot sim-mutation-nopreflight sim-mutation-nohalt default modules sim-test sim-negative-psd-never sim-negative-psd-wrong sim-negative-dt sim-negative-args \
 	sim-mutation-noconfirm sim-mutation-nowindow sim-mutation-noundo sim-mutation-noack sim-mutation-nogate sim-all clean
 endif

@@ -27,6 +27,11 @@ u64 sim_rvbar_val = 0x10000000001ULL;
 int sim_core_running, sim_core_stuck, sim_ctrl_writes;
 u32 sim_po_msg[SIM_PO_CH][SIM_PO_Q][4];
 int sim_po_n[SIM_PO_CH], sim_po_head[SIM_PO_CH];
+u32 sim_tx_w[4];
+int sim_tx_got;
+u64 sim_tx_msgs[32];
+int sim_n_tx_msgs, sim_idle_sent, sim_stop_needs_idle, sim_no_shutdown_reply;
+u32 sim_iop_ack_state = 0x20;
 int sim_rpm_enabled, sim_rpm_gets, sim_rpm_puts, sim_rpm_get_fail;
 struct sim_iocall sim_iocalls[64];
 int sim_n_iocalls, sim_io_fail, sim_n_dom_live;
@@ -118,6 +123,10 @@ static void reset_all(void)
 	read_dart = false;
 	alias_mbox = false;
 	rtkit_hello = false;
+	rtkit_start = false;
+	rtkit_stop = false;
+	sim_n_tx_msgs = sim_idle_sent = sim_stop_needs_idle = sim_no_shutdown_reply = 0;
+	sim_iop_ack_state = 0x20;
 	map_fw = false;
 	sim_rpm_enabled = sim_rpm_gets = sim_rpm_puts = sim_rpm_get_fail = 0;
 	sim_n_iocalls = sim_io_fail = sim_n_dom_live = 0;
@@ -642,6 +651,71 @@ static void pos_boot(void)
 			printf("    rx lines %d, faults %d\n", log_count("ane_h18 rtkit rx type="), sim_faults);
 		chk(log_count("ane_h18 rtkit rx type=") == 2 && sim_faults == 0, "H1 boot rtkit_hello: both messages decoded and logged, zero faults");
 	}
+	/* rtkit_start: the whole management boot against a firmware that reacts to what the host writes */
+	{
+		static const u64 want_start[6] = { 0x200000000c000cULL, 0x80000000000001ULL, 0x88000100000000ULL, 0x50000100000002ULL, 0xb0000000000020ULL, 0x50002000000002ULL };
+		int k, same;
+
+		boot_setup();
+		alias_mbox = true;
+		rtkit_hello = true;
+		rtkit_start = true;
+		sim_start_chan = 536;
+		sim_start_hello = 3;
+		ret = probe_now();
+		chk(ret == 0 && result("boot", "PASS", "core-ran-and-stopped"), "R1 boot rtkit_start: PASS");
+		same = sim_n_tx_msgs == 6;
+		for (k = 0; k < 6 && k < sim_n_tx_msgs; k++)
+			same &= sim_tx_msgs[k] == want_start[k];
+		if (!same)
+			for (k = 0; k < sim_n_tx_msgs && k < 32; k++)
+				printf("    tx[%d] = %#llx\n", k, (unsigned long long)sim_tx_msgs[k]);
+		chk(same, "R1 boot rtkit_start: HELLO_REPLY, two EPMAP replies, STARTEP ep 1, AP power ON, STARTEP ep 0x20, in that order and nothing else");
+		chk(sim_faults == 0 && log_count("rtkit endpoint 0x20 discovered") == 1 && log_count("AP power state acknowledged: 0xb0000000000020") + log_count("AP power state acknowledged: 0x20") == 1, "R1 boot rtkit_start: endpoint 0x20 discovered, the AP power acknowledgement seen, zero faults");
+		/* an IOP acknowledgement for another state does not get AP power ON */
+		boot_setup();
+		alias_mbox = true;
+		rtkit_hello = true;
+		rtkit_start = true;
+		sim_start_chan = 536;
+		sim_start_hello = 3;
+		sim_iop_ack_state = 0x10;
+		ret = probe_now();
+		chk(ret == 0 && sim_n_tx_msgs == 4, "R2 boot rtkit_start: an IOP acknowledgement for state 0x10 gets no AP power ON and no application endpoint start");
+		/* without rtkit_start only HELLO and the maps are answered */
+		boot_setup();
+		alias_mbox = true;
+		rtkit_hello = true;
+		sim_start_chan = 536;
+		sim_start_hello = 3;
+		ret = probe_now();
+		chk(ret == 0 && sim_n_tx_msgs == 3, "R3 boot rtkit_hello alone: three replies, no STARTEP, no power state message");
+		/* rtkit_stop: AP OFF, IOP OFF, IOP idle, and only then does the modelled core accept the RUN clear */
+		boot_setup();
+		alias_mbox = true;
+		rtkit_hello = true;
+		rtkit_start = true;
+		rtkit_stop = true;
+		sim_start_chan = 536;
+		sim_start_hello = 3;
+		sim_stop_needs_idle = 1;
+		ret = probe_now();
+		chk(ret == 0 && result("boot", "PASS", "core-ran-and-stopped") && sim_n_tx_msgs == 8 && sim_tx_msgs[6] == 0xb0000000000000ULL && sim_tx_msgs[7] == 0x60000000000000ULL,
+		    "R4 boot rtkit_stop: AP power OFF then IOP power OFF follow the boot messages and the core stops after the idle message");
+		chk(log_count("rtkit shutdown: ap_off_acked=1 iop_off_acked=1 iop_idle=1") == 1, "R4 boot rtkit_stop: both acknowledgements and the idle message seen");
+		/* a firmware that never answers the shutdown: no PASS, the slots stay, the core is reported as not stopped */
+		boot_setup();
+		alias_mbox = true;
+		rtkit_hello = true;
+		rtkit_start = true;
+		rtkit_stop = true;
+		sim_start_chan = 536;
+		sim_start_hello = 3;
+		sim_stop_needs_idle = 1;
+		sim_no_shutdown_reply = 1;
+		ret = probe_now();
+		chk(ret != 0 && result("boot", "FAIL", "core-not-stopped") && log_count("iop_idle=0") == 1 && sim_n_tx_msgs == 7, "R5 boot rtkit_stop: no shutdown answer gives FAIL core-not-stopped, AP OFF sent once, no IOP OFF");
+	}
 	/* without rtkit_hello the messages are only logged */
 	boot_setup();
 	alias_mbox = true;
@@ -745,6 +819,18 @@ static int neg_boot(void)
 	ret = probe_now();
 	if (ret != -EINVAL || writes()) { printf("    boot_wait_ms 5\n"); bad = 1; }
 
+	/* rtkit_start needs rtkit_hello, rtkit_stop needs rtkit_start: refused before any write */
+	boot_setup();
+	alias_mbox = true;
+	rtkit_start = true;
+	ret = probe_now();
+	if (ret != -EINVAL || writes() || !result("boot", "REFUSED", "rtkit_start=1 needs rtkit_hello=1")) { printf("    rtkit_start without rtkit_hello\n"); bad = 1; }
+	boot_setup();
+	alias_mbox = true;
+	rtkit_hello = true;
+	rtkit_stop = true;
+	ret = probe_now();
+	if (ret != -EINVAL || writes() || !result("boot", "REFUSED", "rtkit_stop=1 needs rtkit_start=1")) { printf("    rtkit_stop without rtkit_start\n"); bad = 1; }
 	/* rtkit_hello without alias_mbox is refused before any write */
 	boot_setup();
 	rtkit_hello = true;
