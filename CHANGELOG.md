@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- `ane_t6021` unloads a firmware program when its last user closes by default (`unload_on_close` is 1 again). On an M2, six decode sessions in a row passed: the logits were byte identical, the step time stayed within 0.1 percent, and `bo_total_bytes` after a pool drain stayed at about 54 MB. The table of firmware buffers stayed flat at 17 slots and 475,136 bytes. The two earlier runs that failed (the firmware's free request, the table of firmware buffers) are fixed in 0.5.0. The proof is one M2 and one workload, and `unload_on_close=0` restores the old behavior.
+- `ane_t6021` unloads a firmware program when its last user closes by default (`unload_on_close` is 1 again). On an M2, six decode sessions in a row passed: the logits were byte identical, the step time stayed within 0.1 percent, and `bo_total_bytes` after a pool drain stayed at about 54 MB. The table of firmware buffers stayed flat at 17 slots and 475,136 bytes. The two earlier runs that failed (the firmware's free request, the table of firmware buffers) are fixed in 0.5.0. The proof is one M2 and one workload with a pool drain between sessions. Killed sessions and other chips are untested, and `unload_on_close=0` restores the old behavior.
 
 - `ane/h18` gains `hs_start=1`, the kext's command order after the first two commands: PRINT_ENABLE, START, CONFIG_GET and RESOURCE_INFO_GET, with the 100 byte RESOURCE_INFO_GET reply logged. On the board PRINT_ENABLE and CONFIG_GET were answered with the command block inside the pool, and CONFIG_GET returned 0x16e3600, a 24 MHz tick rate. The stage script takes `chan=3` for it. The sim has two new cases and one mutant. START and RESOURCE_INFO_GET have not run on the board yet.
 

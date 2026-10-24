@@ -226,7 +226,8 @@ against the `bo_total_max_mb` cap (12 GiB by default):
   firmware asks the host to free a buffer while it terminates a process and
   the driver did not answer. The second failed in the fourth session
   because the table of firmware buffers kept freed entries. Both are fixed.
-  The measurements are one M2 and one decode workload;
+  The measurements are one M2 and one decode workload, every set with a pool drain in between. Not tested: sessions without the pool drain between them, a session killed while a program is loaded or a command is in flight, other chips.
+  A session killed with a program loaded runs the same close path, and a failed unload quarantines the device until reboot;
 - an io BO is parked in a pool when its last reference drops. Its IOVA
   stays mapped. The next `BO_INIT` of the same page-aligned size takes it,
   zeroes it and gives it to the new owner. After a quarantine, io BOs are
