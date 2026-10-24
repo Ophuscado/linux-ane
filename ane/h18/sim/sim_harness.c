@@ -1432,7 +1432,7 @@ static void pos_boot(void)
 					chk(ret == 0 && ok && sim_cmds_seen == 9 && sim_cmd_ops[4] == 0x200 && sim_cmd_ops[5] == 0x202 && sim_cmd_ops[6] == 0x204 && sim_cmd_ops[7] == 0x203 && sim_cmd_ops[8] == 0x201 &&
 					    !sim_prog_loaded && !sim_prog_created,
 					    "PG1 hs_prog=1: LOAD_PROGRAM, CREATE_PROCESS, PROCEDURE_CALL, TERMINATE_PROCESS, DESTROY_PROGRAM in that order after the four start commands, the firmware holds nothing afterwards");
-					chk(log_count("LOAD_PROGRAM program id 0x5a") == 1 && log_count("CREATE_PROCESS process id 0x77") == 1 && sim_out_written &&
+					chk(log_count("DART exception state (before LOAD_PROGRAM) not read: read_dart=0") == 1 && log_count("DART exception state (after the call) not read: read_dart=0") == 1 && log_count("LOAD_PROGRAM program id 0x5a") == 1 && log_count("CREATE_PROCESS process id 0x77") == 1 && sim_out_written &&
 					    log_count("buffer 4 (output, 0x4000 bytes): 2 nonzero words, first 11223344 11223344") == 1 && log_count("buffer 5 (input, 0x4000 bytes): 16 nonzero words, first aaaaaaaa") == 1,
 					    "PG2 the ids come back from the replies, the sections and buffers reach the firmware (it checked every IOVA), the output buffer is read back and logged");
 					chk(log_count("PROCEDURE_CALL finished after") == 1 && log_count("IO_T2H slot 0 header=") == 1 && log_count("IO_T2H slot 1 header=") == 1 && sim_t2h_posted == 2 && sim_t2h_back == 2 && log_count("write doorbell BIT(6)") == 2,

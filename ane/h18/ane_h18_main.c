@@ -1241,8 +1241,10 @@ static void ane_h18_dart_exc(struct ane_h18 *ane, const char *when)
 	u32 pend[ANE_H18_DART_EXC_WORDS], i, w, bit, shown = 0;
 	const struct ane_h18_soc *s = ane->soc;
 
-	if (!ane->dart)
+	if (!ane->dart) {
+		dev_info(ane->dev, "ane_h18 prog: DART exception state (%s) not read: read_dart=0\n", when);
 		return;
+	}
 	dev_crit(ane->dev, "ane_h18 prog: reading the ANE DART exception state (%s), pa=%#llx..%#llx, read only\n", when, s->dart_pa + fixed[0],
 		 s->dart_pa + 0x8000 + 0x40 * (u64)ANE_H18_DART_EXC_MAXSID);
 	for (i = 0; i < ARRAY_SIZE(fixed); i++)
