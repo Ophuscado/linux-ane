@@ -175,6 +175,8 @@ extern int sim_tx_got;
 extern u64 sim_tx_msgs[32];
 extern int sim_n_tx_msgs, sim_idle_sent, sim_stop_needs_idle, sim_no_shutdown_reply;
 extern u32 sim_iop_ack_state;
+extern int sim_credit_mode;	/* 1: every host TX message uses the only free slot, the slot returns at the next sleep */
+extern u32 sim_credits_now;
 extern u64 sim_asc_pa, sim_rvbar_pa, sim_mbox_pa;
 extern u32 sim_asc_size, sim_rvbar_size, sim_mbox_size;
 
@@ -279,7 +281,7 @@ static inline u32 bus_read(u64 pa)
 				if (r == 0x20) {
 					v = (u32)(sim_po_n[ch] > 15 ? 15 : sim_po_n[ch]);	/* a 4-bit count */
 					if (ch == 536)
-						v |= sim_alias_credits << 8;
+						v |= (sim_credit_mode ? sim_credits_now : sim_alias_credits) << 8;
 				} else if (r >= oo && r < oo + 0x10 && sim_po_n[ch] > 0) {
 					v = sim_po_msg[ch][sim_po_head[ch]][(r - oo) / 4];
 					if (r == oo + 0xc) {		/* the last word read pops the message */
@@ -372,8 +374,10 @@ static inline void bus_write(u64 pa, u32 v)
 		/* an inbox write with the ANE slot on is a legal bus access; a modelled firmware reads TX of the alias channel */
 		if (sim_start_hello == 3 && pa >= sim_mbox_pa + 0x10c10 && pa < sim_mbox_pa + 0x10c20) {
 			sim_tx_w[(pa - sim_mbox_pa - 0x10c10) / 4] = v;
-			if (pa == sim_mbox_pa + 0x10c1c)
+			if (pa == sim_mbox_pa + 0x10c1c) {
+				sim_credits_now = 0;
 				sim_fw_react(((u64)sim_tx_w[1] << 32) | sim_tx_w[0]);
+			}
 		}
 		return;
 	}
@@ -472,7 +476,7 @@ extern unsigned long sim_jiffies;
 #define jiffies sim_jiffies
 static inline unsigned long msecs_to_jiffies(unsigned int ms) { return ms; }
 static inline bool time_after(unsigned long a, unsigned long b) { return (long)(b - a) < 0; }
-static inline void usleep_range(unsigned long lo, unsigned long hi) { sim_jiffies += (lo + hi) / 2000 + 1; }
+static inline void usleep_range(unsigned long lo, unsigned long hi) { sim_jiffies += (lo + hi) / 2000 + 1; sim_credits_now = 1; }
 
 #define ERANGE_UNUSED 0
 

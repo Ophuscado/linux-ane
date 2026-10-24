@@ -96,7 +96,7 @@ sim-mutation-nohalt:
 
 # the RTKit reply is written without looking at the inbox credits
 sim-mutation-nocredit:
-	$(call mutant,nocredit,s/if (!(st \& 0xf00)) {/if (0 \/* NEG: credit ignored *\/) {/,NEG: credit ignored,pos)
+	$(call mutant,nocredit,s/if (!(st \& 0xf00))/if (0 \/* NEG: credit ignored *\/)/,NEG: credit ignored,pos)
 
 # the reply is written to RX, the half the firmware's message came from
 sim-mutation-wronghalf:
@@ -146,6 +146,10 @@ sim-mutation-nostate6:
 sim-mutation-noshutfail:
 	$(call mutant,noshutfail,s/if (rtkit_stop \&\& !(ane->rtk_ap_on \&\& ane->rtk_ap_acked \&\& ane->rtk_iop_acked)) {/if (0 \/* NEG: shutdown result ignored *\/) {/,NEG: shutdown result ignored,pos)
 
+# a message that finds no free TX slot is dropped instead of queued
+sim-mutation-noqueue:
+	$(call mutant,noqueue,s/ane->rtk_txq\[ane->rtk_txq_n++\] = msg0;/(void)msg0; \/* NEG: message dropped *\//,NEG: message dropped,pos)
+
 sim-all: sim-test sim-negative-psd-never sim-negative-psd-wrong sim-negative-dt sim-negative-args sim-negative-boot \
 	sim-mutation-noconfirm sim-mutation-nowindow sim-mutation-noundo sim-mutation-noack sim-mutation-nogate \
 	sim-mutation-noconfirmboot sim-mutation-nopreflight sim-mutation-nohalt \
@@ -153,12 +157,13 @@ sim-all: sim-test sim-negative-psd-never sim-negative-psd-wrong sim-negative-dt 
 	sim-mutation-mapgate sim-mutation-nofail sim-mutation-noundomap sim-mutation-norpmput \
 	sim-mutation-nostop sim-mutation-noackstate \
 	sim-mutation-nostate6 \
-	sim-mutation-noshutfail
+	sim-mutation-noshutfail \
+	sim-mutation-noqueue
 
 clean:
 	$(MAKE) -C $(KERNELDIR) M=$(PWD) clean
 	rm -f sim/sim_h18
 
-.PHONY: sim-mutation-noshutfail sim-mutation-nostate6 sim-mutation-nostop sim-mutation-noackstate sim-mutation-mapgate sim-mutation-nofail sim-mutation-noundomap sim-mutation-norpmput sim-mutation-nocredit sim-mutation-wronghalf sim-mutation-nover sim-mutation-dartgate sim-mutation-hellogate sim-negative-boot sim-mutation-noconfirmboot sim-mutation-nopreflight sim-mutation-nohalt default modules sim-test sim-negative-psd-never sim-negative-psd-wrong sim-negative-dt sim-negative-args \
+.PHONY: sim-mutation-noqueue sim-mutation-noshutfail sim-mutation-nostate6 sim-mutation-nostop sim-mutation-noackstate sim-mutation-mapgate sim-mutation-nofail sim-mutation-noundomap sim-mutation-norpmput sim-mutation-nocredit sim-mutation-wronghalf sim-mutation-nover sim-mutation-dartgate sim-mutation-hellogate sim-negative-boot sim-mutation-noconfirmboot sim-mutation-nopreflight sim-mutation-nohalt default modules sim-test sim-negative-psd-never sim-negative-psd-wrong sim-negative-dt sim-negative-args \
 	sim-mutation-noconfirm sim-mutation-nowindow sim-mutation-noundo sim-mutation-noack sim-mutation-nogate sim-all clean
 endif
