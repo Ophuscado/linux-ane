@@ -4,7 +4,7 @@
 
 ## 0.5.1 (2026-10-24)
 
-This release turns the T6021 program unload on by default again. It adds START and RESOURCE_INFO_GET to the M6 module, answered on the board, and a shorter kernel log for its channel snapshots. It also adds the H15 channel stage and a faster surface pack for the host tools. The unload proof is one M2 and one workload. The H18 results are board measurements on one Mac mini M6, and the H15 stage has not run on an H15 part.
+This release turns the T6021 program unload on by default again. It adds START and RESOURCE_INFO_GET to the M6 module, answered on the board, and a shorter kernel log for its channel snapshots. It also adds the H15 channel stage and a C surface pack that `qwen_prog_run.py` uses by default. The lab decoders reach the pack only through a shim, so its measured gains are shim runs. The unload proof is one M2 and one workload. The H18 results are board measurements on one Mac mini M6, and the H15 stage has not run on an H15 part.
 
 ### T6021 (M2): program unload
 
@@ -12,7 +12,7 @@ This release turns the T6021 program unload on by default again. It adds START a
 
 ### M6 and H15 modules
 
-- `ane/h18` gains `hs_start=1`, the kext's command order after the first two commands: PRINT_ENABLE, START, CONFIG_GET and RESOURCE_INFO_GET, with the 100 byte RESOURCE_INFO_GET reply logged. On the board all four were answered in one run with the command block inside the pool, and the core stopped cleanly afterwards. CONFIG_GET returned 0x16e3600, a 24 MHz tick rate. The RESOURCE_INFO_GET reply reports 0x80 procedures, 8 cache requests, 8 shared events and 0x20 global wait events, read from the macOS kext's code and not used by the module yet. The stage script takes `chan=3` for it. The sim has two new cases and one mutant.
+- `ane/h18` gains `hs_start=1`, the kext's command order after the first two commands: PRINT_ENABLE, START, CONFIG_GET and RESOURCE_INFO_GET, with the 100 byte RESOURCE_INFO_GET reply logged. On the board all four were answered in one run with the command block inside the pool, and the core stopped cleanly afterwards. CONFIG_GET returned 0x16e3600, a 24 MHz tick rate. The board returned 0x80 at +0x18, 0x10 at +0x1c and 0x00200008 at +0x24. The names come from a decode of the macOS kext, not from the board: 0x80 procedures, 0x10 cache requests of which 8 are usable, and the two halves of +0x24 as 8 shared events (low) and 0x20 global wait events (high). The module does not use them yet. The stage script takes `chan=3` for it. The sim has two new cases and one mutant.
 
 - `ane/h18` ring change snapshots are shorter. They print at most 4 nonzero lines per ring and leave out the terminal ring text. The explicit snapshots, after the channel step and after a failed command, still print everything. On the first board run with `hs_start=1` the six change snapshots overflowed the kernel log ring. The stage script then counted no new RESULT line and reported a failed step, although the module's own line said PASS. The log volume is lower now. Whether it is low enough on the board is unverified until the next run.
 
