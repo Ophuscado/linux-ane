@@ -795,15 +795,21 @@ static int ane_h18_handshake(struct ane_h18 *ane)
 	if (!tb) {
 		dev_info(ane->dev, "ane_h18 handshake: the table address %#llx is outside the surfaces allocated here\n", table);
 	} else {
-		u64 left = tb->iova + tb->size - table, len = left < 0x200 ? left : 0x200, off;
+		u64 left = tb->iova + tb->size - table, len = left < 0x800 ? left : 0x800, off;
+		unsigned int skipped = 0;
 
 		dev_info(ane->dev, "ane_h18 handshake: table address %#llx is in a surface of %#zx bytes at %#llx, first %#llx bytes follow\n", table, tb->size, (u64)tb->iova, len);
 		for (off = 0; off + 16 <= len; off += 16) {
 			u32 q[4];
 
 			memcpy(q, (u8 *)tb->va + (table - tb->iova) + off, sizeof(q));
+			if (!(q[0] | q[1] | q[2] | q[3])) {
+				skipped++;
+				continue;
+			}
 			dev_info(ane->dev, "ane_h18 hs table +%#llx: %08x %08x %08x %08x\n", off, q[0], q[1], q[2], q[3]);
 		}
+		dev_info(ane->dev, "ane_h18 hs table: %u all-zero lines of 16 bytes skipped\n", skipped);
 	}
 	return 0;
 }
