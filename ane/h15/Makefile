@@ -186,6 +186,34 @@ sim-mutation-dart-noconfirm:
 sim-mutation-run-nopin:
 	$(call pd_mutant,run-nopin,s/__module_get(THIS_MODULE);/\/* NEG: module not pinned *\//,NEG: module not pinned,neg-run)
 
+# Stage 5 map_fw=1: refusals, the undo after each failed step, the stuck core keeping its mapping.
+sim-negative-map: sim/sim_h15
+	./sim/sim_h15 neg-map
+
+# the map is never undone (domain and mappings leak after a clean stop or a failed step)
+sim-mutation-map-noundo:
+	$(call pd_mutant,map-noundo,s/if (!ane->domain)/if (1 \/* NEG: unmap is a no-op *\/)/,NEG: unmap is a no-op,pos)
+
+# a firmware segment inside system RAM is mapped into the ANE
+sim-mutation-map-noramcheck:
+	$(call pd_mutant,map-noramcheck,s/!= REGION_DISJOINT/== 99 \/* NEG: RAM check skipped *\//,NEG: RAM check skipped,neg-map)
+
+# TEXT is mapped writable
+sim-mutation-map-textrw:
+	$(call pd_mutant,map-textrw,s/IOMMU_READ | (i ? IOMMU_WRITE : 0)/IOMMU_READ | IOMMU_WRITE \/* NEG: TEXT writable *\//,NEG: TEXT writable,pos)
+
+# overlapping segments accepted
+sim-mutation-map-nooverlap:
+	$(call pd_mutant,map-nooverlap,s/pa\[0\] < pa\[1\] + size\[1\] \&\& /0 \&\& /,0 \&\& pa\[1\] <,neg-map)
+
+# map_fw attaches and maps while the core may be running
+sim-mutation-map-nostoppedcheck:
+	$(call pd_mutant,map-nostoppedcheck,s/return !(st \& ANE_H15_ST_RUNNING) \&\& (st \& ANE_H15_ST_STOPPED);/return true; \/* NEG: stopped check skipped *\//,NEG: stopped check skipped,neg-map)
+
+# map_fw runs on a node without iommus
+sim-mutation-map-noiommus:
+	$(call pd_mutant,map-noiommus,s/if (!device_iommu_mapped(ane->dev)) {/if (0 \/* NEG: iommus not required *\/) {/,NEG: iommus not required,neg-map)
+
 sim-negative-nopsguard:
 	rm -rf /tmp/ane_h15-nopsguard && mkdir -p /tmp/ane_h15-nopsguard
 	cp -r sim /tmp/ane_h15-nopsguard/sim
@@ -250,5 +278,7 @@ clean:
 	sim-mutation-run-nomboxcheck sim-mutation-run-noclear \
 	sim-mutation-run-nostopcheck sim-mutation-run-pop32 \
 	sim-negative-dart sim-mutation-run-nodartgate sim-mutation-dart-nottbr \
-	sim-mutation-dart-noconfirm sim-mutation-run-nopin clean
+	sim-mutation-dart-noconfirm sim-mutation-run-nopin sim-negative-map sim-mutation-map-noundo \
+	sim-mutation-map-noramcheck sim-mutation-map-textrw sim-mutation-map-nooverlap \
+	sim-mutation-map-noiommus sim-mutation-map-nostoppedcheck clean
 endif

@@ -83,6 +83,10 @@ int sim_pd_attach_fail_at = -1;
 int sim_link_fail_at = -1;
 int sim_pd_attach_calls;
 int sim_module_gets;
+int sim_region_ram = REGION_DISJOINT;
+struct sim_iocall sim_iocalls[64];
+int sim_n_iocalls, sim_io_fail, sim_n_dom_live;
+void (*sim_attach_hook)(void);
 int sim_link_calls;
 
 /* ---- helpers ---- */
@@ -220,6 +224,11 @@ static void reset_all(void)
 	confirm_run = false;
 	run_unmapped = false;
 	sim_module_gets = 0;
+	map_fw = false;
+	fw_seg = NULL;
+	sim_region_ram = REGION_DISJOINT;
+	sim_n_iocalls = sim_io_fail = sim_n_dom_live = 0;
+	sim_attach_hook = NULL;
 	run_wait_ms = 300;
 	sim_write_hook = NULL;
 	sim_read_hook = NULL;
@@ -1608,6 +1617,164 @@ static int neg_dart(void)
 	return fails;
 }
 
+/* ---- stage 5 with map_fw=1: attach to the DART and iommu_map the two firmware segments before RUN ---- */
+#define SEGS_OK "100014e8000:c4000,100030c4000:2ac000"
+
+static void attach_live(void)
+{
+	dart_set(dm_soc, true);	/* the DART driver programmed stream 3 at the attach */
+}
+
+static void map_setup(const struct ane_h15_soc *s, const char *compat)
+{
+	run_setup(s, compat, 0);
+	dart_set(s, false);	/* iBoot left nothing enabled (the M6 measurement) */
+	node.has_iommus = true;
+	map_fw = true;
+	fw_seg = SEGS_OK;
+	sim_attach_hook = attach_live;
+}
+
+/* the iommu call sequence, as a string of codes */
+static void io_seq(char *out, size_t sz)
+{
+	int k;
+	size_t o = 0;
+
+	for (k = 0; k < sim_n_iocalls && k < 64 && o + 2 < sz; k++)
+		out[o++] = "?ATMUDF"[sim_iocalls[k].code];
+	out[o] = 0;
+}
+
+static void pos_map(void)
+{
+	const struct ane_h15_soc *s = &ane_t6030_soc;
+	unsigned int rstage;
+	char verdict[32], reason[128], seq[80];
+	u32 w[8];
+	int ret, first, n;
+
+	map_setup(s, "apple,t6030-ane");
+	ret = probe_now();
+	chk(ret == 0 && parse_result(&rstage, verdict, sizeof(verdict), reason, sizeof(reason)) &&
+	    rstage == 5 && !strcmp(verdict, "PASS") && !strcmp(reason, "core-started-and-stopped"),
+	    "M1 map_fw: RESULT stage=5 PASS core-started-and-stopped");
+	io_seq(seq, sizeof(seq));
+	chk(!strcmp(seq, "AT" "MM" "UUDF"), "M1 map_fw: alloc, attach, map, map, then after the stop unmap, unmap, detach, free");
+	chk(sim_n_iocalls >= 4 &&
+	    sim_iocalls[2].iova == 0x10000000000ULL && sim_iocalls[2].pa == 0x100014e8000ULL &&
+	    sim_iocalls[2].size == 0xc4000 && sim_iocalls[2].prot == IOMMU_READ &&
+	    sim_iocalls[3].iova == 0x100000c4000ULL && sim_iocalls[3].pa == 0x100030c4000ULL &&
+	    sim_iocalls[3].size == 0x2ac000 && sim_iocalls[3].prot == (IOMMU_READ | IOMMU_WRITE),
+	    "M1 map_fw: TEXT 0x100014e8000 at the RVBAR entry 0x10000000000 read only, DATA 0x100030c4000 right behind it read+write");
+	n = run_writes(s, w, 8, &first);
+	chk(n == 2 && w[0] == 0x10 && w[1] == 0 && first >= 0 && sim_iocalls[3].ev <= first &&
+	    sim_iocalls[1].ev >= 5, "M1 map_fw: both maps and the attach happen after the pmgr gate and before the RUN write");
+	chk(log_count("live_streams=1") == 1 && sim_n_dom_live == 0, "M1 map_fw: the scan after the attach finds the live stream; the domain is gone after the stop");
+	chk(events_in(0, ~0ULL, 1) == n && sim_pm_get == 1 && sim_pm_put == 1, "M1 map_fw: only CPU_CONTROL written, power claim released");
+	ane_h15_remove(&pdev);
+	chk(sim_n_iomap == 2 && sim_n_iounmap == 2, "M1 map_fw: remove unmaps both windows");
+}
+
+static int neg_map(void)
+{
+	const struct ane_h15_soc *s = &ane_t6030_soc;
+	static const struct { const char *tag; const char *seg; } bad[] = {
+		{ "NM2 fw_seg absent", NULL },
+		{ "NM3 fw_seg malformed", "zz" },
+		{ "NM4 TEXT pa not 16 KiB aligned", "100014e9000:c4000,100030c4000:2ac000" },
+		{ "NM4 DATA size not 16 KiB aligned", "100014e8000:c4000,100030c4000:2ac001" },
+		{ "NM4 TEXT size zero", "100014e8000:0,100030c4000:2ac000" },
+		{ "NM4 DATA over 64 MiB", "100014e8000:c4000,100030c4000:4004000" },
+		{ "NM4 segments overlap", "100014e8000:c4000,100014f0000:2ac000" },
+	};
+	unsigned int rstage;
+	char verdict[32], reason[128], seq[80], name[128];
+	u32 w[8];
+	int ret, first, i;
+
+	/* NM1 no iommus in the node: refused before any bus access, no iommu call */
+	map_setup(s, "apple,t6030-ane");
+	node.has_iommus = false;
+	ret = probe_now();
+	chk(ret != 0 && parse_result(&rstage, verdict, sizeof(verdict), reason, sizeof(reason)) &&
+	    rstage == 5 && !strcmp(verdict, "REFUSED") && sim_n_events == 0 && sim_n_iocalls == 0,
+	    "NM1 no iommus: REFUSED, zero bus events, zero iommu calls");
+	for (i = 0; i < (int)ARRAY_SIZE(bad); i++) {
+		map_setup(s, "apple,t6030-ane");
+		fw_seg = (char *)bad[i].seg;
+		ret = probe_now();
+		snprintf(name, sizeof(name), "%s: REFUSED, zero bus events, zero iommu calls", bad[i].tag);
+		chk(ret != 0 && parse_result(&rstage, verdict, sizeof(verdict), reason, sizeof(reason)) &&
+		    !strcmp(verdict, "REFUSED") && sim_n_events == 0 && sim_n_iocalls == 0, name);
+	}
+	/* NM5 a segment inside system RAM */
+	for (i = REGION_INTERSECTS; i <= REGION_MIXED; i += 2) {
+		map_setup(s, "apple,t6030-ane");
+		sim_region_ram = i;
+		ret = probe_now();
+		snprintf(name, sizeof(name), "NM5 region_intersects=%d: REFUSED, zero bus events, zero iommu calls", i);
+		chk(ret != 0 && parse_result(&rstage, verdict, sizeof(verdict), reason, sizeof(reason)) &&
+		    !strcmp(verdict, "REFUSED") && sim_n_events == 0 && sim_n_iocalls == 0, name);
+	}
+	/* NM15 the core is already running (STOPPED clear, then RUNNING set): nothing mapped, nothing written */
+	for (i = 0; i < 2; i++) {
+		map_setup(s, "apple,t6030-ane");
+		eng_set(s, s->cpu_status, i ? 0x30002b : 0x300028);
+		ret = probe_now();
+		snprintf(name, sizeof(name), "NM15 core %s: FAIL core-not-stopped-before-map, no iommu call, no write",
+			 i ? "RUNNING" : "not STOPPED");
+		chk(ret != 0 && parse_result(&rstage, verdict, sizeof(verdict), reason, sizeof(reason)) &&
+		    !strcmp(verdict, "FAIL") && !strcmp(reason, "core-not-stopped-before-map") &&
+		    sim_n_iocalls == 0 && events_in(0, ~0ULL, 1) == 0, name);
+	}
+	/* NM14 a SoC row without a measured RVBAR: refused first */
+	map_setup(&ane_t8122_soc, "apple,t8122-ane");
+	ret = probe_now();
+	chk(ret != 0 && sim_n_events == 0 && sim_n_iocalls == 0, "NM14 t8122 map_fw: refused (no measured RVBAR), no iommu call");
+	/* NM6..NM10 failures inside the map: nothing written, everything undone */
+	{
+		static const struct { int fail; const char *seq; const char *tag; } f[] = {
+			{ 1, "A", "NM6 domain alloc fails" },
+			{ 2, "ATF", "NM7 attach fails" },
+			{ 4, "ATMDF", "NM8 map of TEXT fails" },
+			{ 3, "ATMMUDF", "NM9 map of DATA fails" },
+			{ 5, "ATMUDF", "NM10 TEXT reads back wrong" },
+		};
+
+		for (i = 0; i < (int)ARRAY_SIZE(f); i++) {
+			map_setup(s, "apple,t6030-ane");
+			sim_io_fail = f[i].fail;
+			ret = probe_now();
+			io_seq(seq, sizeof(seq));
+			snprintf(name, sizeof(name), "%s: FAIL fw-map-failed, call sequence %s, no write, no domain left", f[i].tag, f[i].seq);
+			chk(ret != 0 && parse_result(&rstage, verdict, sizeof(verdict), reason, sizeof(reason)) &&
+			    !strcmp(verdict, "FAIL") && !strcmp(reason, "fw-map-failed") &&
+			    !strcmp(seq, f[i].seq) &&
+			    events_in(0, ~0ULL, 1) == 0 && sim_n_dom_live == 0, name);
+		}
+	}
+	/* NM11 attached, but the DART still shows no live stream: refuse, unmap, write nothing */
+	map_setup(s, "apple,t6030-ane");
+	sim_attach_hook = NULL;
+	ret = probe_now();
+	io_seq(seq, sizeof(seq));
+	chk(ret != 0 && parse_result(&rstage, verdict, sizeof(verdict), reason, sizeof(reason)) &&
+	    !strcmp(reason, "no-dart-stream-enabled") && !strcmp(seq, "ATMMUUDF") &&
+	    events_in(0, ~0ULL, 1) == 0 && sim_n_dom_live == 0,
+	    "NM11 attached, no live stream: FAIL, mapping undone, nothing written");
+	/* NM12 a core that does not stop keeps the mapping, the power claim and the windows */
+	map_setup(s, "apple,t6030-ane");
+	dm_stuck = true;
+	ret = probe_now();
+	io_seq(seq, sizeof(seq));
+	chk(ret == 0 && !strcmp(seq, "ATMM") && sim_n_dom_live == 1 && sim_pm_put == 0 &&
+	    run_writes(s, w, 8, &first) == 2, "NM12 stuck core: the DART mapping is kept (no unmap, detach or free)");
+	ane_h15_remove(&pdev);
+	chk(sim_n_dom_live == 1 && sim_n_iounmap == 0, "NM12 stuck core: remove() refuses, mapping and windows stay");
+	return fails;
+}
+
 int main(int argc, char **argv)
 {
 	const char *mode = argc > 1 ? argv[1] : "pos";
@@ -1623,6 +1790,7 @@ int main(int argc, char **argv)
 		pos_stage2();
 		pos_run();
 		pos_dart();
+		pos_map();
 		printf("%s\n", fails ? "SIM-TEST: FAILED"
 				     : "SIM-TEST: all positive controls PASS");
 	} else if (!strcmp(mode, "neg-ps-stuck")) {
@@ -1665,6 +1833,9 @@ int main(int argc, char **argv)
 	} else if (!strcmp(mode, "neg-pd-eacces-alone")) {
 		printf("sim-h15 negative control: -EACCES with zero or one domain\n");
 		fails = neg_pd_eacces_alone();
+	} else if (!strcmp(mode, "neg-map")) {
+		printf("sim-h15 negative control: stage 5 map_fw refusals, undo on each failure, the stuck core\n");
+		fails = neg_map();
 	} else if (!strcmp(mode, "neg-dart")) {
 		printf("sim-h15 negative control: stage 4 DART scan refusals and the run stage DART gate\n");
 		fails = neg_dart();
@@ -1673,7 +1844,7 @@ int main(int argc, char **argv)
 		fails = neg_run();
 	} else {
 		fprintf(stderr,
-			"usage: sim_h15 [pos|neg-run|neg-dart|neg-ps-stuck|neg-wrong-stage|neg-truncated-dt|neg-rpm-fail|neg-pd-attach-fail|neg-pd-link-fail|neg-pd-rpm-err|neg-pd-eacces-alone|neg-read-ps-stuck|neg-read-window|neg-read-forbidden]\n");
+			"usage: sim_h15 [pos|neg-run|neg-dart|neg-map|neg-ps-stuck|neg-wrong-stage|neg-truncated-dt|neg-rpm-fail|neg-pd-attach-fail|neg-pd-link-fail|neg-pd-rpm-err|neg-pd-eacces-alone|neg-read-ps-stuck|neg-read-window|neg-read-forbidden]\n");
 		return 2;
 	}
 	return fails ? 1 : 0;

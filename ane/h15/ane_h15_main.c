@@ -113,6 +113,16 @@ module_param(run_unmapped, bool, 0444);
 MODULE_PARM_DESC(run_unmapped,
 		 "stage=run only: start the core even though stage=dart found no enabled DART stream (the core cannot fetch its firmware then; expect silence)");
 
+static bool map_fw;
+module_param(map_fw, bool, 0444);
+MODULE_PARM_DESC(map_fw,
+		 "stage=run only: before RUN attach the ANE to its DART through the iommu API and map the two preloaded firmware segments named by fw_seg. Needs iommus in the node. Default off.");
+
+static char *fw_seg;
+module_param(fw_seg, charp, 0444);
+MODULE_PARM_DESC(fw_seg,
+		 "stage=run map_fw=1: TEXT and DATA of the preloaded firmware as hex physical:size pairs, \"TEXTPA:SIZE,DATAPA:SIZE\", from the live ADT /arm-io/ane segment-ranges of this boot. 16 KiB aligned, outside system RAM. TEXT is mapped read only at the RVBAR entry address, DATA read+write right after it.");
+
 static bool confirm_run;
 module_param(confirm_run, bool, 0444);
 MODULE_PARM_DESC(confirm_run,
@@ -146,6 +156,9 @@ struct ane_h15 {
 	struct ane_h15_seg segs[2];
 	bool fw_touched;
 	bool fw_started;
+	struct iommu_domain *domain;	/* map_fw: the DART domain, NULL when none */
+	u64 map_pa[2], map_iova[2], map_size[2];
+	unsigned int map_n;	/* segments mapped so far */
 	/* The ANE node carries several power-domains (sys, mpm, cpu, td,
 	 * base). The kernel's automatic attach handles only a single
 	 * domain, so for more than one we attach each by id and link it
@@ -559,9 +572,9 @@ static int ane_h15_stage_boot(struct ane_h15 *ane)
  * Sources: ane/h15/run-stage-sources.md (apple-dart.c t8110 at omarchy-linux 94fb2334, data/ane-soc/t6030.json).
  *
  * The M6 (T8152) lesson (an earlier run on a Mac mini M6, boot 235c8ff4, and an offline decode of the Gen3 DART, 2026-10-23): RUN alone gave
- * a core that left STOPPED and posted nothing, with the ANE DART never read or written by Linux (its iBoot
- * state is NOT measured: an open question in the decode, and the run did not test it). macOS maps TEXT and DATA through the ANE DART before it
- * releases the core. This stage reads, and only reads, what the DART says, so a tester's first boot answers
+ * a core that left STOPPED and posted nothing; a later board read of the ANE DART (boot 5f6aa530, PR 183 and 185) found every
+ * ENABLE_STREAMS word 0, so iBoot left no stream enabled on the M6. macOS maps TEXT and DATA through the ANE DART before it
+ * releases the core. This stage reads, and only reads, what the T6030 DART says, so a tester's first boot answers
  * it instead of a core start.
  *
  * T6030 differs from the M6 here: its ANE DART is `dart,t8110` (ADT S1, data/ane-soc/t6030.json), the register
@@ -717,6 +730,113 @@ static int ane_h15_stage_dart(struct ane_h15 *ane)
 	return 0;
 }
 
+/* ---- stage 5 map_fw=1: give the core a DART mapping before RUN ----
+ *
+ * The pattern of the M6 module (ane/h18, PR 185): attach the ANE to its DART through the iommu API, so the DART
+ * driver programs tunables, TTBR, TCR and the stream enable with the domains powered, then iommu_map() the two segments
+ * the boot loader left in DRAM at the addresses the firmware is linked at. A later M6 board report, relayed without a
+ * merged receipt: with the map in place the firmware sent HELLO and EPMAP and accepted replies. None of it has run on
+ * an H15 part.
+ *
+ * What this module cannot know and the tester must give: the physical addresses, which iBoot picks at boot and which the
+ * Linux device tree does not carry for the ANE (m1n1 writes asc-firmware reserved regions only for dcp, dcpext and ave).
+ * They come from the live ADT segment-ranges of the same boot, as `fw_seg=TEXTPA:SIZE,DATAPA:SIZE`. A wrong address would
+ * hand the core a window onto kernel memory, so each segment must be 16 KiB aligned, at most 64 MiB, disjoint from the
+ * other and from system RAM (carved-out firmware memory is not in the RAM map). The IOVAs are not asked for: TEXT goes
+ * to the RVBAR entry address (rvbar_expect without its valid bit, 0x10000000000 on the T6030) and DATA directly behind it,
+ * which is how the M6 ADT lays out its two segments (remap = vm-base + cumulative offset; INFERRED the same on H15).
+ * TEXT is read only, DATA read+write (the DART format has no execute bit).
+ */
+#define ANE_H15_MAP_MAX 0x4000000ull
+
+static int ane_h15_parse_segs(struct ane_h15 *ane)
+{
+	const struct ane_h15_soc *s = ane->soc;
+	unsigned long long pa[2], size[2];
+	unsigned int i;
+
+	if (!fw_seg || sscanf(fw_seg, "%llx:%llx,%llx:%llx", &pa[0], &size[0], &pa[1], &size[1]) != 4) {
+		dev_err(ane->dev, "ane_h15 map_fw: fw_seg=TEXTPA:SIZE,DATAPA:SIZE (hex) is required\n");
+		return -EINVAL;
+	}
+	for (i = 0; i < 2; i++) {
+		if (!size[i] || size[i] > ANE_H15_MAP_MAX || ((pa[i] | size[i]) & (SZ_16K - 1)) || pa[i] + size[i] < pa[i]) {
+			dev_err(ane->dev, "ane_h15 map_fw: segment %u pa=%#llx size=%#llx is empty, over 64 MiB, not 16 KiB aligned or wraps\n",
+				i, pa[i], size[i]);
+			return -EINVAL;
+		}
+		if (region_intersects(pa[i], size[i], IORESOURCE_SYSTEM_RAM, IORES_DESC_NONE) != REGION_DISJOINT) {
+			dev_err(ane->dev, "ane_h15 map_fw: segment %u pa=%#llx size=%#llx touches system RAM: refusing to map it into the ANE\n",
+				i, pa[i], size[i]);
+			return -EBUSY;
+		}
+	}
+	if (pa[0] < pa[1] + size[1] && pa[1] < pa[0] + size[0]) {
+		dev_err(ane->dev, "ane_h15 map_fw: the two segments overlap\n");
+		return -EINVAL;
+	}
+	ane->map_pa[0] = pa[0];
+	ane->map_pa[1] = pa[1];
+	ane->map_size[0] = size[0];
+	ane->map_size[1] = size[1];
+	ane->map_iova[0] = s->rvbar_expect & ~1ull;
+	ane->map_iova[1] = ane->map_iova[0] + size[0];
+	return 0;
+}
+
+/* Undo ane_h15_map_firmware(). NULL-safe. Never called while the core may be running. */
+static void ane_h15_unmap_firmware(struct ane_h15 *ane)
+{
+	unsigned int i;
+
+	if (!ane->domain)
+		return;
+	for (i = 0; i < ane->map_n; i++)
+		iommu_unmap(ane->domain, ane->map_iova[i], ane->map_size[i]);
+	ane->map_n = 0;
+	iommu_detach_device(ane->domain, ane->dev);
+	iommu_domain_free(ane->domain);
+	ane->domain = NULL;
+}
+
+static int ane_h15_map_firmware(struct ane_h15 *ane)
+{
+	struct iommu_domain *dom;
+	unsigned int i;
+	int ret;
+
+	dom = iommu_paging_domain_alloc(ane->dev);
+	if (IS_ERR(dom)) {
+		dev_err(ane->dev, "ane_h15 map_fw: no iommu domain: %ld\n", PTR_ERR(dom));
+		return PTR_ERR(dom);
+	}
+	dev_crit(ane->dev, "ane_h15 attach the ANE to a new DART domain (the DART driver programs the DART now)\n");
+	ret = iommu_attach_device(dom, ane->dev);
+	if (ret) {
+		dev_err(ane->dev, "ane_h15 map_fw: attach failed: %d\n", ret);
+		iommu_domain_free(dom);
+		return ret;
+	}
+	ane->domain = dom;
+	for (i = 0; i < 2; i++) {
+		dev_crit(ane->dev, "ane_h15 iommu_map iova=%#llx pa=%#llx size=%#llx %s\n", ane->map_iova[i], ane->map_pa[i],
+			 ane->map_size[i], i ? "read+write" : "read");
+		ret = iommu_map(dom, ane->map_iova[i], ane->map_pa[i], ane->map_size[i],
+				IOMMU_READ | (i ? IOMMU_WRITE : 0), GFP_KERNEL);
+		if (!ret) {
+			ane->map_n = i + 1;
+			if (iommu_iova_to_phys(dom, ane->map_iova[i]) != ane->map_pa[i])
+				ret = -EIO;
+		}
+		if (ret) {
+			dev_err(ane->dev, "ane_h15 map_fw: iommu_map of segment %u failed: %d (or reads back wrong)\n", i, ret);
+			ane_h15_unmap_firmware(ane);
+			return ret;
+		}
+	}
+	return 0;
+}
+
 /* ---- stage 5: start the ASC core once, watch, stop it again ----
  *
  * Sources, commit-pinned, with H15 observations told apart from cross-generation inference:
@@ -792,6 +912,12 @@ static int ane_h15_write_ctrl(struct ane_h15 *ane, u32 old, u32 val, const char 
 	return 0;
 }
 
+/* Stopped = STOPPED set and RUNNING clear (m1n1 R_CPU_STATUS; the M6 RUN write cleared STOPPED, RUNNING never read 1). */
+static bool ane_h15_core_stopped(u32 st)
+{
+	return !(st & ANE_H15_ST_RUNNING) && (st & ANE_H15_ST_STOPPED);
+}
+
 static int ane_h15_stage_run(struct ane_h15 *ane)
 {
 	const struct ane_h15_soc *s = ane->soc;
@@ -813,6 +939,18 @@ static int ane_h15_stage_run(struct ane_h15 *ane)
 		ane_h15_result(ane, 5, "REFUSED", "no measured RVBAR for this SoC row: run stage 2 and report it");
 		return -ENODEV;
 	}
+	if (map_fw) {
+		if (!device_iommu_mapped(ane->dev)) {
+			dev_err(ane->dev, "ane_h15 map_fw: the node has no iommus (no DART client): use the DART overlay\n");
+			ane_h15_result(ane, 5, "REFUSED", "map_fw needs iommus in the node");
+			return -ENODEV;
+		}
+		ret = ane_h15_parse_segs(ane);
+		if (ret) {
+			ane_h15_result(ane, 5, "REFUSED", "fw_seg missing or unsafe");
+			return ret;
+		}
+	}
 	if (!ane_h15_window_ok(ane, 0, "engine", s->engine_pa, s->engine_size) ||
 	    !ane_h15_window_ok(ane, 1, "pmgr", s->pmgr_pa, s->pmgr_size)) {
 		ane_h15_result(ane, 5, "FAIL", "window-mismatch");
@@ -823,14 +961,35 @@ static int ane_h15_stage_run(struct ane_h15 *ane)
 		ane_h15_result(ane, 5, "FAIL", "pmgr-actual-stuck");
 		return ret;
 	}
-	/* The M6 lesson: RUN alone was silent and its DART state is unknown. Without an enabled stream the core cannot fetch. */
+	if (map_fw) {
+		/* Attaching replaces the DART state a running core is fetching through: look first, and only on a stopped core. */
+		ret = ane_h15_read_word(ane, "CPU_STATUS", s->cpu_status, &st);
+		if (ret) {
+			ane_h15_result(ane, 5, "FAIL", "read-refused");
+			return ret;
+		}
+		if (!ane_h15_core_stopped(st)) {
+			dev_err(ane->dev, "ane_h15 map_fw: cpu_status=%#x, the core is not stopped: not touching the DART\n", st);
+			ane_h15_result(ane, 5, "FAIL", "core-not-stopped-before-map");
+			return -EBUSY;
+		}
+		ret = ane_h15_map_firmware(ane);
+		if (ret) {
+			ane_h15_result(ane, 5, "FAIL", "fw-map-failed");
+			return ret;
+		}
+	}
+	/* The M6 lesson: RUN alone was silent and iBoot left no stream enabled. Without one the core cannot fetch. */
 	ret = ane_h15_dart_scan(ane, &live, &locked);
 	if (ret) {
+		ane_h15_unmap_firmware(ane);
 		ane_h15_result(ane, 5, "FAIL", "dart-read-refused-or-not-a-dart");
 		return ret;
 	}
+	dev_info(ane->dev, "ane_h15 dart summary live_streams=%u locked_windows=%u\n", live, locked);
 	if (!live && !run_unmapped) {
 		dev_err(ane->dev, "ane_h15 no ANE DART stream is enabled and mapped: the core could not fetch its firmware; nothing written (run_unmapped=1 overrides)\n");
+		ane_h15_unmap_firmware(ane);
 		ane_h15_result(ane, 5, "FAIL", "no-dart-stream-enabled");
 		return -ENODEV;
 	}
@@ -847,6 +1006,7 @@ static int ane_h15_stage_run(struct ane_h15 *ane)
 	if (!ret)
 		ret = ane_h15_read_word(ane, "MBOX_I2A_CTRL", s->mbox + 0x114, &i2a);
 	if (ret) {
+		ane_h15_unmap_firmware(ane);
 		ane_h15_result(ane, 5, "FAIL", "read-refused");
 		return ret;
 	}
@@ -856,6 +1016,7 @@ static int ane_h15_stage_run(struct ane_h15 *ane)
 		dev_err(ane->dev,
 			"ane_h15 preflight: cpu_status=%#x cpu_control=%#x rvbar=%#llx a2i_ctrl=%#x i2a_ctrl=%#x (want stopped, RUN clear, rvbar %#llx, both mailbox words EMPTY)\n",
 			st, ctrl, ((u64)rv_hi << 32) | rv_lo, a2i, i2a, s->rvbar_expect);
+		ane_h15_unmap_firmware(ane);
 		ane_h15_result(ane, 5, "FAIL", "preflight-not-as-iboot-left-it");
 		return -EBUSY;
 	}
@@ -867,6 +1028,7 @@ static int ane_h15_stage_run(struct ane_h15 *ane)
 	if (ret) {
 		ane->fw_started = false;
 		ane->fw_touched = false;
+		ane_h15_unmap_firmware(ane);
 		ane_h15_result(ane, 5, "FAIL", "write-refused");
 		return ret;
 	}
@@ -925,6 +1087,7 @@ static int ane_h15_stage_run(struct ane_h15 *ane)
 	}
 	ane->fw_started = false;
 	ane->fw_touched = false;
+	ane_h15_unmap_firmware(ane);
 	ane_h15_result(ane, 5, "PASS", started_seen ? "core-started-and-stopped" : "core-never-left-stopped");
 	return 0;
 }

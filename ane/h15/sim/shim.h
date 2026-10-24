@@ -97,6 +97,7 @@ struct device_node {
 	u64 reg_pa[2];
 	u64 reg_size[2];
 	int n_pd;		/* entries in the node's power-domains property */
+	bool has_iommus;	/* the node has an iommus property (a DART client) */
 };
 
 struct device {
@@ -384,6 +385,83 @@ static inline bool IS_ERR(const void *p)
 	return (unsigned long)p >= (unsigned long)-MAX_ERRNO;
 }
 static inline bool IS_ERR_OR_NULL(const void *p) { return !p || IS_ERR(p); }
+
+/* ---- iommu API for stage 5 map_fw=1: records every call with the bus event count at that moment ---- */
+#define SZ_16K 0x4000ull
+#define IOMMU_READ 1
+#define IOMMU_WRITE 2
+#define IORESOURCE_SYSTEM_RAM 1ul
+#define IORES_DESC_NONE 0ul
+enum { REGION_INTERSECTS, REGION_DISJOINT, REGION_MIXED };
+extern int sim_region_ram;			/* what region_intersects() reports: REGION_* */
+static inline int region_intersects(u64 start, size_t size, unsigned long flags, unsigned long desc)
+{
+	(void)start; (void)size; (void)flags; (void)desc;
+	return sim_region_ram;
+}
+struct iommu_domain { int dummy; };
+enum { SIM_IO_ALLOC = 1, SIM_IO_ATTACH, SIM_IO_MAP, SIM_IO_UNMAP, SIM_IO_DETACH, SIM_IO_FREE };
+struct sim_iocall { int code; u64 iova, pa, size; int prot; int ev; };
+extern struct sim_iocall sim_iocalls[64];
+extern int sim_n_iocalls, sim_io_fail, sim_n_dom_live;	/* sim_io_fail: 1 alloc, 2 attach, 3 map of segment 1, 4 map of segment 0 fails; 5 reads back wrong */
+extern void (*sim_attach_hook)(void);			/* the DART driver programming the DART at the attach */
+static inline void sim_iorec(int code, u64 iova, u64 pa, u64 size, int prot)
+{
+	if (sim_n_iocalls < 64)
+		sim_iocalls[sim_n_iocalls] = (struct sim_iocall){ code, iova, pa, size, prot, sim_n_events };
+	sim_n_iocalls++;
+}
+static inline bool device_iommu_mapped(struct device *d) { return d->of_node && d->of_node->has_iommus; }
+static inline struct iommu_domain *iommu_paging_domain_alloc(struct device *d)
+{
+	(void)d;
+	sim_iorec(SIM_IO_ALLOC, 0, 0, 0, 0);
+	if (sim_io_fail == 1)
+		return ERR_PTR(-ENOMEM);
+	sim_n_dom_live++;
+	return calloc(1, sizeof(struct iommu_domain));
+}
+static inline int iommu_attach_device(struct iommu_domain *dom, struct device *d)
+{
+	(void)dom; (void)d;
+	sim_iorec(SIM_IO_ATTACH, 0, 0, 0, 0);
+	if (sim_io_fail == 2)
+		return -EBUSY;
+	if (sim_attach_hook)
+		sim_attach_hook();
+	return 0;
+}
+static inline int iommu_map(struct iommu_domain *dom, unsigned long iova, u64 pa, size_t size, int prot, int gfp)
+{
+	int maps = 0, k;
+
+	(void)dom; (void)gfp;
+	for (k = 0; k < sim_n_iocalls && k < 64; k++)
+		maps += sim_iocalls[k].code == SIM_IO_MAP;
+	sim_iorec(SIM_IO_MAP, iova, pa, size, prot);
+	if ((sim_io_fail == 4 && maps == 0) || (sim_io_fail == 3 && maps == 1))
+		return -ENOMEM;
+	return 0;
+}
+static inline u64 iommu_iova_to_phys(struct iommu_domain *dom, u64 iova)
+{
+	int k;
+
+	(void)dom;
+	for (k = 0; k < sim_n_iocalls && k < 64; k++)
+		if (sim_iocalls[k].code == SIM_IO_MAP && iova >= sim_iocalls[k].iova && iova < sim_iocalls[k].iova + sim_iocalls[k].size)
+			return sim_io_fail == 5 ? 0 : sim_iocalls[k].pa + (iova - sim_iocalls[k].iova);
+	return 0;
+}
+static inline size_t iommu_unmap(struct iommu_domain *dom, unsigned long iova, size_t size)
+{
+	(void)dom;
+	sim_iorec(SIM_IO_UNMAP, iova, 0, size, 0);
+	return size;
+}
+static inline void iommu_detach_device(struct iommu_domain *dom, struct device *d) { (void)dom; (void)d; sim_iorec(SIM_IO_DETACH, 0, 0, 0, 0); }
+static inline void iommu_domain_free(struct iommu_domain *dom) { sim_iorec(SIM_IO_FREE, 0, 0, 0, 0); sim_n_dom_live--; free(dom); }
+
 
 /* ---- multiple power-domains: attach by id + runtime-PM device links.
  * Every attach, link, link delete and detach is counted and tracked per
