@@ -151,13 +151,28 @@ struct ane_h18 {
 	void __iomem *dart;
 	void __iomem *scratch;
 	void __iomem *doorbell;
+	void __iomem *ipi_pending;
+	void __iomem *ipi_ack;
 	struct iommu_domain *domain;
 	bool dom_own;		/* the domain was allocated and attached here (map_fw without handshake); otherwise it is the default DMA domain */
 	struct ane_h18_hs_buf {
 		void *va;
 		dma_addr_t iova;
 		size_t size;
-	} hs_pool, hs_ipc, hs_heap, hs_cmd;
+	} hs_pool, hs_ipc, hs_heap, hs_cmd, hs_mal[ANE_H18_MAL_MAX_BUFS];
+	unsigned int hs_mal_n, mal_cursor, mal_slots, mal_bit;
+	size_t hs_mal_bytes;
+	unsigned int ack_logs;	/* ack writes logged so far: the address is logged for the first few, then silently */
+	unsigned int snap_left;	/* change snapshots still allowed in the current wait */
+	int mal_err;		/* the first refusal of a firmware request: later polls return it without logging again */
+	bool hs_cmd_in_pool;	/* hs_cmd points into hs_pool: never freed on its own */
+	u64 *mal_ring;		/* the SHAREDMALLOC ring of the published table, NULL until the channel step has checked the table */
+	char ch_names[8][0x40];
+	struct ane_h18_ring_copy {
+		u64 *base;
+		u64 iova;
+		u32 slots, bit, type;
+	} ch_rings[8];
 	bool kpsd;		/* the node has power-domains: the kernel's PSD driver owns the slots, this module only holds a runtime PM reference */
 	bool rpm_held;
 	u32 rtk_eps[8];		/* RTKit endpoints the firmware announced, one bit per endpoint number */
@@ -268,6 +283,8 @@ static void ane_h18_unmap(struct ane_h18 *ane)
 	if (ane->dart) { iounmap(ane->dart); ane->dart = NULL; }
 	if (ane->scratch) { iounmap(ane->scratch); ane->scratch = NULL; }
 	if (ane->doorbell) { iounmap(ane->doorbell); ane->doorbell = NULL; }
+	if (ane->ipi_pending) { iounmap(ane->ipi_pending); ane->ipi_pending = NULL; }
+	if (ane->ipi_ack) { iounmap(ane->ipi_ack); ane->ipi_ack = NULL; }
 }
 
 static int ane_h18_map_psd(struct ane_h18 *ane, const int *idx)
@@ -659,11 +676,24 @@ static void ane_h18_hs_free(struct ane_h18 *ane)
 	struct ane_h18_hs_buf *b[4] = { &ane->hs_cmd, &ane->hs_heap, &ane->hs_ipc, &ane->hs_pool };
 	unsigned int i;
 
+	if (ane->hs_cmd_in_pool) {
+		ane->hs_cmd.va = NULL;
+		ane->hs_cmd_in_pool = false;
+	}
+
 	for (i = 0; i < 4; i++)
 		if (b[i]->va) {
 			dma_free_coherent(ane->dev, b[i]->size, b[i]->va, b[i]->iova);
 			b[i]->va = NULL;
 		}
+	for (i = 0; i < ane->hs_mal_n; i++)
+		if (ane->hs_mal[i].va) {
+			dma_free_coherent(ane->dev, ane->hs_mal[i].size, ane->hs_mal[i].va, ane->hs_mal[i].iova);
+			ane->hs_mal[i].va = NULL;
+		}
+	ane->hs_mal_n = 0;
+	ane->mal_ring = NULL;
+	memset(ane->ch_rings, 0, sizeof(ane->ch_rings));
 }
 
 /* One zeroed surface from the DMA API, in the default domain the firmware segments are mapped in. It must not overlap a firmware segment. */
@@ -740,6 +770,8 @@ static int ane_h18_chan_get(struct ane_h18 *ane, const struct ane_h18_hs_buf *tb
 	return 0;
 }
 
+static int ane_h18_chan_poll(struct ane_h18 *ane, unsigned int t, u64 *digest, u32 *last_pend);
+
 /* One command on the IO ring: the command block (id at +4, optional u32 argument at +8), slot header = its DMA address, doorbell BIT(bit), then wait for the
  * firmware to give the slot back (header | 1) with a zero acknowledgement at +6. Returns the block in *blk for the reply. */
 static int ane_h18_cmd(struct ane_h18 *ane, struct ane_h18_ring *io, u16 op, u32 len, bool arg_set, u32 arg, u8 **blk)
@@ -747,7 +779,11 @@ static int ane_h18_cmd(struct ane_h18 *ane, struct ane_h18_ring *io, u16 op, u32
 	u64 *slot = io->base + io->cursor * 8, hdr, dma = ane->hs_cmd.iova;
 	u8 *cmd = ane->hs_cmd.va;
 	unsigned int waited;
+	u64 digest = 0;
+	u32 last_pend = 0;
 	u16 id, ack;
+
+	ane->snap_left = ANE_H18_SNAP_PER_WAIT;
 
 	if (!(READ_ONCE(slot[0]) & 1)) {
 		dev_err(ane->dev, "ane_h18 cmd %#x: IO slot %u is not host owned (%#llx)\n", op, io->cursor, READ_ONCE(slot[0]));
@@ -766,6 +802,7 @@ static int ane_h18_cmd(struct ane_h18 *ane, struct ane_h18_ring *io, u16 op, u32
 		 io->cursor, (u64)dma);
 	writel(BIT(io->bit), ane->doorbell);
 	for (waited = 0; waited < hs_wait_ms; waited++) {
+		ane_h18_chan_poll(ane, waited, &digest, &last_pend);
 		hdr = READ_ONCE(slot[0]);
 		if (hdr & 1) {
 			dma_rmb();
@@ -782,6 +819,183 @@ static int ane_h18_cmd(struct ane_h18 *ane, struct ane_h18_ring *io, u16 op, u32
 	return -ETIMEDOUT;
 }
 
+/* Answer the entry of the SHAREDMALLOC ring at the cursor, if the firmware posted one. 1 = answered, 0 = nothing, negative = refused (the firmware then waits). */
+static int ane_h18_mal_service(struct ane_h18 *ane)
+{
+	u64 *slot, hdr, size, mode;
+	struct ane_h18_hs_buf *b;
+	unsigned int i;
+	int ret;
+
+	if (!ane->mal_ring)
+		return 0;
+	if (ane->mal_err)
+		return ane->mal_err;
+	slot = ane->mal_ring + ane->mal_cursor * 8;
+	hdr = READ_ONCE(slot[0]);
+	if (hdr & 1)
+		return 0;
+	dma_rmb();
+	size = READ_ONCE(slot[1]);
+	mode = READ_ONCE(slot[2]);
+	switch (ane_h18_mal_classify(hdr, size, mode)) {
+	case ANE_H18_MAL_MALLOC:
+		/* the first free slot (a FREEd buffer's), else a new one */
+		for (i = 0; i < ane->hs_mal_n; i++)
+			if (!ane->hs_mal[i].va)
+				break;
+		if (size % PAGE_SIZE || size > ANE_H18_MAL_MAX_SIZE || i >= ANE_H18_MAL_MAX_BUFS || ane->hs_mal_bytes + size > ANE_H18_MAL_MAX_BYTES) {
+			dev_err(ane->dev, "ane_h18 fw MALLOC of %#llx bytes refused (%u buffers, %#zx bytes so far)\n", size, ane->hs_mal_n, ane->hs_mal_bytes);
+			ane->mal_err = -E2BIG;
+			return ane->mal_err;
+		}
+		b = &ane->hs_mal[i];
+		ret = ane_h18_hs_alloc(ane, b, size, "FWMALLOC");
+		if (ret) {
+			if (b->va) {
+				dma_free_coherent(ane->dev, b->size, b->va, b->iova);
+				b->va = NULL;
+			}
+			ane->mal_err = ret;
+			return ret;
+		}
+		if (i == ane->hs_mal_n)
+			ane->hs_mal_n++;
+		ane->hs_mal_bytes += size;
+		dev_info(ane->dev, "ane_h18 fw MALLOC %#llx bytes mode %llu -> iova %#llx ordinal %u\n", size, mode, (u64)b->iova, i + 1);
+		WRITE_ONCE(slot[1], 0);
+		WRITE_ONCE(slot[2], i + 1);
+		dma_wmb();
+		WRITE_ONCE(slot[0], b->iova | 1);
+		break;
+	case ANE_H18_MAL_FREE:
+		dev_info(ane->dev, "ane_h18 fw FREE of iova %#llx\n", hdr);
+		WRITE_ONCE(slot[1], 0);
+		WRITE_ONCE(slot[2], 0);
+		dma_wmb();
+		WRITE_ONCE(slot[0], 1);
+		dma_wmb();
+		dev_crit(ane->dev, "ane_h18 write doorbell BIT(%u) pa=%#llx to answer the FREE\n", ane->mal_bit, ane->soc->engine_pa + ANE_H18_DOORBELL_OFF);
+		writel(BIT(ane->mal_bit), ane->doorbell);
+		for (i = 0; i < ane->hs_mal_n; i++)
+			if (ane->hs_mal[i].va && ane->hs_mal[i].iova == hdr) {
+				dma_free_coherent(ane->dev, ane->hs_mal[i].size, ane->hs_mal[i].va, ane->hs_mal[i].iova);
+				ane->hs_mal_bytes -= ane->hs_mal[i].size;
+				ane->hs_mal[i].va = NULL;
+				break;
+			}
+		ane->mal_cursor = (ane->mal_cursor + 1) % ane->mal_slots;
+		return 1;
+	case ANE_H18_MAL_IDLE:
+	case ANE_H18_MAL_ANSWERED:
+		return 0;
+	default:
+		dev_err(ane->dev, "ane_h18 SHAREDMALLOC slot %u is not a request: %#llx %#llx %#llx\n", ane->mal_cursor, hdr, size, mode);
+		ane->mal_err = -EOPNOTSUPP;
+		return ane->mal_err;
+	}
+	dma_wmb();
+	dev_crit(ane->dev, "ane_h18 write doorbell BIT(%u) pa=%#llx to answer the MALLOC\n", ane->mal_bit, ane->soc->engine_pa + ANE_H18_DOORBELL_OFF);
+	writel(BIT(ane->mal_bit), ane->doorbell);
+	ane->mal_cursor = (ane->mal_cursor + 1) % ane->mal_slots;
+	return 1;
+}
+
+static void ane_h18_chan_snapshot(struct ane_h18 *ane, const char *when);
+
+/* One poll of the doorbell side while the host waits: answer the SHAREDMALLOC ring, acknowledge a pending interrupt the way the kext does (the value read is
+ * written back to the ack register) and, when the pending value or a firmware-to-host ring changed, print the snapshot. `t` is the poll number in ms. */
+static int ane_h18_chan_poll(struct ane_h18 *ane, unsigned int t, u64 *digest, u32 *last_pend)
+{
+	unsigned int i, k;
+	u64 d = 0;
+	u32 pend = ane->ipi_pending ? readl(ane->ipi_pending) : 0;
+	int served, ret = 0;
+
+	if (pend) {
+		if (ane->ack_logs++ < 8)
+			dev_crit(ane->dev, "ane_h18 write IPI ack=%#x pa=%#llx\n", pend, ane->soc->engine_pa + ANE_H18_IPI_ACK_OFF);
+		writel(pend, ane->ipi_ack);
+	}
+	do {
+		served = ane_h18_mal_service(ane);
+		if (served < 0)
+			ret = served;
+	} while (served > 0);
+	if (t % 10)
+		return ret;
+	for (i = 0; i < ANE_H18_CH_COUNT; i++)
+		if (ane->ch_rings[i].type != 0)
+			for (k = 0; k < ane->ch_rings[i].slots * 8; k++)
+				d = (d << 7 | d >> 57) ^ READ_ONCE(ane->ch_rings[i].base[k]);
+	if (d != *digest || pend != *last_pend) {
+		*digest = d;
+		*last_pend = pend;
+		if (ane->snap_left) {
+			ane->snap_left--;
+			ane_h18_chan_snapshot(ane, "ring change");
+		}
+	}
+	return ret;
+}
+
+/* Read only look at the rings and the IPI pending register: what the firmware posted that nobody answered. A nonzero line of a firmware-to-host ring or the
+ * terminal ring is logged (at most 24 lines of 16 bytes per ring, the rest counted), the first two slots of every host-to-firmware ring are logged, and so is
+ * the pending register. Written by the firmware or by us: the log says which ring. Nothing is written. */
+static void ane_h18_chan_snapshot(struct ane_h18 *ane, const char *when)
+{
+	char (*names)[0x40] = ane->ch_names;
+	struct ane_h18_ring_copy *rings = ane->ch_rings;
+	unsigned int i, k, lines, more;
+	u32 pend = 0;
+
+	if (ane->ipi_pending) {
+		dev_info(ane->dev, "ane_h18 chan snapshot %s: read IPI pending pa=%#llx\n", when, ane->soc->engine_pa + ANE_H18_IPI_PENDING_OFF);
+		pend = readl(ane->ipi_pending);
+	}
+	dev_info(ane->dev, "ane_h18 chan snapshot %s: IPI pending = %#x\n", when, pend);
+	for (i = 0; i < ANE_H18_CH_COUNT; i++) {
+		const u64 *r = rings[i].base;
+
+		if (rings[i].type == 0) {
+			for (k = 0; k < 2 && k < rings[i].slots; k++)
+				dev_info(ane->dev, "ane_h18 chan snapshot %s: %s slot %u = %#llx %#llx %#llx\n", when, names[i], k, READ_ONCE(r[k * 8]), READ_ONCE(r[k * 8 + 1]), READ_ONCE(r[k * 8 + 2]));
+			continue;
+		}
+		if (rings[i].type == 2) {
+			/* the terminal ring is the firmware console: print its text, one line per nonzero 64 byte slot (the firmware's own bytes, non-printable ones as '.') */
+			unsigned int shown = 0;
+
+			for (k = 0; k < rings[i].slots; k++) {
+				const u8 *e = (const u8 *)(r + k * 8);
+				char txt[65];
+				unsigned int j;
+				bool any = false;
+
+				for (j = 0; j < 64; j++) {
+					txt[j] = e[j] >= 0x20 && e[j] < 0x7f ? e[j] : '.';
+					any |= e[j] != 0;
+				}
+				txt[64] = 0;
+				if (any && shown++ < 32)
+					dev_info(ane->dev, "ane_h18 chan snapshot %s: %s text slot %u: %s\n", when, names[i], k, txt);
+			}
+			dev_info(ane->dev, "ane_h18 chan snapshot %s: %s has %u nonzero slots as text\n", when, names[i], shown);
+		}
+		for (k = 0, lines = 0, more = 0; k < rings[i].slots * 4; k++) {	/* 16 byte lines of the ring */
+			u64 a = READ_ONCE(r[k * 2]), b = READ_ONCE(r[k * 2 + 1]);
+
+			if (!(a | b))
+				continue;
+			if (lines++ < 24)
+				dev_info(ane->dev, "ane_h18 chan snapshot %s: %s +%#x = %#llx %#llx\n", when, names[i], k * 16, a, b);
+			else
+				more++;
+		}
+		dev_info(ane->dev, "ane_h18 chan snapshot %s: %s has %u nonzero lines, %u not printed\n", when, names[i], lines, more);
+	}
+}
+
 /* The kext's step after it created its channels: the host owns every H2T slot, writes READY to SCRATCH3 and waits until the firmware clears it. With hs_cmds
  * then PRINT_ENABLE and CONFIG_GET. Nothing is written before the whole table checked out. Returns 0 only when every requested step worked. */
 static int ane_h18_chan_step(struct ane_h18 *ane, const struct ane_h18_hs_buf *tb, u64 table)
@@ -790,7 +1004,7 @@ static int ane_h18_chan_step(struct ane_h18 *ane, const struct ane_h18_hs_buf *t
 	struct ane_h18_ring io = { 0 }, rings[ANE_H18_CH_COUNT];
 	unsigned int i, k, waited;
 	bool have_io = false;
-	char name[ANE_H18_CH_NAME_LEN];
+	char name[ANE_H18_CH_NAME_LEN], names[ANE_H18_CH_COUNT][ANE_H18_CH_NAME_LEN];
 	u32 v = 0, s3 = ~0u;
 	u8 *blk;
 	int ret;
@@ -801,6 +1015,7 @@ static int ane_h18_chan_step(struct ane_h18 *ane, const struct ane_h18_hs_buf *t
 	}
 	for (i = 0; i < ANE_H18_CH_COUNT; i++) {
 		ret = ane_h18_chan_get(ane, tb, tp, i, &rings[i], name);
+		memcpy(names[i], name, sizeof(name));
 		if (ret) {
 			dev_err(ane->dev, "ane_h18 chan: entry %u is not a ring of the table surface, nothing written\n", i);
 			return ret;
@@ -838,6 +1053,18 @@ static int ane_h18_chan_step(struct ane_h18 *ane, const struct ane_h18_hs_buf *t
 			e[0] = 1;
 		}
 	}
+	for (i = 0; i < ANE_H18_CH_COUNT; i++) {
+		memcpy(ane->ch_names[i], names[i], sizeof(names[i]));
+		ane->ch_rings[i] = (struct ane_h18_ring_copy){ rings[i].base, rings[i].iova, rings[i].slots, rings[i].bit, rings[i].type };
+		if (!strcmp(names[i], "SHAREDMALLOC") && rings[i].type == 1) {
+			ane->mal_ring = rings[i].base;
+			ane->mal_slots = rings[i].slots;
+			ane->mal_bit = rings[i].bit;
+			ane->mal_cursor = 0;
+		}
+	}
+	if (!ane->mal_ring)
+		dev_warn(ane->dev, "ane_h18 chan: no SHAREDMALLOC ring of type 1 in the table, memory requests will not be answered\n");
 	wmb();
 	ane_h18_scratch_write(ane, 3, ANE_H18_HS_READY);
 	for (waited = 0; waited < hs_wait_ms; waited++) {
@@ -849,19 +1076,49 @@ static int ane_h18_chan_step(struct ane_h18 *ane, const struct ane_h18_hs_buf *t
 	dev_info(ane->dev, "ane_h18 chan: SCRATCH3 reads %#x after %ums\n", s3, waited);
 	if (s3)
 		return -EIO;
+	{
+		u64 digest = 0;
+		u32 last_pend = 0;
+
+		ane->snap_left = ANE_H18_SNAP_PER_WAIT;
+		/* let the firmware run on for 100 ms, answering what it asks for, before the first look at the rings */
+		for (k = 0; k < 100; k++) {
+			usleep_range(1000, 1100);
+			ane_h18_chan_poll(ane, k + 1, &digest, &last_pend);
+		}
+	}
+	ane_h18_chan_snapshot(ane, "after SCRATCH3");
 	if (!hs_cmds)
 		return 0;
-	ret = ane_h18_hs_alloc(ane, &ane->hs_cmd, ANE_H18_CMD_BLOCK, "CMD");
-	if (ret)
-		return ret;
+	/* The kext takes every command block from the pool surface, the one that holds the init block and that the firmware was told about at block +0x58 and +0x60. */
+	ane->hs_cmd.va = (u8 *)ane->hs_pool.va + ANE_H18_CMD_POOL_OFF;
+	ane->hs_cmd.iova = ane->hs_pool.iova + ANE_H18_CMD_POOL_OFF;
+	ane->hs_cmd.size = ANE_H18_CMD_BLOCK;
+	ane->hs_cmd_in_pool = true;
+	dev_info(ane->dev, "ane_h18 hs surface CMD inside POOL at +%#x iova=%#llx size=%#x\n", ANE_H18_CMD_POOL_OFF, (u64)ane->hs_cmd.iova, ANE_H18_CMD_BLOCK);
 	ret = ane_h18_cmd(ane, &io, ANE_H18_CSNE_PRINT_ENABLE, 12, true, 0, &blk);
-	if (ret)
+	if (ret) {
+		ane_h18_chan_snapshot(ane, "after the failed PRINT_ENABLE");
 		return ret == -EPROTO || ret == -ETIMEDOUT || ret == -EBUSY ? -EIO : ret;
+	}
 	ret = ane_h18_cmd(ane, &io, ANE_H18_CSNE_CONFIG_GET, 16, false, 0, &blk);
-	if (ret)
+	if (ret) {
+		ane_h18_chan_snapshot(ane, "after the failed CONFIG_GET");
 		return ret == -EPROTO || ret == -ETIMEDOUT || ret == -EBUSY ? -EIO : ret;
+	}
 	memcpy(&v, blk + 8, 4);
 	dev_info(ane->dev, "ane_h18 chan: CONFIG_GET reply u32 at +8 = %#x (the kext reads it as the tick rate)\n", v);
+	{
+		u64 digest = 0;
+		u32 last_pend = 0;
+
+		ane->snap_left = ANE_H18_SNAP_PER_WAIT;
+		/* a firmware FREE can land after the acknowledgement: keep answering for 20 ms */
+		for (k = 0; k < 20; k++) {
+			usleep_range(1000, 1100);
+			ane_h18_chan_poll(ane, k + 1, &digest, &last_pend);
+		}
+	}
 	return 0;
 }
 
@@ -1414,7 +1671,9 @@ static int ane_h18_probe(struct platform_device *pdev)
 	if (hs_chan && stage_idx == ANE_H18_STAGE_BOOT) {
 		/* Mapping only; the doorbell is written only for a command, after the channel step. */
 		ane->doorbell = ioremap(ane->soc->engine_pa + ANE_H18_DOORBELL_OFF, 0x1000);
-		if (!ane->doorbell) {
+		ane->ipi_pending = ioremap(ane->soc->engine_pa + ANE_H18_IPI_PENDING_OFF, 0x1000);
+		ane->ipi_ack = ioremap(ane->soc->engine_pa + ANE_H18_IPI_ACK_OFF, 0x1000);
+		if (!ane->doorbell || !ane->ipi_pending || !ane->ipi_ack) {
 			dev_err(&pdev->dev, "ane_h18 ioremap of the doorbell page failed\n");
 			ret = -ENXIO;
 			goto out;

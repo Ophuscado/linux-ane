@@ -83,7 +83,30 @@
 #define ANE_H18_CH_SLOT		0x40
 #define ANE_H18_CH_MAX_SLOTS	0x400
 #define ANE_H18_DOORBELL_OFF	0x18a4000
-#define ANE_H18_CMD_BLOCK	0x4000
+#define ANE_H18_IPI_PENDING_OFF	0x18ac000	/* IPI pending (kext decode: engine + 0x18ac000) */
+#define ANE_H18_IPI_ACK_OFF	0x18b0000	/* IPI ack: the value read from pending is written back (kext decode: engine + 0x18b0000) */
+/* SHAREDMALLOC ring entries (decode of the selene firmware, same shapes as ane/t6021/ane_t6021_mring.h): MALLOC = header 0, size, mode; FREE = header is the IOVA
+ * the firmware gives back, size and mode 0; a header with bit 0 set was answered. The host answers a MALLOC with a buffer (size word 0, mode word = ordinal,
+ * header = DMA | 1) and a FREE with header 1, then rings the ring's doorbell bit. The firmware waits for the answer with no timeout. */
+#define ANE_H18_SNAP_PER_WAIT	6	/* at most this many change snapshots per wait: a firmware console that prints every millisecond must not flood the log */
+#define ANE_H18_MAL_MAX_BUFS	16
+#define ANE_H18_MAL_MAX_SIZE	0x200000
+#define ANE_H18_MAL_MAX_BYTES	0x4000000
+enum ane_h18_mal_kind { ANE_H18_MAL_IDLE, ANE_H18_MAL_MALLOC, ANE_H18_MAL_FREE, ANE_H18_MAL_ANSWERED, ANE_H18_MAL_BAD };
+
+static inline enum ane_h18_mal_kind ane_h18_mal_classify(u64 hdr, u64 size, u64 mode)
+{
+	if (hdr & 1)
+		return ANE_H18_MAL_ANSWERED;
+	if (!hdr) {
+		if (!size)
+			return ANE_H18_MAL_IDLE;
+		return mode > 0xffffffffULL ? ANE_H18_MAL_BAD : ANE_H18_MAL_MALLOC;
+	}
+	return (size || mode) ? ANE_H18_MAL_BAD : ANE_H18_MAL_FREE;
+}
+#define ANE_H18_CMD_BLOCK	0x100	/* the commands here are 12 and 16 bytes, the reply fits in the block too: clear no more of the pool than that */
+#define ANE_H18_CMD_POOL_OFF	0x400	/* the command block lives in the pool surface, 0x100 aligned, as the kext takes every command block from the pool */
 #define ANE_H18_CSNE_PRINT_ENABLE	0x04
 #define ANE_H18_CSNE_CONFIG_GET		0x03
 /* ANE DART (dart,gen3, instance 0): read only liveness words, see ane_h18_read_dart_words(). */

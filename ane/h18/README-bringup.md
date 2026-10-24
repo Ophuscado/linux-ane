@@ -63,10 +63,17 @@ else in the ASC, IORVBAR or mailbox windows.
     to 2, bit below 32, a ring inside the surface that holds the table) and writes nothing if one entry is wrong. Then it sets every host-to-firmware slot header to 1
     (host owned, as `ane/t6021/ane_t6021_boot.h` does before the wake), writes 0x08042006 to SCRATCH3 and waits up to `hs_wait_ms` for the firmware to clear it.
     The firmware's own restartable stop got no IOP acknowledgement after the handshake alone, and this step may be what it waits for. Not known.
-  - `hs_cmds=1` (needs `hs_chan=1`): PRINT_ENABLE (0) and CONFIG_GET as 64 byte slots on the IO ring. The slot header is the DMA address of a 0x4000 byte command block
+  - `hs_cmds=1` (needs `hs_chan=1`): PRINT_ENABLE (0) and CONFIG_GET as 64 byte slots on the IO ring. The slot header is the DMA address of a command block of 0x100 bytes in the pool
     (id at +4, argument at +8), the doorbell is BIT(bit of the IO entry) written to engine + 0x18a4000, and the answer is the slot header with bit 0 set and a zero
     acknowledgement at +6. The doorbell address comes from the decode of the M6 kext and has never been written on this board. CONFIG_GET returns the tick rate at +8.
     START is not sent, because the firmware may ask for memory on the shared-memory ring and this module does not answer that ring.
+  - After the channel step the module polls the doorbell side every millisecond while it waits. That is 100 ms after SCRATCH3 and the whole wait of each command.
+    It answers the firmware's requests on the SHAREDMALLOC ring. A MALLOC gets a DMA buffer of up to 2 MiB (at most 16 buffers and 64 MiB) and an ordinal. A FREE
+    gets the answer the firmware waits for with no timeout. Each answer rings the ring's doorbell bit. A pending IPI value is written to the ack register at
+    engine + 0x18b0000, as the kext does. When the pending value or a firmware-to-host ring changes, the module logs the nonzero lines of those rings. A silent
+    firmware then still shows which ring moved. The first command on the M6 got no answer before this. The cause is open.
+    The command block lives inside the pool surface, 0x400 bytes in, because the kext takes every command block from the pool and the first run with a separate block
+    got no answer. The terminal ring is logged as text too.
   - `rtkit_hello=1` (needs `alias_mbox=1`): answer the firmware's RTKit management HELLO with version 12 and its endpoint map, nothing else. The
     reply goes to TX as one paired 16 byte store. No reply is sent without a free TX slot, for a message of another type or endpoint, or when the
     firmware's version range excludes 12. At most four replies per run.
