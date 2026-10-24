@@ -219,9 +219,11 @@ against the `bo_total_max_mb` cap (12 GiB by default):
   held for good and the device is quarantined. `unload_on_close` is 0 by
   default, which keeps every program loaded until reboot as before. The
   first run with it on, on an M2, failed: the first 0x203 aborted in the
-  exchange (the driver stopped on a malloc-ring entry it does not know),
-  the device stayed quarantined and a second session could not open it
-  until reboot. Do not set it to 1 on a machine you need;
+  exchange (the driver stopped on a malloc-ring entry it did not know, the
+  firmware's request to free a buffer), the device stayed quarantined and a
+  second session could not open it until reboot. The driver now answers
+  that request (see the receipt of the program unload), and no device has
+  run that change yet. Do not set it to 1 on a machine you need;
 - an io BO is parked in a pool when its last reference drops. Its IOVA
   stays mapped. The next `BO_INIT` of the same page-aligned size takes it,
   zeroes it and gives it to the new owner. After a quarantine, io BOs are

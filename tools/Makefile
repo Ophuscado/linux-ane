@@ -76,6 +76,10 @@ test_t6021_progtab: test_t6021_progtab.c ../ane/t6021/ane_t6021_progtab.h \
 	ane_pool_shim/linux/types.h ane_pool_shim/linux/string.h
 	$(CC) $(CFLAGS) -Iane_pool_shim -o $@ test_t6021_progtab.c
 
+# Shared-memory ring entries: compiles the driver's ane_t6021_mring.h against the same stub kernel headers.
+test_t6021_mring: test_t6021_mring.c ../ane/t6021/ane_t6021_mring.h ane_pool_shim/linux/types.h
+	$(CC) $(CFLAGS) -Iane_pool_shim -o $@ test_t6021_mring.c
+
 # ane-session LOAD cache: drives the real session main over the fake
 # DRM node and counts the BO_INITs a repeated LOAD issues.
 test_ane_session_cache: test_ane_session_cache.c ane-session.c ane-run.c \
@@ -129,7 +133,7 @@ test_ane_session_cache_lsan: test_ane_session_cache.c ane-session.c ane-run.c \
 		-Wl,--wrap=open,--wrap=ioctl,--wrap=mmap \
 		-o $@ test_ane_session_cache.c $(LIBANE_SRC) -lm
 
-check: ane-run ane-selfcheck ane-session test_libane_ioctl test_ane_stats test_t6021_pool test_t6021_progtab \
+check: ane-run ane-selfcheck ane-session test_libane_ioctl test_ane_stats test_t6021_pool test_t6021_progtab test_t6021_mring \
 	test_ane_session_cache test_ane_session_state test_ane_bo_probe test_t6021_prog_lookup test_check_band test_ane_timing
 	sh test_ane_run_tile_shift.sh ./ane-run
 	./ane-selfcheck ../fixtures/h14-anec
