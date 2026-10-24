@@ -134,6 +134,13 @@ struct platform_driver {
 #define PAGE_SIZE 0x4000UL
 #define ALIGN(x, a) (((x) + (a) - 1) / (a) * (a))
 #define wmb() do { } while (0)
+#define dma_wmb() do { } while (0)
+#define dma_rmb() do { } while (0)
+#define READ_ONCE(x) (*(volatile __typeof__(x) *)&(x))
+#define WRITE_ONCE(x, v) (*(volatile __typeof__(x) *)&(x) = (v))
+#ifndef BIT
+#define BIT(n) (1U << (n))
+#endif
 typedef u64 dma_addr_t;
 #define DMA_BIT_MASK(n) ((1ULL << (n)) - 1)
 struct sim_dma { void *va; dma_addr_t iova; size_t size; int live; };
@@ -212,7 +219,11 @@ extern int sim_n_tx_msgs, sim_idle_sent, sim_stop_needs_idle, sim_no_shutdown_re
 extern u32 sim_iop_ack_state;
 extern u32 sim_scr[8];			/* modelled SCRATCH words when sim_scr_model is set */
 extern int sim_scr_model;
-extern void sim_hs_react(void);		/* the modelled firmware sees the wake word */
+extern void sim_hs_react(void);
+extern void sim_s3_react(u32 v);		/* the modelled firmware sees the wake word */
+#define SIM_DB_PA 0x4198a4000ULL
+extern void sim_db_react(u32 v);	/* the modelled firmware sees a doorbell write */
+extern int sim_db_writes;
 extern int sim_credit_mode;	/* 1: every host TX message uses the only free slot, the slot returns at the next sleep */
 extern u32 sim_credits_now;
 extern u64 sim_asc_pa, sim_rvbar_pa, sim_mbox_pa;
@@ -425,6 +436,14 @@ static inline void bus_write(u64 pa, u32 v)
 		sim_scr[(pa - SIM_SCRATCH_PA - 0x24) / 4] = v;
 		if (pa == SIM_SCRATCH_PA + 0x40)
 			sim_hs_react();
+		if (pa == SIM_SCRATCH_PA + 0x30)
+			sim_s3_react(v);
+		return;
+	}
+	if (i < 0 && sim_in(pa, SIM_DB_PA, 0x1000) && sim_psd_state[0] != 6 && sim_psd_state[1] != 6) {
+		sim_db_writes++;
+		if (pa == SIM_DB_PA)
+			sim_db_react(v);
 		return;
 	}
 	if (i < 0)
