@@ -1189,7 +1189,7 @@ static const u8 *ane_h18_prog_cpu(const struct ane_h18 *ane, u64 a, size_t len)
 	return NULL;
 }
 
-/* The firmware console as text. A record of the terminal ring is 64 bytes: word 0 the firmware address of the text (low two bits are flags), word 1 the length,
+/* The firmware console as text. A record of the terminal ring is 64 bytes: word 0 the firmware address of the text (the low two bits are flags, clear in the address: every record seen so far had 2, and the lookup masks them), word 1 the length,
  * word 3 a timestamp (seen on the board; the format is not documented anywhere). The text lies in a buffer the firmware was given, so the host can read it.
  * One log line per record, slot number first: the ring wraps, the timestamps give the order. Records that do not point into one of our buffers, or whose
  * length is over 0x100, are counted and not printed. Read only. */
@@ -1200,7 +1200,7 @@ static void ane_h18_term_log(struct ane_h18 *ane, const char *when)
 	for (i = 0; i < ANE_H18_CH_COUNT; i++) {
 		const u64 *r = ane->ch_rings[i].base;
 
-		if (ane->ch_rings[i].type != 2)
+		if (ane->ch_rings[i].type != 2 || !r)
 			continue;
 		for (k = 0; k < ane->ch_rings[i].slots; k++) {
 			u64 w0 = READ_ONCE(r[k * 8]), len = READ_ONCE(r[k * 8 + 1]), ts = READ_ONCE(r[k * 8 + 3]);
@@ -1215,8 +1215,11 @@ static void ane_h18_term_log(struct ane_h18 *ane, const char *when)
 				skipped++;
 				continue;
 			}
-			for (j = 0; j < len; j++)
-				txt[j] = t[j] >= 0x20 && t[j] < 0x7f ? t[j] : (t[j] == '\n' ? ' ' : '.');
+			for (j = 0; j < len; j++) {
+				u8 c = READ_ONCE(t[j]);	/* the firmware may write while we read: one load per byte */
+
+				txt[j] = c >= 0x20 && c < 0x7f ? c : (c == '\n' ? ' ' : '.');
+			}
 			txt[len] = 0;
 			dev_info(ane->dev, "ane_h18 fw log %s: %u ts %#llx: %s\n", when, k, ts, txt);
 			shown++;
