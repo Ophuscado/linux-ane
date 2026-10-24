@@ -1,0 +1,13 @@
+samples 291 from 1792082734.5 to 1792083027.8; median interval 1.011 s
+arm 1U decode [1792082818.2..1792082822.8]: n=5 power1=18.37 power2=19.56 power4=10.71 fan1=2320 fan2=2507 temp3=48433 temp4=51300
+idle after 1U [1792082828.8..1792082882.4]: n=53 power1=11.04 power2=10.97 power4=4.94 fan1=2316 fan2=2500 temp3=48378 temp4=50932
+arm 2P decode [1792082886.4..1792082891.0]: n=4 power1=15.59 power2=17.26 power4=10.92 fan1=2315 fan2=2504 temp3=47673 temp4=50216
+idle after 2P [1792082897.0..1792082950.6]: n=53 power1=8.81 power2=8.81 power4=4.67 fan1=2319 fan2=2502 temp3=47536 temp4=50098
+arm 3U decode [1792082954.6..1792082959.5]: n=5 power1=16.05 power2=16.47 power4=15.33 fan1=2319 fan2=2505 temp3=47680 temp4=49216
+idle after 3U [1792082965.5..1792083019.1]: n=53 power1=8.82 power2=8.83 power4=4.54 fan1=2315 fan2=2502 temp3=46920 temp4=49425
+arm 4P decode [1792083023.1..1792083027.7]: n=4 power1=16.11 power2=17.75 power4=10.77 fan1=2320 fan2=2499 temp3=46604 temp4=49055
+U arms decode pooled: no samples in [0.0, 0.0]
+1U samples in decode window: [(-1.8, 17.1, 8.8), (-0.8, 17.4, 11.5), (0.2, 17.4, 11.4), (1.2, 19.2, 11.1), (2.3, 20.8, 10.8)]
+3U samples in decode window: [(-1.7, 14.5, 8.5), (-0.7, 14.0, 11.3), (0.3, 15.8, 11.4), (1.4, 16.7, 35.5), (2.4, 19.4, 10.1)]
+2P samples in decode window: [(-1.3, 14.2, 11.6), (-0.2, 14.2, 10.6), (0.8, 16.4, 10.5), (1.8, 17.5, 11.0)]
+4P samples in decode window: [(-1.4, 13.9, 10.8), (-0.4, 15.4, 10.6), (0.6, 16.1, 11.1), (1.6, 19.0, 10.6)]

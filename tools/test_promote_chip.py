@@ -73,6 +73,12 @@ for chip in sorted(_chips):
     after = tree(base)
     changed = {k for k in after if before.get(k) != after[k]}
     assert changed == set(flip_files(chip)), (chip, sorted(changed))
+    # the entry lands under Unreleased, and the released section below it keeps
+    # its blank line (after a release, Unreleased sits empty right above it)
+    cl = after["CHANGELOG.md"].decode().splitlines()
+    h = cl.index("## Unreleased")
+    nxt = next(n for n in range(h + 1, len(cl)) if cl[n].startswith("## "))
+    assert cl[nxt - 1] == "" and any(f"{chip.upper()} (" in l for l in cl[h + 1:nxt]), (chip, cl[h:nxt + 1])
 
     p = run(base, chip, to, "--apply")  # idempotent
     assert p.returncode == 0 and tree(base) == after, (chip, p.stdout, p.stderr)
@@ -110,7 +116,7 @@ assert "| row roundtrip1 |" in row, row
 p = run(base, chip, "opt-in", "--apply")
 assert p.returncode == 0, p.stderr
 dts = (base / f"packaging/dt/{chip}-ane.dts").read_text()
-assert f' * Overlay state: opt-in ("ane-{chip}" in /etc/omarchy-platform/dtb-overlays.opt-in).\n' in dts
+assert f' * Overlay state: opt-in ("ane-{chip}" in /etc/omarchy-mac-boot/dtb-overlays.opt-in).\n' in dts
 row = next(l for l in (base / "README.md").read_text().splitlines() if f"| {chip.upper()} |" in l)
 assert "| row roundtrip1 |" in row, row
 print(f"promote_chip test: {chip} --note writes the Evidence cell and state line, revert keeps them")

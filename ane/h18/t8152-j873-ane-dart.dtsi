@@ -1,0 +1,196 @@
+// SPDX-License-Identifier: GPL-2.0+ OR MIT
+/*
+ * Apple T8152 (M6) J873: the ANE DART, the ANE PSD slot group and the iommu and power links of the ane0 node.
+ * Use it after t8152-j873-ane.dtsi, which has the ane0 node. The group below has its own slot windows and needs no other PSD file.
+ *
+ * ANE DART (ADT /arm-io/dart-ane): dart,gen3, manual availability, page size 16384, vm-base 0x10000000000,
+ * 16 streams. Instance 0 window 0x219800000 size 0xc000 plus 0x200000000 (the translation of every ADT address of this board), its
+ * tunables as (offset, mask, value) from dart-tunables-instance-0, byte for byte the same seven entries as the USB DARTs, and the shared
+ * TLBI doorbell (ADT dart-tlbi-aperture at offset 0, tlbi-aperture-offset 0 for dart-ane). The interrupt is ADT 789.
+ * The ADT node has five windows and one interrupt (789): instances 0 to 3 (TRAD, names LLT, BRD, BRD, BWR; 0x419800000, 0x419820000,
+ * 0x419840000, 0x419860000, 0xc000 each) and the DAPF instance (0x419810000, not described). Each instance is one DART node here with the
+ * same interrupt, as t8103-ane.dts does for its three; the driver shares the line (IRQF_SHARED), so each handler reads its own instance.
+ * The ane0 node lists every instance with stream 0 (ADT /arm-io/dart-ane/mapper-ane, reg 0). Every instance node carries its ADT tunables
+ * (dart-tunables-instance-0 to 3: 7, 29, 29 and 28 records): the kernel's apple-dart parses apple,tunable on every Gen3 node and fails the
+ * probe without it ("failed to parse DART tunables", -ENOENT), so a node without them gives the ANE no iommu group. t8152-j873-ane-dart-sid11.dtsi
+ * adds stream 11 (mapper-ane-mpm) on every instance. On the M2 the same words applied live to the T8110 DARTs broke translation (0x20c;
+ * receipts/2026-10-01-t6021-dart-tunables); whether the Gen3 DART behaves the same is not known, and instance 0 already carries 0x20c.
+ *
+ * Power: the ADT lists power-gates [30, 31] for the ANE, PSD service slots 30 and 31. The group domain requests state 1 on both, in that
+ * order, as the module's stage power did on the board (state 1 was acknowledged on both slots). The DART and the ane0 node both list the
+ * group, so the kernel powers the slots before the DART is first used and before the ane_h18 module binds. With this overlay the ane_h18
+ * module requests no PSD state of its own: it sees power-domains in its node. Binding the module now writes the two PSD request
+ * registers, so even stage dt touches the hardware with this overlay.
+ *
+ * Not verified on the board: the DART node (no ANE DART access has run through the kernel's DART driver), and that the kernel's static
+ * topology path programs this DART the way it does the USB DARTs.
+ */
+
+/ {
+	soc {
+		psd_ane0: power-controller@303a11e00 {
+			compatible = "apple,t8152-psd-group";
+			reg = <0x3 0x03a11e00 0x0 0x100>,	/* slot 30 ANE0_CPU_BLOCKIN */
+			      <0x3 0x03a11f00 0x0 0x100>;	/* slot 31 ANE0_SYS_0 */
+			apple,psd-states = <1 1>;
+			#power-domain-cells = <0>;
+			label = "psd_ane0";
+		};
+
+		dart_ane0: iommu@419800000 {
+			compatible = "apple,t8152-dart";
+			reg = <0x4 0x19800000 0x0 0xc000>,
+			      <0x2 0x00000000 0x0 0x10>;
+			interrupt-parent = <&aic>;
+			interrupts = <AIC_IRQ 789 IRQ_TYPE_LEVEL_HIGH>;
+			#iommu-cells = <1>;
+			/* no DART MMIO at probe: ADT dart,gen3 manual-availability, see apple-dart.c */
+			apple,static-topology;
+			apple,num-streams = <16>;
+			power-domains = <&psd_ane0>;
+			/* ADT vm-base 0x10000000000, vm-size 0x30000000000 */
+			apple,dma-range = /bits/ 64 <0x10000000000 0x30000000000>;
+			/* ADT dart-tunables-instance-0 as (offset, mask, value) */
+			apple,tunable = <0x20c 0x80000121 0x80000121>,
+					<0x220 0x00000f0f 0x00000f0f>,
+					<0x224 0x0000ffff 0x00000909>,
+					<0x300 0x00001f31 0x00000001>,
+					<0x308 0x3ffffffc 0x10000000>,
+					<0x310 0x3ffffffc 0x3ffffffc>,
+					<0x4600 0x00000002 0x00000002>;
+		};
+
+		dart_ane1: iommu@419820000 {
+			compatible = "apple,t8152-dart";
+			reg = <0x4 0x19820000 0x0 0xc000>,
+			      <0x2 0x00000000 0x0 0x10>;
+			interrupt-parent = <&aic>;
+			interrupts = <AIC_IRQ 789 IRQ_TYPE_LEVEL_HIGH>;
+			#iommu-cells = <1>;
+			apple,static-topology;
+			apple,num-streams = <16>;
+			power-domains = <&psd_ane0>;
+			apple,dma-range = /bits/ 64 <0x10000000000 0x30000000000>;
+			/* ADT dart-tunables-instance-1 as (offset, mask, value) */
+			apple,tunable = <0x20c 0x80000121 0x80000121>,
+				<0x220 0x00000f0f 0x00000f0f>,
+				<0x224 0x0000ffff 0x00000909>,
+				<0x300 0x00001f31 0x00000001>,
+				<0x308 0x3ffffffc 0x10000000>,
+				<0x310 0x3ffffffc 0x3ffffffc>,
+				<0x800 0x000f007f 0x00050000>,
+				<0x804 0x000f007f 0x00050000>,
+				<0x808 0x000f007f 0x00050020>,
+				<0x80c 0x000f007f 0x00050020>,
+				<0x810 0x000f007f 0x00010040>,
+				<0x814 0x000f007f 0x00010040>,
+				<0x818 0x000f007f 0x00010042>,
+				<0x81c 0x000f007f 0x00010042>,
+				<0x820 0x000f007f 0x00010042>,
+				<0x824 0x000f007f 0x00010042>,
+				<0x828 0x000f007f 0x00010042>,
+				<0x82c 0x000f007f 0x00010042>,
+				<0x830 0x000f007f 0x00010042>,
+				<0x834 0x000f007f 0x00010042>,
+				<0x838 0x000f007f 0x00010042>,
+				<0x83c 0x000f007f 0x00010042>,
+				<0x4600 0x00000002 0x00000002>,
+				<0x4708 0x3ffffffc 0x104d8020>,
+				<0x4718 0x3ffffffc 0x3a8ba840>,
+				<0x4728 0x3ffffffc 0x1af34080>,
+				<0x4738 0x3ffffffc 0x1985d100>,
+				<0x4748 0x3ffffffc 0x3cefea00>,
+				<0x4758 0x3ffffffc 0x02123400>;
+		};
+
+		dart_ane2: iommu@419840000 {
+			compatible = "apple,t8152-dart";
+			reg = <0x4 0x19840000 0x0 0xc000>,
+			      <0x2 0x00000000 0x0 0x10>;
+			interrupt-parent = <&aic>;
+			interrupts = <AIC_IRQ 789 IRQ_TYPE_LEVEL_HIGH>;
+			#iommu-cells = <1>;
+			apple,static-topology;
+			apple,num-streams = <16>;
+			power-domains = <&psd_ane0>;
+			apple,dma-range = /bits/ 64 <0x10000000000 0x30000000000>;
+			/* ADT dart-tunables-instance-2 as (offset, mask, value) */
+			apple,tunable = <0x20c 0x80000121 0x80000121>,
+				<0x220 0x00000f0f 0x00000f0f>,
+				<0x224 0x0000ffff 0x00000909>,
+				<0x300 0x00001f31 0x00000001>,
+				<0x308 0x3ffffffc 0x10000000>,
+				<0x310 0x3ffffffc 0x3ffffffc>,
+				<0x800 0x000f007f 0x00050000>,
+				<0x804 0x000f007f 0x00050000>,
+				<0x808 0x000f007f 0x00050020>,
+				<0x80c 0x000f007f 0x00050020>,
+				<0x810 0x000f007f 0x00010040>,
+				<0x814 0x000f007f 0x00010040>,
+				<0x818 0x000f007f 0x00010042>,
+				<0x81c 0x000f007f 0x00010042>,
+				<0x820 0x000f007f 0x00010042>,
+				<0x824 0x000f007f 0x00010042>,
+				<0x828 0x000f007f 0x00010042>,
+				<0x82c 0x000f007f 0x00010042>,
+				<0x830 0x000f007f 0x00010042>,
+				<0x834 0x000f007f 0x00010042>,
+				<0x838 0x000f007f 0x00010042>,
+				<0x83c 0x000f007f 0x00010042>,
+				<0x4600 0x00000002 0x00000002>,
+				<0x4708 0x3ffffffc 0x104d8020>,
+				<0x4718 0x3ffffffc 0x3a8ba840>,
+				<0x4728 0x3ffffffc 0x1af34080>,
+				<0x4738 0x3ffffffc 0x1985d100>,
+				<0x4748 0x3ffffffc 0x3cefea00>,
+				<0x4758 0x3ffffffc 0x02123400>;
+		};
+
+		dart_ane3: iommu@419860000 {
+			compatible = "apple,t8152-dart";
+			reg = <0x4 0x19860000 0x0 0xc000>,
+			      <0x2 0x00000000 0x0 0x10>;
+			interrupt-parent = <&aic>;
+			interrupts = <AIC_IRQ 789 IRQ_TYPE_LEVEL_HIGH>;
+			#iommu-cells = <1>;
+			apple,static-topology;
+			apple,num-streams = <16>;
+			power-domains = <&psd_ane0>;
+			apple,dma-range = /bits/ 64 <0x10000000000 0x30000000000>;
+			/* ADT dart-tunables-instance-3 as (offset, mask, value) */
+			apple,tunable = <0x20c 0x80000121 0x80000121>,
+				<0x220 0x00000f0f 0x00000f0f>,
+				<0x224 0x0000ffff 0x00000909>,
+				<0x300 0x00001f31 0x00000001>,
+				<0x308 0x3ffffffc 0x10000000>,
+				<0x310 0x3ffffffc 0x3ffffffc>,
+				<0x800 0x000f003f 0x00050000>,
+				<0x804 0x000f003f 0x00050000>,
+				<0x808 0x000f003f 0x00010020>,
+				<0x80c 0x000f003f 0x00010020>,
+				<0x810 0x000f003f 0x00010020>,
+				<0x814 0x000f003f 0x00010020>,
+				<0x818 0x000f003f 0x00010020>,
+				<0x81c 0x000f003f 0x00010020>,
+				<0x820 0x000f003f 0x00010020>,
+				<0x824 0x000f003f 0x00010020>,
+				<0x828 0x000f003f 0x00010020>,
+				<0x82c 0x000f003f 0x00010020>,
+				<0x830 0x000f003f 0x00010020>,
+				<0x834 0x000f003f 0x00010020>,
+				<0x838 0x000f003f 0x00010020>,
+				<0x83c 0x000f003f 0x00010020>,
+				<0x4600 0x00000002 0x00000002>,
+				<0x4708 0x3ffffffc 0x104d8020>,
+				<0x4718 0x3ffffffc 0x3a8ba840>,
+				<0x4728 0x3ffffffc 0x1af34080>,
+				<0x4738 0x3ffffffc 0x1985d100>,
+				<0x4748 0x3ffffffc 0x3cefea00>;
+		};
+	};
+};
+
+&ane0 {
+	iommus = <&dart_ane0 0>, <&dart_ane1 0>, <&dart_ane2 0>, <&dart_ane3 0>;
+	power-domains = <&psd_ane0>;
+};

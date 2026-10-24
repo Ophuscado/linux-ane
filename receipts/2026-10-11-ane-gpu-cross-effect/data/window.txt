@@ -1,0 +1,6 @@
+# Guard window log lines for the run (host name replaced by the chip name; times UTC)
+2026-10-11T16:09:15Z 13-inch-M1 set exclusive cross.sh
+2026-10-11T16:27:51Z 13-inch-M1 clear cross.sh
+# The script's own line when the window opened (printed by quiet-window.sh set --exclusive):
+quiet-<host> set 2026-10-11T16:24:44Z EXCLUSIVE; guard ANE tickets running: 0; GPU lock holders: 1
+# The first phase began at 16:24:44Z. No list of processes holding the GPU was recorded during the phases.

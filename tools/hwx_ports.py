@@ -21,6 +21,7 @@ import hashlib
 import json
 import re
 import struct
+import sys
 from pathlib import Path
 
 TILE_BYTES = 0x4000
@@ -273,7 +274,25 @@ def main(argv=None):
     ap.add_argument("--anec-dir", type=Path, default=Path("/var/tmp/qwen-real-anec-h14"))
     ap.add_argument("--mil-dir", type=Path, default=Path("/var/tmp/qwen-real-mil"))
     ap.add_argument("--artifact-dir", type=Path, default=None)
+    ap.add_argument("--program", help="derive ONE table: the program name written into it; needs --hwx, --anec and --mil")
+    ap.add_argument("--hwx", type=Path)
+    ap.add_argument("--anec", type=Path)
+    ap.add_argument("--mil", type=Path)
+    ap.add_argument("--out", type=Path, help="with --program: where to write the table (default: print it)")
     args = ap.parse_args(argv)
+    if args.program:
+        if not (args.hwx and args.anec and args.mil):
+            ap.error("--program needs --hwx, --anec and --mil")
+        table = derive_program(args.program, args.hwx, args.anec, args.mil)
+        text = json.dumps(table, indent=2) + "\n"
+        if args.out:
+            args.out.write_text(text)
+        else:
+            print(text, end="")
+        open_groups = [a for a in table["ambiguities"] if "resolved_by" not in a]
+        print(f"{args.program} ports={len(table['ports'])} exceptions={len(table['exceptions'])} "
+              f"ambiguous_groups={len(open_groups)}", file=sys.stderr)
+        return 1 if table["exceptions"] else 0
     entries = []
     for index in range(38):
         prog = f"prog_{index:03d}"
@@ -300,4 +319,4 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

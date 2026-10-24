@@ -1,0 +1,18 @@
+# Qwen decoder on the M2: host requirements
+
+`tools/qwen_m2_decode.py` runs the 38 Qwen3.8-2B programs on the ANE and does the rest on the CPU. It needs:
+
+- an Apple Silicon Mac running Linux with the `ane_t6021` module (M2 Max and the other H14 chips) and the `ane-run` and `ane-session` tools from this repository;
+- Python 3 with `numpy` and the `gguf` package (`gguf-py` from llama.cpp);
+- **numpy on OpenBLAS.** On Arch: `sudo pacman -S blas-openblas python-numpy`.
+
+Why OpenBLAS: Arch's `blas`, `cblas` and `lapack` packages are the reference implementation. Their matvec runs on one thread at any `OPENBLAS_NUM_THREADS`. The decoder's output projection (`head @ hidden`, float32, 248320 x 2048) took 604 ms per generated token on the M2 Max with them and 20 ms with OpenBLAS, which is most of the difference between 1.21 and 4.6 tokens per second
+([receipt](../receipts/2026-10-10-m2-max-resident-decode-openblas/README.md)). `blas-openblas` provides `blas`, `cblas`, `lapack` and `lapacke`, so packages that depend on them (numpy, opencv, omarchy-mlx) stay installed; pacman removes the reference packages. To go back: `sudo pacman -S blas cblas lapack` (they conflict with `blas-openblas`).
+
+Check which one numpy uses: `readlink -f /usr/lib/libcblas.so.3` ends in `libopenblas.so.0.3` with OpenBLAS and in `libcblas.so.3.12.0` with the reference. The decoder also checks at the start of a run and prints a warning on stderr when numpy maps the reference BLAS (`tools/test_qwen_blas_check.py`).
+
+OpenBLAS sums the 2048-term dot products in a different order, so the float32 logits are not bit-identical to a run on the reference BLAS (largest difference 4.0e-5 on logits near 26, 1.5e-6 relative). The generated tokens were identical. A logits hash taken on the reference BLAS (the earlier receipt's `7384c10e...`) will not match; the OpenBLAS hash on the same decode is `5c359d36...` and was the same in two runs.
+
+Placement: run as a script, `tools/qwen_m2_decode.py` keeps the decode process and its `ane-session` child on the performance cores through `tools/pcore_mask.py` (the CPUs at the maximum `cpu_capacity`, so M2 Max gets 4-11, never a hard-coded list). On the M2 an unpinned run moved both processes to the efficiency cores in the middle of one arm of a paired test; every call then cost 0.72 ms more with the exec time unchanged, and the step went from 172 to 200 ms. Pinned arms never ran a call there ([result](../receipts/2026-10-15-m2-qwen-pin-pcores/README.md)). When the launcher pins, it also sets `OPENBLAS_NUM_THREADS=4` unless you already set it: twelve BLAS threads on eight performance cores was not measured, and four threads cost the head matmul nothing (20.2 to 21.6 ms at 1, 4, 8 and 12 threads). In the one paired run, four threads gave the same float32 logits hash for the 16-step p001 decode (`5c359d36...`) as the 15 Oct runs on default threads. That is one measurement, not proof that the thread count never changes the logits. `OMARCHY_ANE_NO_PIN=1` turns off both the mask and the thread default. A harness that imports the module is not pinned and sets its own mask.
+
+Every run records where the calls ran: the `placement` record in `results.jsonl` (at the start and at the end, also when a failed call or a kernel STOP line ends the run) holds the mask of every task of the decode process and the child, the calls by CPU, and the number of calls off the performance cores; each step record has `calls_cpu`, and `timings.tsv` has a sixth column, the CPU of the decode thread after the call. A call off the performance cores prints a warning on stderr. The CPU is where the decode thread woke after the call; the child's CPU is not logged per call.

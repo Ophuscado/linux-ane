@@ -7,7 +7,7 @@ the T6021 overlay applies, the firmware hook fetches the firmware, and
 the module autoloads at the next boot (top-level README, "M2 Max
 (T6021)"). Once the firmware starts, the only reclamation is reboot.
 
-Boot path status: the module works on the stock linux-asahi kernel
+Boot path status: the module works on the stock Arch ARM kernel
 `7.1.13-3-1-ARCH` (three boots; the third used the complete overlay
 `packaging/dt/t6021-ane.dts`, the first two a lab overlay with the
 same ANE nodes; receipt
@@ -34,12 +34,12 @@ On that laptop the disk boot also needs the opt-in overlay
 keyboard driver (`mtpkbd`) stops the boot at the U-Boot prompt. With it, the
 internal keyboard does not work at the U-Boot prompt or in the GRUB menu;
 only serial gives input there. This input may be specific to that laptop.
-The overlay goes away when uboot-asahi passes only keyboard reports from
+The overlay goes away when the packaged U-Boot passes only keyboard reports from
 `mtpkbd` to stdin.
 
 ## Prerequisites
 
-- Kernel: stock linux-asahi `7.1.13-3-1-ARCH` (proven 2026-09-30 with the
+- Kernel: stock Arch ARM `7.1.13-3-1-ARCH` (proven 2026-09-30 with the
   packaged overlay, receipts/2026-09-30-t6021-stock-mailbox) or
   `7.1.13-ARCH-polltx`. The module builds against
   `/lib/modules/$(uname -r)/build`.
@@ -162,9 +162,13 @@ Not proven:
   2048, so the program does not qualify for a model run (receipt
   [2026-09-30-t6021-island-select-rms](../../receipts/2026-09-30-t6021-island-select-rms/README.md)).
 - An explanation for the intermittent all-zero output seen on three
-  boots (about 1 call in 5 on those boots). The 1 ms post-call
-  settle is the mitigation. On the finish-event wait, 5000 single add
-  processes gave 0 all-zero outputs; the failing boots have not recurred.
+  boots in 2026-09 (about 1 call in 5 on those boots). The CALL wait
+  then returned at dispatch, before the finish event existed in the
+  driver. On the finish-event wait with no post-call sleep, 6000 add
+  calls with new inputs per call read their own result right after the
+  ioctl returned
+  ([2026-10-06-t6021-call-settle](../../receipts/2026-10-06-t6021-call-settle/README.md));
+  the failing boots have not recurred.
 - A bit-exact model of the C pv accumulator. It is fp32-class, but
   no tested model reproduces it; the strict per-lane bound fails on
   1.3 to 52.4 percent of lanes per layer and the deviation does not
@@ -202,8 +206,28 @@ IOVA — under the fw lock, before the exchange goes out:
 A `fw_ref` BO never goes back to the kernel, and its bytes stay counted
 against the `bo_total_max_mb` cap (12 GiB by default):
 
-- a section BO of a sent `LOAD_PROGRAM` is held until reboot, because the
-  cached firmware program keeps reading it;
+- a section BO of a sent `LOAD_PROGRAM` is held while the program is
+  loaded, because the firmware keeps reading it. With `unload_on_close=1`
+  (the default), when the last file that loaded or looked the program up
+  closes, the driver unloads the program (terminate its process with command
+  0x203, destroy it with 0x201, both acknowledged) and then gives the
+  section buffers back. They follow the usual rule for a BO the firmware no
+  longer reads: freed, or parked under the `bo_pool_max_mb` budget, where
+  their bytes stay counted until the pool is drained (set `bo_pool_max_mb`
+  to 0 to see `bo_total_bytes` fall to the io pool). If either command fails
+  or times out, the sections stay held for good and the device is
+  quarantined. `unload_on_close=0` keeps every program loaded until reboot,
+  as before the unload existed.
+  On an M2, six decode sessions in a row passed with the default: the logits
+  were byte identical, the step time stayed within 0.1 percent, and
+  `bo_total_bytes` after a pool drain stayed at about 54 MB (the first 3 MB
+  above the first session is a one-time rise, not a leak per session). Two
+  earlier runs failed. The first stopped at the first 0x203 because the
+  firmware asks the host to free a buffer while it terminates a process and
+  the driver did not answer. The second failed in the fourth session
+  because the table of firmware buffers kept freed entries. Both are fixed.
+  The measurements are one M2 and one decode workload, every set with a pool drain in between. Not tested: sessions without the pool drain between them, a session killed while a program is loaded or a command is in flight, other chips.
+  A session killed with a program loaded runs the same close path, and a failed unload quarantines the device until reboot;
 - an io BO is parked in a pool when its last reference drops. Its IOVA
   stays mapped. The next `BO_INIT` of the same page-aligned size takes it,
   zeroes it and gives it to the new owner. After a quarantine, io BOs are
@@ -213,6 +237,15 @@ Every other BO frees when its last reference drops. Each BO holds two
 reference kinds: its handle (dropped by `BO_FREE` or fd close) and each
 live user mapping (`mmap`; fork takes one more, unmap drops one). A BO
 freed while mapped stays allocated until the mapping is torn down.
+
+A client has no reason to keep a section BO open past `PROG_LOAD`: on a
+cache miss the driver holds the section bytes anyway, and on a cache hit
+the caller's copy is memory the firmware never reads. `libane` frees its
+section BOs as soon as `PROG_LOAD` + `PROC_CREATE` succeed. A client
+that keeps them open pins a duplicate of every loaded program inside the
+sub-4-GiB window for the life of the client; a long-lived session that
+loads the whole Qwen set then runs out of `BO_INIT` room at prog_006
+(measured 2026-10-09, boot 2105990f).
 
 The held memory is therefore the loaded program sections plus the peak
 number of io BOs in use at the same time, not the sum over every
@@ -248,7 +281,9 @@ bisection only.
 | `start_app_eps` | `1` | rtclient | STARTEP fw-announced app endpoints after a successful handshake |
 | `bo_total_max_mb` | `12288` | rtclient | Cap on the BO bytes held at one time, in MiB; `BO_INIT` returns `ENOSPC` above it. `0` refuses every `BO_INIT`; there is no unlimited value. Read at load (0444). |
 | `bo_total_bytes` | read only | rtclient | The BO bytes counted against `bo_total_max_mb` now. |
-| `trace_td` | `0` | rtclient | Runtime switch (0644). 1 records a read-only timeline of each CALL (ack, each new value of the last-taken-TD word, the IO_T2H events, the finish) in debugfs `ane_t6021/trace_td`; each switch to 1 empties it. The TD word is read only while the ANE pmgr PS words read 0x3ff, and never with `dyn_pg=1`. 0 leaves the CALL path unchanged. |
+| `call_settle_us` | `0` | rtclient | Runtime (0644). Microseconds to sleep after a CALL's finish event. The event already marks the output in DRAM (receipts/2026-10-06-t6021-call-settle); a nonzero value only tests a suspected late output write. Was 1000 before 2026-10-06. |
+| `call_poll_us` | `1000` | rtclient | Runtime (0644). Microseconds of 1-us-cadence polling at the head of the CALL finish-event wait before falling back to the uniform 50-100 us sleep. `0` restores the 50-100 us cadence everywhere. Set 0 to trade the per-call detection lag back for CPU on a busy box; no reload needed. |
+| `trace_td` | `0` | rtclient | Runtime switch (0644). 1 records a read-only timeline of each CALL (ack, each new value of the last-taken-TD word, the IO_T2H events, the finish) in debugfs `ane_t6021_trace/trace_td`; each switch to 1 empties it. The TD word is read only while the ANE pmgr PS words read 0x3ff, and never with `dyn_pg=1`. 0 leaves the CALL path unchanged. The trace owns the `ane_t6021_trace` directory, so any load order works next to the probe's `stats=1` files in `ane_t6021/`. |
 | `dyn_pg` | `0` | rtclient | Lab, selene 13.5 (T602x) only; probe refuses it on other SoCs. 1 sends `SET_DYNAMIC_POWERGATE` (0x2d) = 1 once after CONFIG_GET, so the firmware turns the compute islands (td, base, set1-4) off between jobs. The driver keeps its runtime-PM reference. Unproven on hardware: see receipts/2026-10-03-t6021-dynpg. |
 
 With `stats=1`, T602x probe also creates debugfs `ane_t6021/ane_pg_state`
@@ -284,8 +319,8 @@ exposes the ABI 2 ioctl set per `ane/src/uapi/drm/ane_accel.h`
   handle.
 - `DRM_IOCTL_ANE_BO_FREE` — drop the handle. The memory frees when
   its last reference drops, except a BO the firmware received: a
-  program section is held until reboot, an io BO is parked for reuse
-  (see "BO lifetime").
+  program section is held while its program is loaded, an io BO is parked
+  for reuse (see "BO lifetime").
 - `DRM_IOCTL_ANE_SUBMIT` — rejected with `-ENOTTY` on T6021.
 - `DRM_IOCTL_ANE_PROG_LOAD` (0x200) — build the LOAD_PROGRAM message
   (1..9 section records; each record carries the caller's

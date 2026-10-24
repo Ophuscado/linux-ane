@@ -62,3 +62,8 @@ __pycache__/
 .private-patterns
 test/*
 ane/test/_build/
+
+# userspace sim harness build output
+ane/h15/sim/sim_h15
+ane/h15/sim/sim_h15_filled
+ane/h18/sim/sim_h18

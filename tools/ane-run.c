@@ -17,6 +17,8 @@
 void ane_set_oracle_nchw(struct ane_nn *nn, uint32_t ch,
 			 const uint64_t nchw[6]);
 #include "ane_f16_add.h"
+#include "ane_check_band.h"
+#include "ane_timing.h"
 
 /*
 // ane-run -- run one ANEC program through libane and save its outputs.
@@ -523,7 +525,6 @@ static int json_read_top(const char *p, const char **end,
 			 * bracket-balanced skip rather than a full parse
 			 * so sidecar additions do not break us. */
 			int depth = 0;
-			int opened = 0;
 			const char *q;
 			int in_str = 0;
 
@@ -542,15 +543,20 @@ static int json_read_top(const char *p, const char **end,
 				}
 				if (c == '{' || c == '[') {
 					depth++;
-					opened = 1;
 					continue;
 				}
 				if (c == '}' || c == ']') {
+					/* A close outside any nested value of
+					 * the skipped member is the enclosing
+					 * object's close (the member was a
+					 * scalar and the last one): stop
+					 * without consuming it. */
+					if (depth == 0) {
+						break;
+					}
 					depth--;
 					if (depth == 0) {
-						if (opened) {
-							q++;
-						}
+						q++;
 						break;
 					}
 					continue;
@@ -1478,12 +1484,12 @@ static int rms_check(struct ane_nn *nn, struct io_file *in,
 	for (i = 0; i < C; i++) {
 		xv = ane_f16_to_f64(a[i * channel_stride]);
 		gv = ane_f16_to_f64(gamma[64 / 2 + i]);
-		want_v = xv * gv / rscaled;
+		want_v = ane_rms_want(xv, gv, rscaled);
 		want = ane_f16_round_half_away(want_v);
 		got = y[i * channel_stride];
 		err = fabs(ane_f16_to_f64(got) - want_v);
 		sumabs = fabs(xv) + fabs(gv) + fabs(rscaled);
-		nerr = sumabs > 0.0 ? err / (sumabs * 0x1p-11) : 0.0;
+		nerr = ane_cond_units(err, sumabs);
 		if (nerr > max_nerr) {
 			max_nerr = nerr;
 		}
@@ -1491,7 +1497,7 @@ static int rms_check(struct ane_nn *nn, struct io_file *in,
 			    ane_f16_to_f64(want)) /
 		       f16_ulp(ane_f16_to_f64(want));
 		milli = (uint64_t)(diff * 1000.0 + 0.5);
-		in_band += diff <= 2.0 || nerr <= 4.0;
+		in_band += ane_lane_in_band(diff, err, sumabs);
 		exact += want == got;
 		if (milli > max_ulp_milli) {
 			max_ulp_milli = milli;
@@ -1670,7 +1676,7 @@ static int check_program(int op, struct ane_nn *nn, struct io_file *in,
 			 * one partial sum. Cancellation makes the ulp of the
 			 * result a poor scale. */
 			err = fabs(ane_f16_to_f64(y[i]) - acc);
-			nerr = sumabs > 0.0 ? err / (sumabs * 0x1p-11) : 0.0;
+			nerr = ane_cond_units(err, sumabs);
 			if (nerr > max_nerr) {
 				max_nerr = nerr;
 			}
@@ -1682,7 +1688,7 @@ static int check_program(int op, struct ane_nn *nn, struct io_file *in,
 			       f16_ulp(ane_f16_to_f64(want));
 			milli = (uint64_t)(diff * 1000.0 + 0.5);
 
-			in_band += diff <= 2.0 || nerr <= 4.0;
+			in_band += ane_lane_in_band(diff, err, sumabs);
 			if (milli > max_ulp_milli) {
 				max_ulp_milli = milli;
 			}
@@ -1764,10 +1770,16 @@ static void usage(void)
 {
 	fprintf(stderr,
 		"usage: ane-run --anec FILE [--in IDX=FILE]... "
-		"[--out IDX=FILE]... [--repeat N] [--time] [--check OP] "
-		"[--weights FILE]\n"
+		"[--out IDX=FILE]... [--repeat N] [--time] [--time-raw FILE] [--check OP] "
+		"[--weights FILE] [--dev N] [--tile-shift N]\n"
 		"   or: ane-run --anec FILE --ports FILE.json [--in NAME=FILE]...\n"
-		"                                  [--out NAME=FILE]... [--dry-run]\n"
+		"                                  [--out NAME=FILE]... [--dry-run] [--dev N]\n"
+		"  --dev N: the accel node to open (/dev/accel/accelN; default 0,\n"
+		"    or ANE_DEVICE); die 1 of an Ultra board is dev 1.\n"
+		"  --tile-shift N: log2 of the byte unit of the ANEC header's tile counts\n"
+		"    (default 14 = 0x4000 bytes, the H13 island containers; 9 = 512 bytes,\n"
+		"    the whole-program containers from the hwxv2 converter). Index mode only,\n"
+		"    and M1-family index path only: the T6021 path does not read it.\n"
 		"OP: add mul relu add-scalar mul-scalar real-div-scalar "
 		"clip-low clip-high matvec\n"
 		"    select bmm rms\n"
@@ -1798,7 +1810,10 @@ static void usage(void)
 		"  take NAME=FILE.\n"
 		"  Strict JSON: anything outside the documented keys is rejected.\n"
 		"--dry-run: with --ports, print the operation-record pairs and\n"
-		"  io records the runner would submit, then exit. No device.\n");
+		"  io records the runner would submit, then exit. No device.\n"
+		"--time: print the quantiles and the mean of the per-call exec times.\n"
+		"--time-raw FILE: also write every call's exec time in ns, one integer per\n"
+		"  line, in call order (implies --time).\n");
 }
 
 int main(int argc, char **argv)
@@ -1812,12 +1827,18 @@ int main(int argc, char **argv)
 	struct name_file nouts[IO_ARGS] = { 0 };
 	uint32_t repeat = 1;
 	int timing = 0;
+	const char *time_raw = NULL;
 	int check = -1;
 	int dry_run = 0;
 	int ports_mode = 0;
 	struct port_read pr = { 0 };
 	int ret;
 	int k;
+	/* The accel node libane opens (/dev/accel/accelN, the dev_id-th
+	 * "ane" DRM device): --dev wins over ANE_DEVICE, default 0. */
+	int dev = getenv("ANE_DEVICE") ? (int)strtoul(getenv("ANE_DEVICE"), NULL, 0) : 0;
+	/* 0 = libane's default unit (__ane_init); else __ane_init_shift. */
+	uint32_t tile_shift = 0;
 
 	for (int i = 1; i < argc; i++) {
 		if (!strcmp(argv[i], "--anec") && i + 1 < argc) {
@@ -1892,6 +1913,9 @@ int main(int argc, char **argv)
 			}
 		} else if (!strcmp(argv[i], "--time")) {
 			timing = 1;
+		} else if (!strcmp(argv[i], "--time-raw") && i + 1 < argc) {
+			timing = 1;
+			time_raw = argv[++i];
 		} else if (!strcmp(argv[i], "--repeat") && i + 1 < argc) {
 			repeat = (uint32_t)strtoul(argv[++i], NULL, 0);
 		} else if (!strcmp(argv[i], "--check") && i + 1 < argc) {
@@ -1905,6 +1929,14 @@ int main(int argc, char **argv)
 		} else if (!strcmp(argv[i], "--ports") && i + 1 < argc) {
 			ports_path = argv[++i];
 			ports_mode = 1;
+		} else if (!strcmp(argv[i], "--dev") && i + 1 < argc) {
+			dev = (int)strtoul(argv[++i], NULL, 0);
+		} else if (!strcmp(argv[i], "--tile-shift") && i + 1 < argc) {
+			tile_shift = (uint32_t)strtoul(argv[++i], NULL, 0);
+			if (tile_shift < 1 || tile_shift > 20) {
+				fprintf(stderr, "--tile-shift must be 1..20\n");
+				return 2;
+			}
 		} else if (!strcmp(argv[i], "--dry-run")) {
 			dry_run = 1;
 		} else {
@@ -1926,8 +1958,14 @@ int main(int argc, char **argv)
 		return ret;
 	}
 
-	nn = ports_mode ? ane_m2_init_ports(anec, pr.ports, pr.count)
-			: ane_init(anec);
+	if (ports_mode && tile_shift) {
+		fprintf(stderr, "--tile-shift applies to index mode, not --ports\n");
+		free_port_read(&pr);
+		return 2;
+	}
+	nn = ports_mode ? ane_m2_init_ports(anec, pr.ports, pr.count, dev)
+			: (tile_shift ? __ane_init_shift(anec, dev, tile_shift)
+				      : __ane_init(anec, dev));
 	if (!nn) {
 		fprintf(stderr, "ane_init failed on %s\n", anec);
 		free_port_read(&pr);
@@ -1991,7 +2029,13 @@ int main(int argc, char **argv)
 
 	{
 		double *lat = timing ? calloc(repeat, sizeof(*lat)) : NULL;
+		uint64_t *ns = time_raw ? calloc(repeat, sizeof(*ns)) : NULL;
 		uint32_t done = 0;
+
+		if ((timing && !lat) || (time_raw && !ns)) {
+			fprintf(stderr, "cannot allocate the per-call timing buffers for %u calls\n", repeat);
+			ret = 1;
+		}
 
 		for (uint32_t r = 0; r < repeat && !ret; r++) {
 			struct timespec t0, t1;
@@ -2003,19 +2047,31 @@ int main(int argc, char **argv)
 			}
 			clock_gettime(CLOCK_MONOTONIC, &t1);
 			if (lat) {
-				lat[done++] = (t1.tv_sec - t0.tv_sec) * 1e3 +
-					      (t1.tv_nsec - t0.tv_nsec) / 1e6;
+				lat[done] = (t1.tv_sec - t0.tv_sec) * 1e3 +
+					    (t1.tv_nsec - t0.tv_nsec) / 1e6;
+				if (ns) {
+					ns[done] = (uint64_t)((long long)(t1.tv_sec - t0.tv_sec) * 1000000000LL +
+							      (t1.tv_nsec - t0.tv_nsec));
+				}
+				done++;
 			}
 		}
+		if (ns && ane_lat_write_raw(time_raw, ns, done) < 0) {
+			fprintf(stderr, "cannot write --time-raw %s\n", time_raw);
+			ret = 1;
+		}
 		if (lat && done) {
+			double mean = ane_lat_mean(lat, done);
+
 			qsort(lat, done, sizeof(*lat), cmp_double);
 			printf("exec ms over %u calls: min %.3f p10 %.3f p25 %.3f "
-			       "median %.3f p75 %.3f p90 %.3f p99 %.3f max %.3f\n",
+			       "median %.3f p75 %.3f p90 %.3f p99 %.3f max %.3f mean %.4f\n",
 			       done, lat[0], lat[done / 10], lat[done / 4],
 			       lat[done / 2], lat[(done * 3) / 4],
 			       lat[(done * 9) / 10], lat[(done * 99) / 100],
-			       lat[done - 1]);
+			       lat[done - 1], mean);
 		}
+		free(ns);
 		free(lat);
 	}
 

@@ -18,6 +18,18 @@ table from qwen_m2_conform.py when --ports-dir is given) must hold exactly the
 manifest's inputs, lane outputs and state outputs. Each call is
 `flock /var/tmp/ane-run.lock timeout T ane-run --ports` (qwen_prog_run.ane_call).
 
+--resident replaces the per-call subprocess with one ane-session process
+(tools/ane-session.c): the programs LOAD once per configure, then each step
+issues its CALLs in-process with packed surfaces over the pipe (no per-call
+file pack/unpack). The device lock is held per CALL (--resident-lock call,
+default) or across the step (--resident-lock step), and is always released
+between steps. The session guards refuse a LOAD before any device open when
+the program count would pass --max-progs (default 250, the driver's program
+table bound) or the page-aligned BO projection would pass the bo_total cap
+(module sysfs or --bo-cap-mb): those are REFUSE (exit 2). A CALL failure (ERR
+reply, short read, or no reply within the timeout) is a STOP: the run ends and
+the session stderr goes to <out>/surf/failed-ane-run.log.
+
 --dump compares every port of every program at the dump's steps with the M1
 execution when the prompt is the dump's prompt: host-built inputs (context
 tables, the program-0 embedding, zero states at step 0) must be bit-exact;
@@ -44,30 +56,95 @@ new kernel line matching 'EXCH ... failed' (checked once per step).
 """
 
 import argparse
+import ctypes
 import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
 import time
 from pathlib import Path
 
-import numpy as np
+import pcore_mask
+
+# Launcher only: a script run keeps the decode process and its ane-session child on the performance cores (see pcore_mask.py). It must come before numpy
+# starts its BLAS threads, which inherit the mask. A harness that imports this module is not pinned and sets its own mask. OMARCHY_ANE_NO_PIN=1 turns both lines off.
+PINNED = pcore_mask.pin_self() if __name__ == "__main__" else None
+if PINNED is not None:
+    os.environ.setdefault("OPENBLAS_NUM_THREADS", "4")
+
+import numpy as np  # noqa: E402
 
 from qwen_m2_conform import (BAND_FACTOR, FLOOR, KERNEL_TS, STOP_KERNEL, STOP_LOG,
                              compare)
-from qwen_prog_run import Refuse, ane_call, port_map_from_table
+from qwen_prog_run import Refuse, ResidentSession, ane_call, port_map_from_table
 
 f16 = np.float16
 
+REFERENCE_BLAS_WARNING = (
+    "qwen_m2_decode: numpy is using the reference BLAS, which runs on one thread. The output projection "
+    "(head @ hidden) then takes about 600 ms per generated token on the M2 Max instead of about 20 ms, "
+    "and the decode is about 4 times slower. Arch: sudo pacman -S blas-openblas "
+    "(see docs/qwen-m2-decoder-requirements.md).")
 
-def load_head(path):
-    """(fp16 embedding, float32 tied head, rope (dh, rotary dim, base)) from
-    the GGUF, as staged_qwen_runner.load_gguf_parts and its metadata reads."""
-    from gguf import GGUFReader
+
+def reference_blas(maps_text=None):
+    """True when numpy's BLAS is the reference implementation (no OpenBLAS mapped after one matvec).
+
+    A numpy wheel with its own OpenBLAS maps a library named *openblas*; Arch numpy maps libcblas.so.3, which
+    resolves to libopenblas when blas-openblas is installed and to the reference libcblas.so.3.x otherwise.
+    Returns False when /proc/self/maps cannot be read, so a non-Linux host never warns."""
+    if maps_text is None:
+        np.ones((8, 8), np.float32) @ np.ones(8, np.float32)
+        try:
+            maps_text = Path("/proc/self/maps").read_text()
+        except OSError:
+            return False
+    return "openblas" not in maps_text and ("libcblas" in maps_text or "libblas" in maps_text)
+
+
+class Q6KMatrix:
+    """`head @ hidden` for the tied head read as Q6_K (tools/q6k_head.py): fp32 activation, fp32 logits."""
+
+    def __init__(self, head):
+        self.head = head
+
+    def __matmul__(self, hidden):
+        return self.head.logits(hidden)
+
+
+class Q6KEmbed:
+    """`embed[token]`: the Q6_K row dequantized as ggml does, rounded to fp16, equal bit for bit to the fp16 embedding table built from the fp32 head."""
+
+    def __init__(self, head):
+        self.head = head
+
+    def __getitem__(self, token):
+        return self.head.embed_row(int(token)).astype(f16)
+
+
+def head_threads():
+    """One thread per performance core (the pcore_mask list) so a pinned run reads the head from both P clusters; 8 when the chip has no efficiency cores."""
+    p = pcore_mask.p_core_cpus()
+    return len(p) if p else min(8, os.cpu_count() or 1)
+
+
+def load_head(path, q6k=False):
+    """(embedding, tied head, rope (dh, rotary dim, base)) from the GGUF, as staged_qwen_runner.load_gguf_parts and its metadata reads.
+    Default: the head dequantized to float32 (2.03 GB) and an fp16 embedding table. q6k=True: the Q6_K bytes of token_embd.weight (417 MB) read by tools/q6k_head.py,
+    with an fp32 activation vector; the weight values are the same, only the float32 summation order of the logits differs."""
+    from gguf import GGMLQuantizationType, GGUFReader
     from gguf.quants import dequantize
     reader = GGUFReader(path)
     tensor = next(t for t in reader.tensors if t.name == "token_embd.weight")
+    if q6k:
+        if tensor.tensor_type != GGMLQuantizationType.Q6_K:
+            raise Refuse(f"--q6k-head: token_embd.weight is {tensor.tensor_type.name}, not Q6_K")
+        from q6k_head import Q6KHead
+        k, rows = int(tensor.shape[0]), int(tensor.shape[1])
+        head = Q6KHead(np.asarray(tensor.data).reshape(rows, -1), rows, k, threads=head_threads())
+        return Q6KEmbed(head), Q6KMatrix(head), rope_params(reader)
     head = dequantize(np.asarray(tensor.data), tensor.tensor_type).astype(np.float32, copy=False)
     return head.astype(f16), head, rope_params(reader)
 
@@ -136,12 +213,62 @@ def manifest_at(manifest, m):
     return out
 
 
+try:
+    _SCHED_GETCPU = ctypes.CDLL(None).sched_getcpu
+except (AttributeError, OSError):
+    _SCHED_GETCPU = None
+
+
+def sched_getcpu():
+    """The CPU the calling thread runs on now (glibc sched_getcpu, looked up once; os has no such call); -1 when unavailable."""
+    return _SCHED_GETCPU() if _SCHED_GETCPU is not None else -1
+
+
+def task_masks(pid):
+    """The distinct Cpus_allowed_list strings of every task of a process, from /proc (the proof of a mask; the CPU a thread last ran on is only a hint). A process that is gone has none."""
+    try:
+        tids = os.listdir(f"/proc/{pid}/task")
+    except OSError:
+        return []
+    out = set()
+    for tid in tids:
+        try:
+            for line in Path(f"/proc/{pid}/task/{tid}/status").read_text().splitlines():
+                if line.startswith("Cpus_allowed_list:"):
+                    out.add(line.split(":", 1)[1].strip())
+        except OSError:
+            continue
+    return sorted(out)
+
+
+def placement(decoder):
+    """The always-on placement record: the pin applied, the mask of every task of the decode process and of the ane-session child, and the calls so far by CPU,
+    with how many ran off the performance cores (None when the chip has no efficiency cores)."""
+    p = pcore_mask.p_core_cpus()
+    return {"pinned": PINNED, "openblas_threads_env": os.environ.get("OPENBLAS_NUM_THREADS"), "p_cores": p,
+            "decode_masks": task_masks(os.getpid()), "child_masks": task_masks(decoder.session.proc.pid) if decoder.session is not None else None,
+            "calls": sum(decoder.cpu_hist.values()), "calls_by_cpu": {str(c): n for c, n in sorted(decoder.cpu_hist.items())},
+            "calls_off_p_cores": None if p is None else sum(n for c, n in decoder.cpu_hist.items() if c not in p)}
+
+
 class Decoder:
     def __init__(self, args, manifest):
+        self.cpu_hist = {}      # CPU of the decode thread after every call -> number of calls
+        self.step_cpus = []     # the same, for the step in progress
         self.args = args
+        self.resident_states = bool(getattr(args, "resident_states", False))
+        if self.resident_states and (not getattr(args, "resident", False) or getattr(args, "dump", None)):
+            # The dump check compares every state port; the states are not on the wire here.
+            raise Refuse("--resident-states needs --resident and does not apply to --dump")
         self.manifest = manifest
         self.work = Path(args.out) / "surf"
         self.work.mkdir(parents=True, exist_ok=True)
+        self.session = ResidentSession(args.session_bin, self.work,
+                                       args.timeout,
+                                       lock_path=getattr(args, "session_lock",
+                                                         None)
+                                       or "/var/tmp/ane-run.lock") \
+            if getattr(args, "resident", False) else None
         self.configure(int(manifest["max_len"]))
 
     def configure(self, m):
@@ -172,14 +299,47 @@ class Decoder:
             if got != want:
                 raise Refuse(f"{path}: ports {sorted(got.items())} do not match the manifest {sorted(want.items())}")
             self.tables.append((anec, path, ports))
+        if self.session is not None:
+            for name in list(self.session.names):
+                self.session.free(name)
+            for i, (anec, path, ports) in enumerate(self.tables):
+                n_in = len([p for p in ports.values()
+                            if p["direction"] == "input"])
+                n_out = len([p for p in ports.values()
+                             if p["direction"] == "output"])
+                got = self.session.load(f"prog_{i:03d}", anec, path)
+                if got != (n_in, n_out):
+                    raise Refuse(f"prog_{i:03d}: session reports {got}, "
+                                 f"table holds ({n_in}, {n_out})")
+                if self.resident_states:
+                    self.session.states(f"prog_{i:03d}", ports,
+                                        [(s["in_port"], s["out_port"]) for s in self.progs[i]["states"]])
         self.reset()
 
     def reset(self):
+        if self.session is not None and self.resident_states:
+            # The state buffers live in the session, per program name; the
+            # host holds none and sends zeros nowhere.
+            self.states = [{} for _ in self.progs]
+            self.session.reset_states()
+            return
         self.states = [{s["in_port"]: np.zeros(s["in_shape"], f16) for s in pr["states"]}
                        for pr in self.progs]
 
     def call(self, i, arrays):
         anec, table_path, ports = self.tables[i]
+        if self.session is not None:
+            name = f"prog_{i:03d}"
+            if self.args.resident_lock == "call":
+                self.session.lock()
+            try:
+                return self.session.call(name, ports, arrays)
+            finally:
+                if self.args.resident_lock == "call":
+                    try:
+                        self.session.unlock()
+                    except (BrokenPipeError, OSError):
+                        pass  # the session died; the STOP carries the error
         status, log, outputs = ane_call(anec, table_path, ports, arrays, self.work,
                                         self.args.ane_run, self.args.timeout)
         stop = [s for s in STOP_LOG if s in log] + (["timeout"] if status == 124 else [])
@@ -195,24 +355,44 @@ class Decoder:
         [wall s, exec ms]). check(i, arrays, outputs) sees every execution."""
         vals = ctx_vals(pos, self.max_len, cos, sin)
         lanes, hidden, timing = {}, embed[token][None], []
+        self.step_cpus = []
+        step_lock = self.session is not None and self.args.resident_lock == "step"
+        if step_lock:
+            self.session.lock()
         for i, pr in enumerate(self.progs):
             if pr["group_start"]:
                 lanes["x"] = hidden
+            resident = self.session is not None and self.resident_states
             arrays = {s["port"]: self.states[i][s["port"]] if s["kind"] == "state_in"
                       else vals[s["lane"]] if s["kind"] == "ctx" else lanes[s["lane"]]
-                      for s in pr["srcs"]}
+                      for s in pr["srcs"] if not (resident and s["kind"] == "state_in")}
             start = time.monotonic()
             outs, exec_ms = self.call(i, arrays)
-            timing.append((time.monotonic() - start, exec_ms))
+            wall = time.monotonic() - start
+            cpu = sched_getcpu()
+            self.step_cpus.append(cpu)
+            self.cpu_hist[cpu] = self.cpu_hist.get(cpu, 0) + 1
+            timing.append((wall, exec_ms))
             if check:
                 check(i, arrays, outs)
             for d in pr["dsts"]:
                 lanes[d["lane"]] = outs[d["port"]]
-            for s in pr["states"]:
-                self.states[i][s["in_port"]] = outs[s["out_port"]].reshape(s["in_shape"])
+            if not resident:
+                for s in pr["states"]:
+                    self.states[i][s["in_port"]] = outs[s["out_port"]].reshape(s["in_shape"])
             if pr["group_end"]:
                 hidden = lanes["h"]
+        if step_lock:
+            self.session.unlock()
         return hidden.reshape(-1).astype(np.float32), timing
+
+    def close_session(self):
+        """QUIT the resident session; nonzero exit reports a failed CALL."""
+        if self.session is not None:
+            rc = self.session.close()
+            self.session = None
+            if rc:
+                print(f"ane-session exit {rc}", file=sys.stderr)
 
 
 class DumpCheck:
@@ -263,14 +443,31 @@ class DumpCheck:
         return check if prompt == self.prompt and step in self.steps else None
 
 
+def finish_placement(decoder, record):
+    """Record and print where the calls ran; a call off the performance cores is flagged on stderr so it is never missed."""
+    rec = placement(decoder)
+    record({"type": "placement", **rec})
+    off = rec["calls_off_p_cores"]
+    print(f"placement: {rec['calls']} calls, {'unknown' if off is None else off} off the performance cores, pinned {rec['pinned']}, decode masks {rec['decode_masks']}, "
+          f"child masks {rec['child_masks']}", flush=True)
+    if off:
+        print(f"WARNING: {off} of {rec['calls']} calls ran on an efficiency core (about +0.7 ms per call); see tools/pcore_mask.py", file=sys.stderr)
+
+
 def run(args):
+    if reference_blas():
+        print(REFERENCE_BLAS_WARNING, file=sys.stderr)
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     results = out / "results.jsonl"
     done = set()
+    head_name = "q6k" if getattr(args, "q6k_head", False) else "fp32"
     if results.exists():
-        done = {r["prompt"] for r in map(json.loads, results.read_text().splitlines())
-                if r["type"] == "prompt"}
+        earlier = [json.loads(line) for line in results.read_text().splitlines()]
+        other = {r.get("head", "fp32") for r in earlier if r["type"] == "start"} - {head_name}
+        if other:
+            raise SystemExit(f"REFUSE: {results} already holds a run with the {sorted(other)[0]} head; the resume would mix heads, use a new --out")
+        done = {r["prompt"] for r in earlier if r["type"] == "prompt"}
 
     def record(rec):
         with results.open("a") as f:
@@ -284,16 +481,20 @@ def run(args):
     ref_logits = np.load(args.ref_logits) if args.ref_logits else None
     decoder = Decoder(args, manifest)
     start = time.monotonic()
-    embed, head, (dh, rotary, base) = load_head(args.gguf)
+    q6k = bool(getattr(args, "q6k_head", False))
+    embed, head, (dh, rotary, base) = load_head(args.gguf, q6k=q6k)
     max_len = (lambda p: len(p["prompt_token_ids"]) + args.new_tokens) if args.m_per_prompt \
         else (lambda p: decoder.max_len)
     cos, sin = rope_tables(max([decoder.max_len] + [max_len(p) for _, p in prompts]), dh, rotary, base)
     sha = lambda path: hashlib.sha256(Path(path).read_bytes()).hexdigest()
     record({"type": "start", "utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "argv": " ".join(sys.argv[1:]), "ane_run_sha256": sha(args.ane_run),
+            "ane_session_sha256": sha(args.session_bin) if args.resident else None,
+            "resident": bool(args.resident), "resident_lock": args.resident_lock
+            if args.resident else None,
             "ref_sha256": sha(args.ref), "manifest_sha256": sha(args.manifest),
             "boot_id": Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
-            "head_load_s": round(time.monotonic() - start, 2), "rope": f"dh={dh} rotary={rotary} base={base}"})
+            "head_load_s": round(time.monotonic() - start, 2), "head": "q6k" if q6k else "fp32", "rope": f"dh={dh} rotary={rotary} base={base}", "placement": placement(decoder)})
     dump = DumpCheck(args.dump, args.band, record, out / "m2-dump") if args.dump else None
     for n, prompt in prompts:
         pid = prompt["id"]
@@ -310,18 +511,25 @@ def run(args):
             mark = max((t for t, _ in kernel_marks()), default=0.0)
             check = dump(pid, pos) if dump else None
             step_start = time.monotonic()
-            hidden, timing = decoder.step(token, pos, cos, sin, embed, check)
+            try:
+                hidden, timing = decoder.step(token, pos, cos, sin, embed, check)
+            except SystemExit:
+                finish_placement(decoder, record)   # a failed CALL: the session is dead or dying, the masks and the calls so far are still the record that matters
+                raise
             ane_s = time.monotonic() - step_start
             new = [line for t, line in kernel_marks() if t > mark]
             stop = [line for line in new if STOP_KERNEL.search(line)]
             for i, (wall, exec_ms) in enumerate(timing):
-                timings.write(f"{pid}\t{pos}\t{i}\t{wall * 1e3:.2f}\t{exec_ms}\n")
+                timings.write(f"{pid}\t{pos}\t{i}\t{wall * 1e3:.2f}\t{exec_ms}\t{decoder.step_cpus[i]}\n")
             timings.flush()
             rec = {"type": "step", "prompt": pid, "step": pos, "token_in": token,
-                   "ane_wall_s": round(ane_s, 3), "kernel_lines": len(new)}
+                   "ane_wall_s": round(ane_s, 3), "kernel_lines": len(new), "calls_cpu": ",".join(map(str, decoder.step_cpus))}
             if pos >= len(ids) - 1:
                 host_start = time.monotonic()
                 logits = head @ hidden
+                if args.logits_file:
+                    with open(args.logits_file, "ab") as f:
+                        logits.astype(np.float32).tofile(f)
                 top1, v1, top2_id, v2 = top2(logits)
                 k = len(gen)
                 rec.update({"gen_index": k, "token_out": top1, "top1": v1, "top2_id": top2_id,
@@ -344,9 +552,12 @@ def run(args):
             print(" ".join(f"{k}={v}" for k, v in rec.items() if k != "type"), flush=True)
             if stop:
                 record({"type": "stop", "prompt": pid, "step": pos, "reason": " | ".join(stop)})
+                finish_placement(decoder, record)
                 raise SystemExit(f"STOP kernel: {stop[0]}")
             pos += 1
         if args.max_steps is not None:
+            finish_placement(decoder, record)
+            decoder.close_session()
             return 1 if dump and dump.failed else 0
         div = first_divergence(gen, want)
         rec = {"type": "prompt", "prompt": pid, "max_len": decoder.max_len, "match": div is None,
@@ -364,6 +575,8 @@ def run(args):
               f"wall={rec['wall_s']}s min_margin={rec['min_margin']:.4f}", flush=True)
     if dump:
         print(f"dump ports failing: {dump.failed}")
+    finish_placement(decoder, record)
+    decoder.close_session()
     return 0
 
 
@@ -388,9 +601,27 @@ def main(argv=None):
     ap.add_argument("--dump", help="M1 per-step dump (index.json) to compare every port against")
     ap.add_argument("--band", default="/var/tmp/qwen-conform-band.jsonl")
     ap.add_argument("--ref-logits", help="reference logits .npz (prompt_NNN arrays)")
+    ap.add_argument("--logits-file", help="append the raw fp32 logits of every "
+                    "generated step here (for bit-identical A/B comparisons)")
     ap.add_argument("--out", default="/var/tmp/qwen-decode/run")
     ap.add_argument("--ane-run", default="/var/tmp/inst/tools/ane-run")
     ap.add_argument("--timeout", type=int, default=120)
+    ap.add_argument("--resident", action="store_true",
+                    help="decode through one ane-session process (programs "
+                         "loaded once, 38 CALLs in-process per step) instead "
+                         "of one ane-run per call")
+    ap.add_argument("--session-bin", default="/var/tmp/inst/tools/ane-session",
+                    help="ane-session binary for --resident")
+    ap.add_argument("--resident-lock", choices=("call", "step"), default="call",
+                    help="hold /var/tmp/ane-run.lock per CALL or per step; "
+                         "always released between steps")
+    ap.add_argument("--q6k-head", action="store_true",
+                    help="read the tied head as Q6_K (417 MB, tools/q6k_head.py) instead of the dequantized float32 head (2.03 GB): same weights, fp32 activation, "
+                         "float32 summation order differs (default off until the decode gate has passed)")
+    ap.add_argument("--resident-states", action="store_true",
+                    help="with --resident: keep every state (DeltaNet, conv, KV) inside the "
+                         "session instead of sending it out and back on every CALL; the "
+                         "logits and tokens must stay bit-identical (default off)")
     ap.add_argument("--summary", action="store_true")
     ap.add_argument("--m-per-prompt", action="store_true",
                     help="max_len = len(prompt) + new tokens per prompt (ANEForge generate without max_len)")
@@ -399,6 +630,10 @@ def main(argv=None):
     args = ap.parse_args(argv)
     if args.m_per_prompt and args.dump:
         ap.error("--dump holds max_len 50 executions; it does not apply to --m-per-prompt")
+    if args.resident_states and not args.resident:
+        ap.error("--resident-states needs --resident")
+    if args.resident_states and args.dump:
+        ap.error("--dump compares every state port; it does not apply to --resident-states")
     if args.summary:
         summary(args.out)
         return 0

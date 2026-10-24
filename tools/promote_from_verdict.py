@@ -300,9 +300,10 @@ def gate(verdict, pr):
     body = gh(f"repos/{slug}/pulls/{pr}")["body"]
     recorded = read_block(body)
     chip = recorded["chip"]
-    if (recorded["verdict"] == "PROMOTE") == (chip in ON):
+    # ON keys (soc, die): a chip is "enabled" through its die-0 row.
+    if (recorded["verdict"] == "PROMOTE") == ((chip, 0) in ON):
         raise Fail(f"PR #{pr}: packaging/dt/overlays in this checkout already has {chip} "
-                   f"{'enabled' if chip in ON else 'opt-in'}, the PR's flip, so a fresh verdict here judges the "
+                   f"{'enabled' if (chip, 0) in ON else 'opt-in'}, the PR's flip, so a fresh verdict here judges the "
                    "flipped tree; run the gate from the base branch, where the flip is not merged")
     fresh = chip_verdict(verdict, chip)
     print(f"gate: PR #{pr} chip {chip}: recorded={recorded['verdict']} fresh={fresh['verdict']}")
@@ -356,14 +357,15 @@ def release(verdict):
     date = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
     heading = f"## {version[1:]} ({date})"
     changelog = (REPO / "CHANGELOG.md").read_text()
-    mark = re.search(r"(?m)^## Unreleased\s*$", changelog)
+    mark = re.search(r"(?m)^## Unreleased[ \t]*\n", changelog)
     if not mark:
         raise Fail("CHANGELOG.md has no Unreleased section")
     head, rest = changelog[:mark.start()], changelog[mark.end():]
     if re.search(r"(?m)^## ", head):
         raise Fail("CHANGELOG.md: Unreleased must be the first section")
-    section, sep, tail = rest.partition("\n## ")
-    moved = f"{head}## Unreleased{section}" + (f"\n## {tail}" if sep else "")
+    # The Unreleased entries become the version section; an empty Unreleased
+    # stays on top.
+    moved = f"{head}## Unreleased\n\n{heading}\n{rest}"
     print(f"release: CHANGELOG Unreleased moves under {heading}")
     lines = [f"- {p['verdict']}: {p['chip']} ({MARKETING.get(p['chip'], p['chip'])}) ANE -> {p['to']}, "
              f"rows {p['rows']}" + (f", driver_source {p['sources']}" if p["sources"] else "")

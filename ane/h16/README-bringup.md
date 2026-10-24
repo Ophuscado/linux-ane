@@ -8,6 +8,24 @@ module from `ane/h17/` (AneH17Driver). Facts and receipts:
 
 ## What it does
 
+Every stage ends with one machine-readable record on the console:
+
+    ane_h16 RESULT stage=<0|1|3> soc=<soc> verdict=<PASS|FAIL|REFUSED> reason=<reason>
+
+(the same grammar as `ane_h15`), and every stage-level refusal carries
+one too, so a volunteer log can be judged line-by-line. A refused probe
+(wrong opt-in key, ane-type mismatch, unknown stage) runs no stage and
+prints no RESULT. Stage numbers: 0=dt, 1=status,
+3=boot; 2 is the firmware-pin ladder step, which runs in userspace
+(`omarchy-ane-firmware-fetch`), not in this module.
+
+- `stage=dt` (or `stage=0`, safe): parses the running DT (reg windows,
+  IRQ and iommu cell counts) and prints every word group with its
+  evidence tier, plus the boot-ADT segment-ranges when the reserved-
+  memory `adt` region exists on this boot. NO MMIO access of any kind:
+  the first run on a volunteer machine is hardware-silent. The absence
+  of segment-ranges is a finding (iBoot preload presence unknown), not
+  a failure: the stage still ends `verdict=PASS reason=dt-parse-only`.
 - `stage=status` (default, safe): powers the ANE domains listed in the
   device node, waits for every pmgr ANE word to read ACTUAL=0xf, then
   logs RVBAR, CPU_STATUS, SCRATCH0..7 and the mailbox control words.
@@ -29,6 +47,36 @@ Verified W=1-clean against the `josh/ane-driver-aurora` tree
 chroot. The module is not part of `make all`, `dkms.conf` or the
 package.
 
+## Simulation (host, userspace)
+
+`make -C ane/h16 sim` builds the REAL module source against a userspace
+shim (`sim/shim.h`: fake MMIO bus, fake boot ADT, fake DART, firmware
+model that raises SCRATCH7 0x08042006 after N polls, optional RTKit
+HELLO) and runs:
+
+- positives: `pos-dt` (stage=dt with ZERO bus accesses, asserted),
+  `pos-dt-noadt` (missing ADT is a finding), `pos-status` (five ps
+  words ACTUAL=0xf, zero engine writes), `pos-boot` (boot reaches the
+  wake word; RVBAR compose, SCRATCH7=0, CPU_CONTROL 0->0x10, 219-page
+  DART map at the ADT IOVAs), `pos-boot-hello` (HELLO answered with
+  version 2);
+- negatives that MUST refuse: `neg-ps-stuck` (word stuck 0x30 ->
+  FAIL pmgr-actual-stuck, zero engine accesses), `neg-mbox-silent`
+  (no wake word -> FAIL boot-timeout, mapping left, reboot required),
+  `neg-bad-pin` (sha mismatch refused before any write),
+  `neg-foreign-preload` (diff outside patchbay/tunables refused),
+  `neg-dart-map` (DART map fails midway; the partial map must unwind),
+  `neg-unknown-stage` (-EINVAL, no RESULT line);
+- `sim-discriminate`: mutates a copy of the module (pin check neutered,
+  ps gate skipped, one of the two refusal leaks reintroduced) and
+  requires the matching negative to FAIL the harness, proving the
+  harness discriminates.
+
+A green sim proves the harness logic only - stage dispatch, the ps
+guard, the pin/diff gates, the boot state machine and the RESULT
+grammar. It is NOT silicon: no claim about a real M4 comes out of this
+directory.
+
 ## Device tree (T8132 only for now)
 
 `t8132-ane-experimental.dts` builds `t8132-ane-experimental.dtbo`
@@ -39,7 +87,7 @@ The first M4 owner:
    (or take the compiled dtbo from the receipt),
 2. copy it into the overlay directory with owner-only permissions,
 3. add the line `ane-h16-experimental` to
-   `/etc/omarchy-platform/dtb-overlays.opt-in`,
+   `/etc/omarchy-mac-boot/dtb-overlays.opt-in`,
 4. reboot.
 
 T6040/T6041 have no board device tree in aurora yet; this overlay is

@@ -144,7 +144,7 @@ def edit_overlays(text, chip, promote):
 
 MARKER = ("\t/* dtb-overlays.sh: applies only when opted in. */\n"
           '\tomarchy,opt-in = "ane-{chip}";\n')
-STATE_OPTIN = ' * Overlay state: opt-in ("ane-{chip}" in /etc/omarchy-platform/dtb-overlays.opt-in).\n'
+STATE_OPTIN = ' * Overlay state: opt-in ("ane-{chip}" in /etc/omarchy-mac-boot/dtb-overlays.opt-in).\n'
 
 
 def state_line(text, chip):
@@ -261,7 +261,10 @@ def edit_changelog(text, chip, promote, note):
     if h is None:
         raise Refuse("CHANGELOG.md: no Unreleased section")
     at = h + 2 if h + 1 < len(kept) and kept[h + 1].strip() == "" else h + 1
-    kept.insert(at, keep + "\n")
+    # after a release, Unreleased is empty right above the released heading:
+    # keep the blank line between the entry and that heading
+    gap = "\n" if at < len(kept) and kept[at].startswith("## ") else ""
+    kept.insert(at, keep + "\n" + gap)
     return "".join(kept)
 
 

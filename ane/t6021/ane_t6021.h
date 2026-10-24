@@ -322,7 +322,9 @@ enum ane_t6021_csne_cmd {
 	CSNE_CMD_IPC_ENDPOINT_UNSET	= 0x0016,
 	CSNE_CMD_SET_DYNAMIC_POWERGATE	= 0x002d,	/* selene 0x28178; 8cae3ad */
 	CSNE_CMD_LOAD_PROGRAM		= 0x0200,
+	CSNE_CMD_DESTROY_PROGRAM	= 0x0201,	/* programId at +8; selene 13.5 0x28eb8 -> 0x36adc; needs zero processes */
 	CSNE_CMD_CREATE_PROCESS		= 0x0202,
+	CSNE_CMD_TERMINATE_PROCESS	= 0x0203,	/* programId at +8, processId at +0xc; selene 13.5 0x29090 -> 0x41a24 */
 	CSNE_CMD_PROCEDURE_CALL	= 0x0204,
 	CSNE_CMD_INFERENCE_CALL	= 0x0404,
 	CSNE_CMD_BACK_CHANNEL_RPC	= 0x7000,
@@ -725,6 +727,7 @@ void ane_t6021_csne_ping_attempt(struct ane_t6021 *ane);
  * the staging half of the boot contract: the Params+0x18 producer
  * chain and the RVBAR fold are closed (mapper-callchain audit, commits
  * 3762aee/12be074); ane_t6021_boot.c consumes the staged surface. */
+int ane_t6021_fwload_check(struct device *dev);
 int ane_t6021_fwload_probe(struct ane_t6021 *ane);
 void ane_t6021_fwload_remove(struct ane_t6021 *ane);
 bool ane_t6021_fwload_options_ok(void);
@@ -747,6 +750,10 @@ struct ane_asc_tunables;
  *  pmu_pa: the page of the seven ANE ps words; the firmware's power
  *    service writes them through its DART at IOVA == PA. ps_off: the
  *    first of the seven in that page.
+ *  fw_pin: the die's firmware image name in the 13.5 BuildManifest
+ *    (Ap,ANE1 for T6022 die 1), data only until a die-1 run: the loader
+ *    still stages soc->fw->name (docs/ultra-die1.md §2). NULL = no
+ *    per-die pin recorded.
  *  trace_td_off: engine offset of the TM last-committed-TD word read by
  *    trace_td; 0 = trace_td unsupported. */
 struct ane_t602x_soc {
@@ -761,9 +768,14 @@ struct ane_t602x_soc {
 	u64 pmu_pa;
 	u32 ps_off;
 	u32 trace_td_off;
+	const char *fw_pin;
 };
 
 extern const struct ane_t602x_soc ane_t6020_soc, ane_t6021_soc,
-	ane_t6022_soc, ane_t8112_soc;
+	ane_t6022_soc, ane_t6022_soc_die1, ane_t8112_soc;
+
+/* The per-die T6022 data (ane_t6022_dies in ane_t6021_fwload.c): the
+ * node's SET reg keys the die, like ane.ko's qualification table. */
+const struct ane_t602x_soc *ane_t6021_soc_for(struct device *dev);
 
 #endif /* __ANE_T6021_H__ */

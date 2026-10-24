@@ -63,7 +63,15 @@ assert {p for p, c in default.items() if c & aliases} == TESTED, \
     f'only tested SoCs get a driver-matching node without a key: {default}'
 for dtbo in installed:
     if dtbo.parent.name not in TESTED and ane_compatibles(dtbo):
-        assert oadt.fdt_string(dtbo, 'omarchy,opt-in') == [f'ane-{dtbo.parent.name}'], dtbo
+        # The per-SoC overlay (t6002-ane.dts) carries the key ane-PREFIX; an
+        # auxiliary ANE overlay (t6002-ane-die1.dts -> ane-t6002-die1) must
+        # still be namespaced under its prefix.
+        name = dtbo.stem.removeprefix('omarchy-')
+        key = oadt.fdt_string(dtbo, 'omarchy,opt-in')
+        if name == 'ane':
+            assert key == [f'ane-{dtbo.parent.name}'], dtbo
+        else:
+            assert len(key) == 1 and key[0].startswith(f'ane-{dtbo.parent.name}'), (dtbo, key)
 # The firmware hook fetches where the ANE is on by default and needs the file.
 assert set(fetch.DEFAULT_ON) == {f'apple,{p}' for p in default} & set(fetch.FETCH), fetch.DEFAULT_ON
 # The stock linux-asahi board trees (tools/asahi-dtbs; CI sets ANE_DTBS) have
@@ -182,7 +190,7 @@ for soc, board, compat, mod in (('t8103', 'j293', 'apple,t8103-ane', 'ane'),
         continue
     assert rc == 0 and f'UNTESTED SoC: {soc}. {mod} has not run on it.' in out, out
     assert f'  To bring the chip up:' in out, out
-    assert f'    1. echo ane-{soc} | sudo tee -a /etc/omarchy-platform/dtb-overlays.opt-in' in out, out
+    assert f'    1. echo ane-{soc} | sudo tee -a /etc/omarchy-mac-boot/dtb-overlays.opt-in' in out, out
     n = 2
     if f'apple,{soc}' in fetch.FETCH:  # the M2 family fetches its firmware before apply
         assert f'    {n}. sudo omarchy-ane-firmware-fetch' in out, out

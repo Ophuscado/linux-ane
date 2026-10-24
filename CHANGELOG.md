@@ -9,7 +9,7 @@
   to 8.64 tokens per second) with bit-identical logits; level 2 adds under 3
   percent and higher levels were not written. The driver needs two more `reg`
   entries and the PMS SRAM power domain on the ANE node (only the T6001 overlay
-  carries them; without them nothing changes) and the PMP firmware running;
+  carries them; without them nothing changes) and the PMP firmware running (nothing in the repository starts it);
   `perf_state` in the device's sysfs directory says what happened. See
   `receipts/2026-10-24-ane-level-driver/README.md`.
 - The release step cuts the release it should: one release per run covering
@@ -31,6 +31,407 @@
   overlay dts headers and the libane receipt stop claiming untested/opt-in,
   and the libane entry and receipt carry the hardware numbers (#111) instead
   of "not merged before hardware" and lab aliases.
+
+- `ane/h18` gains `hs_props=1` (stage script argument 14, with chan 3 or 4). After CONFIG_GET it sends the five CH_PROPERTY_WRITE commands the macOS kext sends, in the kext's order: property 0x10a4 = 1, then RESOURCE_INFO_GET, then 0x10a6 = 1, 0xa1 = 0, 0x10aa = 1 and 0x1209 = 1. The block is 0x14 bytes with the property id at +0xc and the value at +0x10, read from the kernelcache of build 26A434 (builder at 0xfffffe0009363890). The last runs sent none of them and the first program stayed started and never finished. The values of 0x10a6 and 0x1209 depend on kext config bytes that are not known for the T8152, so both are sent as 1. A write the firmware refuses is logged and the sequence goes on. The default setting command (0x2e) is not sent, because its value comes from the same unknown config. The simulation checks the order, the ids and the values, a refused write and the refusal without `hs_start=1`.
+
+- `ane/h18` logs the firmware console as text after a failed handshake command or a failed program. A record of the terminal ring holds the address of the text, its length and a timestamp (seen on a board in October 2026, not documented anywhere); the text lies in a buffer the host gave the firmware, so the module reads it and prints one line per record with the slot number and the timestamp. Records that point outside the module's buffers, or whose length is 0 or over 256 bytes, are counted and not printed. The first four printed records also appear as raw bytes (at most 32 each), to tell text from a format reference. Nothing is written. The simulation plants such records and checks the line. Not verified on a board yet: that every record on a real run has this layout.
+
+- `ane/h18` device tree: the DART nodes of instances 1 to 3 now carry their ADT tunables. The kernel's `apple-dart` fails the probe of a Gen3 node without `apple,tunable` (`failed to parse DART tunables`, -ENOENT, seen on a board boot), so the default `t8152-j873-ane-dart.dts` of the previous change did not bring the ANE an iommu group. `t8152-j873-ane-dart-tunables.dtsi` is gone; the records are in `t8152-j873-ane-dart.dtsi`, and `t8152-j873-ane-dart-full.dts` only adds stream 11. `h18-dart-check.py` now fails a node without tunables. The earlier reasoning that the M2 reset values work without them did not apply: the driver requires the property. Not known: whether the 0x20c record on instances 1 to 3 changes translation on the Gen3 DART (instance 0 already carries it).
+
+- `ane_h15` stage 5 gains `run_scratch=1` (off by default): a read-only dump of the eight SCRATCH words before RUN and after the wait, one log line each. It writes nothing. Why: the first T6030 stage 5 runs ended with CPU_STATUS `0x300028` (STOPPED clear, IDLE set, the status a started M2 core reads), no mailbox message and `core-not-stopped`, and the firmware in memory is the 14.x generation, not the 27.0 one stages 6 and 7 were built from. On the M2 the macOS kext waits for `0x08042006` in SCRATCH7 after the start; the dump shows whether this firmware writes it. The SCRATCH offsets come from the macOS kext's T6030 case and have not been read on an M3. `sim-test` checks that the dump reads each word twice, never writes, and that without the parameter the window is not touched.
+
+- `ane/h15/t6030-ane-dart-experimental.dts` now enables the three ANE DART translation instances of the T6030 (0x309800000, 0x309810000, 0x309820000: DARTLLT, DARTBRD, DARTBWR in a J516S's same-boot ADT) and lists all three in the ANE node's `iommus` (stream 0); the aperture window at 0x309804000 stays disabled. Before, only instance 0 was bound, and the first T6030 stage 5 ended with the core leaving STOPPED, no mailbox message and `core-not-stopped`. Whether the other instances matter for that is not known: on the M6 the first message and the whole handshake worked with instance 0 alone, and the instances mattered when the engine ran a program. `tools/test_t6030_dart_overlay.py` (dt-overlays workflow) checks the overlay against the ADT facts and fails on four mutations. The README now says that clearing RUN does not stop a core whose firmware runs (M6 logs), so `core-not-stopped` alone does not say whether the core ran.
+
+- `ane/h15/README-bringup.md` explains how to read the stage 4 DART output: `locked_windows` is bit 0 of PROTECT_LOCK (0x208), not of PROTECT (0x200); a T6030 tester's bank 0 PROTECT and PROTECT_LOCK `0x2` is bit 1, which on the M2 Max protects the aperture at bank base + 0x4000, the window the module skips as a different version. Carried over from the M2, not measured on an M3.
+
+- `ane/h18` names the source of the PREMAP_BUFFER layout (the kernelcache of build 26A434). A malformed answer to PREMAP_BUFFER is a protocol failure now, and only a well formed refusal lets the program stage go on. The stage script asks for `dart=1` only when a DART instance mask is given.
+
+- `ane/h18` gains `dart_inst` and `hs_premap` for the program stage. `dart_inst=<mask>` reads the ANE DART instances 0 to 3 read only before LOAD_PROGRAM and after the call. `hs_premap=1` sends PREMAP_BUFFER (0x20d, type 2) for one request pool before LOAD_PROGRAM, as the macOS kext does at init. The stage script takes both as arguments 12 and 13. The sim has five new cases and five mutants. Neither has run on the board yet.
+
+- `ane/h18` device tree: `t8152-j873-ane-dart.dtsi` now has one DART node for each of the four ADT instances of `dart-ane` (0x419800000, 0x419820000, 0x419840000, 0x419860000) on the ADT interrupt 789, and the `ane0` node lists all four in `iommus` (stream 0). Before, only instance 0 was described, and the first M6 program ended with the engine not finishing and interrupt 789 stormed. `t8152-j873-ane-dart-sid11.dtsi` (stream 11 on every instance) is a separate file, joined in `t8152-j873-ane-dart-full.dts`, so a run changes one thing; the ADT records of instances 1 to 3 are in `t8152-j873-ane-dart.dtsi`. `ane/h18/h18-dart-check.py ADT.bin DTB` compares a built DTB with the ADT: the builds of `t8152-j873-ane-dart.dts` and `t8152-j873-ane-dart-full.dts` pass, and the previous overlay and a one-word tunable change fail. That the engine's DMA uses instances 1 to 3 is inferred from the M1 and M2 overlays and the M2 faults, not read from the M6 kernel extension; nothing has run on the board.
+
+- `ane/h18` with `hs_prog=1` and `read_dart=1` reads the exception state of the ANE DART before LOAD_PROGRAM and after the call. It only reads. It logs the error word and its address, the eight words of the bitmap of streams with a pending exception, and the record of the first eight streams with a bit set. The first program run on the Mac mini M6 needed this. The firmware answered LOAD_PROGRAM, CREATE_PROCESS and PROCEDURE_CALL for the H14 add program and posted one IO_T2H event with state 0. No finish event came within a second and the output buffer stayed zero. About 190 ms after the call the kernel logged an unhandled interrupt of the ANE DART. The kernel handler skips streams it does not own, so it printed nothing. Which stream faulted is not known yet.
+
+- `ane/h18` gains `hs_prog=1` (needs `hs_start=1`): it loads a program file made by the new `tools/ane-prog-pack` from an ANEC, allocates a surface per section and buffer, sends LOAD_PROGRAM, CREATE_PROCESS and PROCEDURE_CALL on the IO ring in the T6021 wire format, reads the IO_T2H events, and unloads with TERMINATE_PROCESS and DESTROY_PROGRAM. The stage script takes `chan=4` and pins the program file. The sim has twelve new cases, eighteen parser cases and fourteen mutants. Whether the M6 firmware accepts the M2's program format has not been tried on the board.
+
+- `docs/ane-constants-t6021-t8152.md` lists every numeric constant of `ane/t6021` with its T8152 (M6) value and, where known, its H15 value, each marked kext, ADT, board, inferred or not decoded, and `tools/test_ane_constants_table.py` (run in the dt-overlays workflow) re-reads the T6021 values and the `ane/h18` and `ane/h15` references from the source. It records the places where the T6021 values cannot be reused on T8152: the wrapper, SCRATCH and doorbell offsets, the Postoffice mailbox, the firmware's channel table (TERMINAL has 0x200 slots, not 0x300) and the CPU_STATUS value after RUN.
+
+## 0.5.1 (2026-10-24)
+
+This release turns the T6021 program unload on by default again. It adds START and RESOURCE_INFO_GET to the M6 module, answered on the board, and a shorter kernel log for its channel snapshots. It also adds the H15 channel stage and a C surface pack that `qwen_prog_run.py` uses by default. The lab decoders reach the pack only through a shim, so its measured gains are shim runs. The unload proof is one M2 and one workload. The H18 results are board measurements on one Mac mini M6, and the H15 stage has not run on an H15 part.
+
+### T6021 (M2): program unload
+
+- `ane_t6021` unloads a firmware program when its last user closes by default (`unload_on_close` is 1 again). On an M2, six decode sessions in a row passed: the logits were byte identical, the step time stayed within 0.1 percent, and `bo_total_bytes` after a pool drain stayed at about 54 MB. The table of firmware buffers stayed flat at 17 slots and 475,136 bytes. The two earlier runs that failed (the firmware's free request, the table of firmware buffers) are fixed in 0.5.0. The proof is one M2 and one workload with a pool drain between sessions. Killed sessions and other chips are untested, and `unload_on_close=0` restores the old behavior.
+
+### M6 and H15 modules
+
+- `ane/h18` gains `hs_start=1`, the kext's command order after the first two commands: PRINT_ENABLE, START, CONFIG_GET and RESOURCE_INFO_GET, with the 100 byte RESOURCE_INFO_GET reply logged. On the board all four were answered in one run with the command block inside the pool, and the core stopped cleanly afterwards. CONFIG_GET returned 0x16e3600, a 24 MHz tick rate. The board returned 0x80 at +0x18, 0x10 at +0x1c and 0x00200008 at +0x24. The names come from a decode of the macOS kext, not from the board: 0x80 procedures, 0x10 total cache request slots, and the two halves of +0x24 as 8 shared events (low) and 0x20 global wait events (high). The module does not use them yet. The stage script takes `chan=3` for it. The sim has two new cases and one mutant.
+
+- `ane/h18` ring change snapshots are shorter. They print at most 4 nonzero lines per ring and leave out the terminal ring text. The explicit snapshots, after the channel step and after a failed command, still print everything. On the first board run with `hs_start=1` the six change snapshots overflowed the kernel log ring. The stage script then counted no new RESULT line and reported a failed step, although the module's own line said PASS. The log volume is lower now. Whether it is low enough on the board is unverified until the next run.
+
+- `ane_h15` gains `stage=7` (`stage=chan`), behind `confirm_run=1`, `confirm_rtkit=1` and `confirm_chan=1` (and `map_fw=1`): stage 6 plus the macOS SCRATCH handshake and channel step the M6 module needed to get past its stop wall (PRs 195, 196, 205). After AP power ON it reads SCRATCH0..7 (engine + 0x1840050, the offsets the macOS kext stores for the T6030, decoded and never read on an H15 part), refuses unless SCRATCH7 reads READY, SCRATCH0 is below 0x21 and the firmware's IPC and HEAP requests are within limits, allocates POOL, IPC and HEAP surfaces in the ANE's default DMA domain (the firmware segments are mapped there, nothing is attached), fills the 0x174 byte init block, writes SCRATCH0, SCRATCH1 and the wake word, waits for the table address, checks all eight channel entries and that no ring overlaps the table or another ring before it writes anything into them, makes every host-to-firmware slot host owned, writes READY to SCRATCH3 and waits for the firmware to clear it. `chan_cmds=1` then sends PRINT_ENABLE and CONFIG_GET on the IO ring (the doorbell at engine + 0x1844000 is the only doorbell write). It writes SCRATCH0, 1, 7 and 3 only, never zeroes the SCRATCH words, frees its surfaces only after the core stopped, and the shutdown of stage 6 still follows. The sim has a firmware model (the SCRATCH words, a channel table, rings, the doorbell) and covers the exact SCRATCH write order, the block contents, ownership before READY, both command cases, and refusals: no confirm, no `map_fw`, SCRATCH7 not READY, SCRATCH0 too big, an oversized heap request, no table, a ring outside the surface, overlapping rings, SCRATCH3 never cleared, no or failing command answer, a failed allocation, no default domain, a stuck core; six mutants fail the harness. It has not run on hardware; run it only after stage 6 reached AP power ON on the same machine.
+
+### Host tools
+
+- `tools/surface_pack.c` and `tools/surface_pack.py` write a dense array straight into a prepared ANE input surface and read an output surface straight into a dense fp16 array. The numpy version zeroed a buffer, converted, assigned through a strided view, copied to bytes and copied again into the input buffer, and copied the output twice. The C version touches only the port's strided rows, because the padding of a prepared buffer is zero from creation. The bytes and arrays are identical to the numpy version, including fp32 overflow, subnormals, infinities and NaN, and `tests/test_surface_pack.py` checks that on seven shapes. On a 13-inch M1, in the S1 int8 decode (5 held-out prompts x 64 positions, each arm twice), the step p50 fell from 0.0650 to 0.0622 s (4.2 percent). The logits hashes of all five prompts were identical in every arm.
+
+- `tools/qwen_prog_run.py` now packs and unpacks surfaces with `tools/surface_pack` by default. The bytes are identical to the numpy path, so the decode gives the same logits. It falls back to numpy when no C compiler is available, for a batch stride that is not the plane count times the plane stride, and when `SURFACE_PACK=0` is set. Bad strides still raise `Refuse`. The default reaches the code paths of this repository: `ane_call` and the resident session. The lab decoders (the 13-inch research decoder and the M2 int8 session) have their own numpy pack and use the C code only through a shim, so this default does not change them. With the shim on, the staged decode on a 13-inch M1 had a step p50 4.2 percent lower on the S1 int8 package and 2.5 percent lower on the shipped package, and on a 16-inch M1 Max 1.0 to 1.3 percent lower. Two tests of `tests/test_qwen_m2_decode.py` that failed on main because the stub decoder lacked `resident`, `session`, `resident_states` and `cpu_hist` now pass.
+
+- The S1 int8 package with plain rounding stays an opt-in tier on both chips. On a 13-inch M1 it takes the step p50 from 0.0892 to 0.0649 s with KL 0.000540 and top-1 0.9944. On a 14-inch M2 Max it takes it from 0.1616 s (an older boot with the stock module) to 0.1233 s (a newer boot with the current module) with KL 0.000547 and top-1 0.9945. That is about 23 percent, but not a like-for-like pair: six sets of the shipped package on the newer boot read 0.1592 s without P-core pinning. The shipped package has KL 0.000267 to 0.000269 and top-1 0.9955. The quality gate is KL at most 0.000534 and top-1 at least 0.9945, so S1 misses it by 1.1 percent (13-inch) and 2.4 percent (M2 Max) in KL, and on the 13-inch also in top-1 (0.9944 against 0.9945). It is a speed tier for users who accept that cost.
+
+- The S1 int8 package with GPTQ weights passes the quality gate and replaces plain rounding as the int8 package. On a 13-inch M1 the step p50 goes from 0.0863 s (fp16 package) to 0.0610 s, which is 16.4 tokens per second against 11.6, with KL 0.000397 and top-1 0.9958. Two decode streams give 18.05 scored steps per second against 12.12. On a 14-inch M2 Max the step goes from 0.1579 s to 0.1243 s with KL 0.000400 and top-1 0.9958. On the M2 Max GPTQ lowers the KL of plain int8 by 27 percent at the same step time. The package seals and the full table are in `docs/qwen-decode-packages.md`. The 16-inch M1 Max has not run this package.
+
+## 0.5.0 (2026-10-24)
+
+This release adds the bring-up of the M6 ANE (T8152) through the firmware handshake and the channel table, the T6021 program unload with the firmware's free request answered, the H15 stages up to the RTKit session, and an fp16 Q6_K head kernel. The unload and every H18 and H15 step are opt-in, and `unload_on_close` is off by default. One default changes in `ane_t6021`: EXEC and PROC_CREATE refuse a program id that the file did not load or look up. The H18 results are board measurements on one Mac mini M6. The H15 stages have not run on an H15 part.
+
+### T6021 (M2): program unload
+
+- `ane_t6021` has an opt-in `unload_on_close=1` that unloads a firmware program when the last file that loaded or looked it up closes. It terminates the program's process (command 0x203, programId at +8 and processId at +0xc) and destroys the program (0x201, programId at +8). It frees the section buffers only after both were acknowledged. The commands come from a decode of the selene 13.5 firmware. Command 0x201 halts the firmware if a process is still attached, so the process always goes first. Each file now holds a reference on the programs it loaded or looked up. `PROG_LOOKUP` takes that reference, and `EXEC` and `PROC_CREATE` refuse a program the file holds no reference on (`ENOENT`). The option is off by default and keeps the old behaviour: the first run with it on, on an M2, failed at the first terminate-process command and left the device quarantined until reboot. A failed unload leaves the program held for good. The program table and the unload rule live in `ane_t6021_progtab.h`, with a host unit test, `tools/test_t6021_progtab`. Nothing has run on a device yet.
+- `ane_t6021` answers the firmware's request to free a shared-memory buffer. The first run of the program unload on an M2 failed because the driver took that request, which the firmware posts on its allocation ring while it terminates a process, for a malformed allocation. The firmware waits for the answer with no timeout, so the driver now answers it (body zero, header 1, doorbell bit 5) wherever it serves the ring: before each command, while it waits, and for 10 ms after a terminate or destroy command. A host test classifies the ring entries and five mutants fail it. Not run on a device. `unload_on_close` stays off until an M2 proof passes twice.
+- `ane_t6021` gives back a buffer the firmware returns. A second M2 run of the program unload passed three sessions with the free request answered, and then the fourth and fifth sessions failed in the middle of a LOAD. The driver kept every buffer the firmware had asked for in a table with a budget of 512 MiB and answered a FREE without releasing the entry, so each block the firmware freed and asked for again used a new entry. A FREE now matches the returned IOVA to its table entry (never the command buffer), frees the buffer, credits its bytes and leaves the slot for the next request, and every FREE log line prints the table's high-water mark and byte count. The slot logic is a pure header with a host test and four mutants. The cause is not yet confirmed by those numbers on a board, and `unload_on_close` stays off until a run of six sessions passes.
+
+### Host tools
+
+- `tools/q6k_head.c` gains `q6k_matvec_f32_fp16x`. It is a Q6_K head kernel that multiplies in fp16 and accumulates in fp32 with FMLAL. `tools/q6k_head.py` uses it when the CPU has FP16FML and the activation vector is already an fp16 value. The head input of the staged decodes is the fp16 output of the engine, so the rounding changes nothing. The lanes are summed in the same order, so the result is bit-identical to `q6k_matvec_f32`. Any other input takes the old kernel. On a 13-inch M1 the kernel alone takes 11.8 ms instead of 15.9 ms for the full 248320-row head with 4 threads. In the decode (one stream, 5 held-out prompts x 64 positions) the logits hashes were identical with and without it. The rate went from 12.19 to 13.09 steps/s with the S1 int8 package (+7.4 percent) and from 8.96 to 9.44 steps/s with the shipped package (+5.4 percent). `Q6K_FP16X=0` turns it off. The tests run the new kernel on aarch64 hosts with FP16FML and skip elsewhere.
+- The strict port-table reader of `ane-run` and `ane-session` accepts a trailing unknown member. Before, a string or a number placed last in the top-level object made the whole table malformed. The skip of an unknown value never stopped at the closing brace. An M2 session refused a LOAD with `bad-ports` for a package whose port tables carried one such key. `tools/test_port_reader.sh` extracts the real reader and checks nine tables. It fails on the old code for the three trailing-scalar cases.
+
+### H15 bring-up (T6030, never run on an H15 part)
+
+- `ane_h15` gains `stage=4` (`stage=dart`, behind `confirm_read=1`, read only) and `stage=5` (`stage=run`, behind `confirm_run=1`). Stage 4 answers the M6 lesson first: on the M6 (T8152) a RUN write started the core and it posted nothing, and nobody had read the ANE DART, so whether iBoot leaves a stream enabled is unmeasured. A core with no enabled stream could not fetch its firmware. Stage 4 reads the ADT's four ANE DART windows (the T6030 DART is `dart,t8110`, the register file `apple-dart` drives): version, lock state, ENABLE_STREAMS, TCR and TTBR of streams 0 to 63, and reports `live_streams`. It shows whether iBoot left a stream enabled and translating. It does not show that the mapping covers the firmware or that the core would run. Stage 5 is the first stage that writes. A 16-inch M3 Pro (T6030) owner ran stages 0, 1 and 2 (PR 175): all five power domains reached ACTUAL=0xf, CPU_STATUS read 0x0030002a, RVBAR read 0x0000010000000001 and both mailbox CTRL words read 0x20001. Stage 5 uses those numbers and refuses on any SoC row without a measured RVBAR (`rvbar_expect`, only `t6030` today). It also refuses unless the stage 4 scan finds a live DART stream (`run_unmapped=1` overrides). It refuses unless the core is stopped, CPU_CONTROL RUN is clear, RVBAR is exactly the measured value and both mailbox words read EMPTY. It then sets CPU_CONTROL bit 4 as macOS does, watches CPU_STATUS and the I2A mailbox for `run_wait_ms` (default 300), logs at most four raw I2A messages without replying (one 64-bit read per receive register: they pop on read, and a 32-bit read would take the message apart), and clears bit 4 then bit 5. A core that does not report STOPPED afterwards keeps its power claim, `remove()` refuses, and the module takes a reference it never drops (`__module_get`), because `remove()` is void and cannot stop an `rmmod`. Stage 3 is unchanged. Stage 5 writes only CPU_CONTROL bits 4 and 5, never RVBAR, the mailbox or the DART (the ANE DART nodes stay disabled; the DART mapping is a later stage). Stage 5 also takes `map_fw=1` with `fw_seg=TEXTPA:SIZE,DATAPA:SIZE`: it attaches the ANE to its DART through the iommu API and maps the two preloaded firmware segments (TEXT read only at the RVBAR entry, DATA read+write behind it) before RUN, the pattern of the M6 module (PR 185), only on a core whose CPU_STATUS reads stopped, refusing segments that are unaligned, over 64 MiB, overlapping or inside system RAM, and undoing the mapping after a failed step or a clean stop. `ane/h15/t6030-ane-dart-experimental.dts` enables DART instance 0 and gives the ane node `iommus`; `ane/h15/h15-segments.py` turns a live ADT dump into the `fw_seg` value (checked against the saved M6 ADT). On the M6 the board showed every ENABLE_STREAMS word 0 before the map (PR 185). The userspace sim covers the stages with a device model (STOPPED, the mailbox, the DART registers, the iommu calls). Sixteen mutants are killed: confirm ignored (run and dart), RVBAR check skipped, mailbox check skipped, RUN never cleared, a stuck core accepted, a 32-bit message pop, the DART gate skipped, a stream counted live without a valid TTBR, the module left unpinned after a stuck core, the map never undone, the stopped check skipped, the RAM check skipped, TEXT mapped writable, overlapping segments accepted, `iommus` not required. The module builds with `W=1` against the omarchy-linux tree and warns about nothing. It has not run on hardware, and the DART overlay has not been booted. Sources and what is inference: `ane/h15/run-stage-sources.md`.
+- `ane_h15` gains `stage=6` (`stage=rtkit`), behind `confirm_run=1` and `confirm_rtkit=1`: stage 5 plus the RTKit management session the M6 module runs, over the ASC mailbox of the H15 (send registers +0x800/+0x808, receive +0x830/+0x838, the apple-mailbox v4 layout, inferred for the ANE and never written on an H15 part). After RUN it answers HELLO (version 12) and the endpoint map, starts the announced system endpoints, answers the IOP power ON acknowledgement with AP power ON, starts the application endpoints, and shuts the session down (`rtkit_stop=1`: AP QUIESCED then IOP SLEEP, restartable; `2`: OFF then OFF) before RUN is cleared. It writes only the two send registers (16 messages at most, never while A2I reads FULL, management endpoint only), answers no buffer request and no message of another endpoint, and the verdict says whether the firmware said nothing, the session or the shutdown was incomplete, or the core did not stop (module pinned, reboot). The sim has a firmware model (HELLO, endpoint map, crash log request, power acknowledgements) and covers the exact message sequence for both stop modes, with `map_fw`, and the refusals, a silent firmware, an incompatible version, a full mailbox, missing acknowledgements, a map flood and a stuck core; six mutants fail the harness. It has not run on hardware; run it only after a stage 5 result with a mailbox message in it.
+
+### H18 bring-up (T8152, Mac mini M6)
+
+- `ane/h18` is an opt-in bring-up module for the ANE0 of the T8152 (Mac mini M6). It has three stages and no firmware path. `stage=dt` checks the device tree windows against the SoC row and touches no register. `stage=psd` reads the two PSD slot windows (slots 30 and 31, the ADT power gates of the ANE) and writes nothing. `stage=power` needs `confirm_power=1`. It requests a PSD state on slot 30 (and 31 with `psd_slots=2`), waits for each acknowledge the way the kernel PSD driver does, and only then reads CPU_STATUS, ASC_STATUS and IORVBAR. It reads CPU_CONTROL only with `read_ctrl=1`, never writes it, and writes nothing in the ASC windows. Every address is logged before its access. The live M6 ADT shows that iBoot preloads the firmware (`segment-ranges` of `/arm-io/ane`), so a later change maps it and releases the core. On a Mac mini M6 request 1 on slot 30 was acknowledged, the ASC wrapper then answered with CPU_STATUS 0xa and IORVBAR 0x10000000001, and the slot returned to state 6. Whether the core runs is not known. The mailbox channel is not verified either, so `read_mbox=1` reads three candidates. `stage=boot` (not run on any machine) starts the core with the RUN bit only when the core is stopped, RUN is clear and IORVBAR is the value iBoot left, watches it for a short time, reads at most 8 mailbox messages without sending any, and clears RUN again. The module builds W=1 clean against the M6 kernel tree. The userspace sim has positive and negative controls and five mutants that must fail.
+- `ane/h18` stage boot gains three opt-in parameters. `alias_mbox=1` watches the alias-bank Postoffice channel of the ANE. That channel is at window + 0x10000, channel 2 * mailbox number, and the macOS wrapper driver uses it. The module reads its status word once before RUN. `read_dart=1` reads twelve words of the ANE DART before RUN with both PSD slots on. It writes nothing. `rtkit_hello=1` answers the firmware's RTKit HELLO with version 12, and answers its endpoint map. A reply needs an inbox credit, a message for endpoint 0, and a firmware version range that includes 12. The stage script takes `dart` and `hello` as arguments 7 and 8 of step 4. The sim covers both halves as outbox, the credit, version and endpoint refusals, and five new mutants.
+- `ane/h18` stage boot gains `map_fw=1`. It attaches the ANE to its DART through the iommu API and maps the two firmware segments the boot loader left in DRAM at their IOVAs before RUN. The board showed that the boot loader leaves no DART stream enabled, so the core cannot fetch its firmware. A new overlay, `t8152-j873-ane-dart.dtsi`, adds the ANE DART, a PSD group for slots 30 and 31 and the links in the `ane0` node. With power-domains in the node the module requests no PSD state and holds a runtime PM reference instead. The stage script gets step 5, which is step 4 with `map_fw=1`. The sim covers the attach, the maps, the undo on each failure and four new mutants.
+- `ane/h18` stage boot gains `rtkit_start=1` and `rtkit_stop=1`. The board showed the ANE firmware sending the RTKit HELLO and two endpoint map messages once its firmware was mapped through the DART. `rtkit_start=1` starts the system endpoints after the endpoint map. It answers the firmware's IOP power state acknowledgement with AP power state ON, and starts the application endpoints after the AP acknowledgement. `rtkit_stop=1` runs the restartable RTKit shutdown (AP power state QUIESCED, then IOP power state SLEEP, as apple_rtkit_shutdown does) before RUN is cleared, and `rtkit_stop=2` runs the OFF shutdown, the pair that stopped the core on the board. The stage script takes `hello` values 2, 3 and 4 for them. The sim has a firmware model that reacts to the messages the host writes, and two new mutants.
+- `ane/h18` stage boot gains `read_scratch=1`. It reads the eight SCRATCH words of the engine block, the registers of the macOS boot-args handshake, three times: before RUN, when AP power ON is acknowledged and before the shutdown. It writes nothing. The stage script takes `scratch` as argument 9 of steps 4 and 5.
+- `ane/h18` queues an RTKit management message that finds no free TX slot instead of refusing it. Before, a reply to an endpoint map or an endpoint start could be lost when the firmware had not yet freed a slot. The queue holds eight messages and is stored in order at every poll, and the shutdown waits for it to drain. The userspace sim has a mode where the only slot returns one poll after each message, and a mutant that drops the queued message fails it. The board has not needed it: the firmware freed the slots in time on every run.
+- `ane/h18` stage boot gains `handshake=1`, the first option that writes the SCRATCH words. After AP power ON is acknowledged it allocates the IPC, HEAP and init block surfaces, publishes the block address in SCRATCH0 and SCRATCH1, writes the wake word to SCRATCH7 and waits for the firmware's table address. The layout is the T6021 init block, which the decode of the M6 kext shares. It needs `map_fw=1`, `read_scratch=1`, `rtkit_start=1` and a shutdown, and it maps the firmware into the default DMA domain. The sim has eight cases and eight mutants. On the board the firmware answered in 2 ms with its channel table of eight entries, the T6021 names and bits. The pool surface is 0x40000 bytes as on T6021, the handshake refuses unless SCRATCH7 already shows READY, and the template word is a zero guess named in the README.
+- `ane/h18` stage boot gains `hs_chan=1` and `hs_cmds=1`, the steps after the handshake. `hs_chan` checks the firmware's channel table, hands the host-to-firmware rings to the host and writes READY to SCRATCH3 as the macOS kext does after it created its channels. `hs_cmds` sends PRINT_ENABLE and CONFIG_GET on the IO ring and rings the doorbell at engine + 0x18a4000, an address from the kext decode. On the board the firmware cleared SCRATCH3 within 1 ms, and the OFF/OFF stop then completed, the first stop that did after a handshake. The first command, PRINT_ENABLE, got no answer, and the doorbell address is still unconfirmed. The sim has eight cases and six mutants.
+- `ane/h18` `hs_chan` serves the firmware's SHAREDMALLOC ring and logs what the firmware posts. The first board run of `hs_chan` and `hs_cmds` cleared SCRATCH3 in 1 ms and let the OFF/OFF stop complete, but the first command got no answer. The module now answers a MALLOC with a DMA buffer and a FREE with the answer the firmware waits for, acknowledges a pending IPI at engine + 0x18b0000 as the kext does, and logs the nonzero lines of every firmware-to-host ring after SCRATCH3, after a failed command and whenever a ring or the pending value changes. The command block now lives inside the pool surface at +0x400, as the kext decode says, and the terminal ring is logged as text. The sim has four new cases and eight new mutants. This step has not run on the board yet.
+
+## 0.4.10 (2026-10-23)
+
+- `ane_h15` attaches each of the ANE's five power domains by id and links them with `RPM_ACTIVE` device links, the pattern `ane_t6021` uses (#173). Before, only the driver core's automatic attach ran, which handles one domain, so stage 1 stopped at `pm_runtime_get_sync` with `-EACCES`. The contributor reports stage 0 and stage 1 passing on a 16-inch M3 Pro (T6030). We did not run it on hardware.
+- `tools/test_ane_smoke.py` covers die reporting for the H13 and H14 Ultra module families (#178). It is a test-only change.
+- The `dt-overlays` host checks now trigger on every tool input, and a failing regression binary can no longer hide behind `| tail` (#179).
+- Aurora CI builds the resolved revision of `aurora-wip` instead of the moving branch, and `asahi-dtbs` checks out the requested ref on a restored cache (#180).
+- `packaging/omarchy-ane-smoke` no longer raises `AttributeError: 'str' object has no attribute 'is_file'` when `omarchy-ane-run` is found only on PATH. `which()` returns a string, and `tool()` called `.is_file()` on it. The packaged layout hid the bug, because the runner sits beside the script there. A user who runs the smoke from a checkout with the runner on PATH got `smoke: attempted, available false` in the collector row instead of a result. `tools/test_ane_smoke.py` has a case for a runner found only on PATH.
+- The three H15 overlays in `ane/h15` (`t8122`, `t6030`, `t6031`) now ship their four ANE DART nodes as `status = "disabled"`. A T6030 owner found that equivalent enabled nodes make the DART driver probe unpowered ANE hardware at boot and hang the machine before display and network. That was not measured with these exact overlays. The `ane` node loses its `iommus` property in the same change, because `omarchy-ane-dt apply` refuses a node that names a disabled provider. Stage 0 and stage 1 of `ane_h15` need no DART. The change is untested on a T8122 and a T6031. The overlays compile with dtc 1.7.2.
+- `ane/h15` stage 2 (`stage=wrapper`) now has a read-only mode, `confirm_read=1`. After the same ACTUAL=0xf gate as stage 1 it reads CPU_STATUS, RVBAR and the two mailbox CTRL words of the engine window. Each address is logged before its read. Before any bus access it compares the live reg[0] and reg[1] resources with the SoC row and refuses on a mismatch. It only reads inside the two windows the ADT publishes for the ANE node, and it refuses CPU_CONTROL, the CoreSight line and the T6021 fatal range whatever the SoC row says. Without `confirm_read=1` the stage refuses as before. It writes nothing and releases no CPU. The result line compares CPU_STATUS with the value a stopped T6021 core reads. The meaning of those bits on H15 is not measured. Nothing in this change ran on an M3 chip. The userspace sim covers all four SoC rows and has three new negative controls and four new mutation controls.
+- `ane/h15/h15-capture.sh` records the device tree facts that the boot stage needs, without touching a register. It prints the firmware version string, the ANE, DART and mailbox nodes with their interrupt lines, the reserved firmware regions with their iommu addresses, and the interrupt and genpd lines. It does not fill the unmeasured fact H3, because the ADT segment-ranges and the DART geometry are not in the Linux device tree. It loads no module and writes no file.
+- `tools/qwen_fold_layout.py` builds the manifest of a folded staged Qwen layout from the control manifest and the compile record of that layout. A fold joins the DeltaNet state block of a layer to the program after it. The tool checks on the host that every unfolded program has the control program's MIL, that every folded program is the state block followed by the next control program, and that its output lanes and states match. Every folded program must also be the chain of those two control programs op for op, checked with `tools/mil_graph_equiv.py` with the lanes labelled, so a stale or miscompiled fold with the right ports is refused. With `--self-check` it rebuilds all 38 control entries from the control's own record and compares them with the control manifest. All 38 are equal. Its 37 program layout equals a manifest built by hand for the same fold.
+- `tools/qwen_fold_set_compare.py CONTROL_SUMMARY LAYOUT_SUMMARY LAYOUT_MANIFEST` reads the two boots of a one-arm run. It reports the exec time saved per fold, the sum of the replaced control programs' exec medians minus the folded program's, with the range over each boot's arms as noise. It also reports the drift of the programs both layouts share between the boots, and the step ratio against both spreads. The step ratio is a screen, because drift between boots is in neither spread. It exits 2 when a summary is not a frozen run or lists failures, and when the layout run recorded a different control summary hash than the one given.
+- `tools/qwen_fold_set_ab.py` runs the control and any number of folded layouts in one decoder process, one session and one boot. A custom `--order` must hold complete rounds, one control followed by every layout. It checks that every arm decodes the same token ids on ten prompts, reports the fp32 logits difference, and times the arms in rounds. The summary gives each layout's step time against the control arm of the same round, the control's own spread, and the exec time saved per fold. A difference counts only when it is larger than that spread. The ANE buffer window cannot hold the control and a 20 program layout together, because each takes about 3.1 GiB of it in power-of-two size classes and sections are held until reboot. `--only ARM` runs one arm per boot, a layout against the control ids and logits hashes of the other boot. The refusal counts the size classes against 3.5 GiB, so the control with a 20 program layout is refused before any load. A manifest built without the chain check is refused. The harness loads the large sections first and pins itself to the performance cores. There is no speed gate. Tests in `tools/test_qwen_fold_set.py` use synthetic records and cover the builder checks, the spread rule and the integrity gates.
+
+## 0.4.9 (2026-10-16)
+
+This release holds host tools and tests for the staged Qwen decode on the Apple M2 Max (T6021), one longer driver message, a NixOS lookup in the packaging scripts, and receipts for the Parakeet encoder on the M1 family. The driver calls and the libane interface are unchanged from 0.4.8. The decode launcher now pins itself to the performance cores. The Q6_K head is off by default. No decode speed gain from the Q6_K head is measured yet, because the decode run with the flag has not happened. The GitHub release notes list the measurements and their limits.
+
+- `tools/anec_compare.py A.anec B.anec` compares two H14 ANEC packages section by section on the host: the header counts, the task stream, the constant section and the tile table. It also says whether A's constants occur as one run inside B's, which a fold that keeps its weights and adds a few bytes passes. This is the check `mil_graph_equiv.py` leaves out, because that graph check does not compare constant bytes. On the staged Qwen fold pair it shows what the fold kept and changed. The fused program has the same constant section as the readout, MLP and input-block program it absorbed, byte for byte (117,980,352 bytes). Its task stream differs, with 61 tasks against 52. The tool exits 0 when the packages are equal, 1 when they differ, and 2 for a file that is not a readable package. `--constants-equal` requires only the constants to match, and `--json` prints one object. `tests/test_anec_compare.py` uses the state block fixture and packages built from its bytes. It covers each section, a fold that adds bytes, damaged files and the exit codes. Host only, nothing runs on a device.
+- `tools/qwen_m2_decode.py --q6k-head` (default off) reads the tied head through `Q6KHead` instead of the dequantized fp32 head: `embed[token]` is the Q6_K row dequantized as ggml does and rounded to fp16 (bit-equal to the fp16 table built from the fp32 head), `head @ hidden` is `Q6KHead.logits` with an fp32 activation, one thread per performance core. The weight values are the same; only the fp32 summation order of the logits differs, so logits are not bit-identical to the BLAS head. A GGUF whose `token_embd.weight` is not Q6_K is refused. The start record in `results.jsonl` says `head: q6k` or `head: fp32`. Offline test: `tools/test_qwen_q6k_hook.py` (a tiny GGUF made from the 64-row real fixture; embedding rows bit-equal for 64 tokens, logits within 1.7e-6 of the fp32 head, a non-Q6_K head refused). `tools/qwen_q6k_gate.py` is the host-only gate on real data: the hidden vectors of a sealed decode (recovered from its fp32 logits) must give the same token ids, and a logit difference below a tenth of the smallest sealed margin; it also times the two heads in the decode's own pattern (146 ms idle between steps), A B A B. The default stays the fp32 head until a decode run with the flag has passed the identity gate.
+- `tools/q6k_head.c` and `tools/q6k_head.py` read the tied output head of the staged Qwen decode as Q6_K and multiply it by an fp32 vector.
+- Today the host reads that head as fp32, 2.03 GB every generated step. On the M2 that is the memory ceiling, 95.6 GB/s measured. The GGUF stores the tensor as Q6_K, 417.2 MB. The kernel reads a fifth of the bytes and dequantizes in NEON registers.
+- `q6k_dequant_row` is bit-identical to the fp32 head in use. Its sha256 on 64 real rows equals that of gguf-py's dequantization.
+- `q6k_matvec_f32` keeps the activations in fp32 and factors the group scale out of the sum. Logits differ from a BLAS sgemv at fp32 rounding and are not bit-identical. On 2,001 real rows against a float64 dot, its largest error is 1.4e-6 for logits up to 5.8. Numpy's own fp32 matvec gives 1.8e-6.
+- `tests/test_q6k_head.py` has 13 tests. The scalar path runs natively, and the NEON path is cross-compiled for aarch64 and run under qemu-user. Five mutants of the lane map and the bit decode are killed.
+- No speed is claimed, because the NEON path was not timed on a chip. `tools/q6k_head_bench.py` times it on the real tensor, on CPU and memory only. It checks the first 256 logits against a float64 dot for every thread count and exits 3 when an error is not finite or is above `--tolerance` (default 3e-6). The decode launcher does not use it yet.
+- The T8112 refusal line now carries the PWGATE word and the `ane_cpu` state: `PWGATE closed (word 0x…, ane_cpu 0x…); refusing before any engine read`. Before, the word was only in a `dev_dbg` line, so a first run on a T8112 needed `dyndbg` to show it (issue 160). The driver still only reads the gate; nothing writes it, and the refusal itself is unchanged. A window that cannot be mapped reads as `0xffffffff` and the line says so. The line was compiled for arm64 against the 7.1.12 headers (no load, no run on a T8112), and it is a message change only.
+- `tools/hwx_ports.py --program NAME --hwx FILE --anec FILE --mil FILE [--out FILE]` derives the port table of one program. The mode that rewrites the 38 staged Qwen tables is unchanged. For the staged DeltaNet state block it equals the table in use on the M2. That covers ports, DMA coverage, ambiguity groups and exceptions.
+- `tests/test_hwx_fold_tools.py` and `tests/fixtures/hwx-fold/` add a real Apple H14 program to the converter tests: the DeltaNet state block of the staged Qwen decode. The converter emits the committed ANEC for it byte for byte. A recompile of the staged programs 001 and 002 on a Mac, converted here, matches their staged ANECs byte for byte. The test runs the same check on the staged HWX when it is present. The HWX held a build path in its compiler command line. The fixture replaces it with a same-length placeholder. The converter does not read it, and the ANEC is unchanged.
+- `tools/mil_graph_equiv.py` checks that one fused MIL program is the chain of two programs. It compares the op graphs with the function arguments labelled by lane, so a fused program that swaps q and k is not equal to the chain. The regression test runs it on the staged state block, the readout and MLP program that follows it, and the single program that replaces the pair: 136 ops on each side and all nine output lanes equal. It also fails on a swapped lane and on a changed op. It does not compare constant bytes, and it says nothing about what a chip does with an intermediate that no longer crosses a program boundary.
+- `tools/pcore_mask.py` keeps an ANE host process on the performance cores. On the M2 a decode thread and its ane-session child that sleep most of each step were placed on efficiency cores. Every call then cost 0.72 ms more with the exec time unchanged. All 11 steps whose calls all ran there were slower than every step on the performance cores, by 27.0 ms in the ANE phase on average. They are the first step and ten more. No call of a pinned arm ran there. The helper reads the performance cores from `cpu_capacity` (the CPUs at the maximum), so no chip list is hard-coded. A chip without capacity files, or with one capacity, is left alone. `pin_self()` runs at the top of a launcher before any thread exists, so threads and the session child inherit the mask. `pin_tasks(PID)` re-applies it to a running process, and `OMARCHY_ANE_NO_PIN=1` turns it off. The command line prints the list in `taskset -c` form. A pin changes no arithmetic. Tests: `tests/test_pcore_mask.py`, host only.
+- `tools/qwen_m2_decode.py`, run as a script, now pins itself and its `ane-session` child to the performance cores through `pcore_mask.py`, and sets `OPENBLAS_NUM_THREADS=4` when it pins and the variable is unset (`OMARCHY_ANE_NO_PIN=1` turns off both). Every run records the placement: a `placement` record at the start and at the end of `results.jsonl` (the end record is also written when a failed call or a kernel STOP line ends the run) (the mask of every task of the decode process and the child, the calls by CPU, the calls off the performance cores), a `calls_cpu` field on each step record, a sixth `timings.tsv` column with the CPU of the decode thread after each call, and a stderr warning when a call ran on an efficiency core. A harness that imports the module is not pinned. The outputs do not depend on the mask. Offline test: `tools/test_qwen_placement.py`. The M2 evidence is `receipts/2026-10-15-m2-qwen-pin-pcores/` (one boot, one session; the registered speed gate failed on its A/A clause, and every one of the 10 generated steps with all calls on efficiency cores was slow; so was the prefill step 0 of that arm, which also ran all 38 calls there).
+- Receipt `receipts/2026-10-11-ane-gpu-cross-effect/`: on the 13-inch M1, a Parakeet encoder loop on the ANE and a compute-bound fp16 matmul loop on the GPU running together keep 95.1 percent of the GPU's solo rate (0.5509 against 0.5791 TFLOP/s) and run the ANE loop 2.9 percent slower (141.47 ms against 137.51 ms), in a quiet window under the exclusive-window protocol with alternating phases; each of the four ANE processes exited 0 with its final output matching the gold. One run, one workload, one boot; a memory-bound GPU job was not measured.
+- `ane-run --tile-shift N` (1 to 20, index mode only, M1-family path only) sets the tile-count unit of the program header as a power of two. The whole-program containers written by the hwxv2 converter count tiles in 512-byte units (`--tile-shift 9`). The default is unchanged (0x4000-byte units), so existing callers behave as before. Without the option the Parakeet whole encoder (458,018,816 bytes) is sized 32 times too large, about 14.7 GB, and on the 13-inch M1 both runs failed with `DRM_IOCTL_ANE_BO_INIT failed`. With `--tile-shift 9` six runs on the same machine were bit-exact against the macOS output, with medians of 20 calls from 137.4 to 158.2 ms (receipt `receipts/2026-10-11-m1-parakeet-tile-shift/`). Offline test: `tools/test_ane_run_tile_shift.sh` (part of `make check`). It guards option parsing, not the delivery of the shift.
+- Receipt `receipts/2026-10-11-m1-parakeet-operating-point/`: the Parakeet whole encoder on the 13-inch M1 takes 137.914 ms (median of five 20-call medians, best 137.789 ms, spread 0.18 ms, bit-exact against the macOS gold) under the exclusive-window protocol. The paired macOS median on the same chip is 111.56 ms, so the cell is 0.809x (macOS arm at load average 2.76). With 8 CPU spin loops beside it the same program takes 146.05 ms (two runs). With another lane's GPU job running it took 161.3, 158.3 and 140.9 ms (three runs, not a controlled load) and 165.0 ms with a spin load added. The M1 Max runs the same program at 431 to 439 ms under every condition tried, including every CPU cluster capped at 600 MHz. Scoreboard cells should be taken in an exclusive window. Includes the 10 Hz state sampler and the exclusive-window loop.
+- `ane-run --check matvec` and `--check rms` passed any output for a lane whose exact sum of absolute terms is 0, such as an all-zero input row. The error in condition units was set to 0 for that lane, so an all-ones or NaN output counted as in band. Such a lane now passes only on an exact 0 and reports an infinite error otherwise. For `--check rms` the reference of an all-zero input row was 0/0 = NaN, so even an exact all-zero output failed; the reference for such a row is now 0. The rules are in `tools/ane_check_band.h`. `tools/test_check_band.c` runs on the host, is part of `make check`, and failed on the old rules for the zero-sum and all-zero-row cases. It tests the lane rule and the rms reference; `rms_check` itself needs a device program and was not run.
+- `ane-run --time` now also prints the mean of the per-call exec times, and `--time-raw FILE` writes every call's exec time in nanoseconds, one integer per line, in call order (it implies `--time`). The exec time is the wall time of one `ane_exec` ioctl: the hardware-polled completion timestamp as the host sees it, which includes the driver's detection lag, not the engine's compute time. When calls land on steps of about 51 us, a quantile can only sit on a step, so a change smaller than a step shows as a one-step jump or not at all; the mean and the raw values do not have that limit. The helpers are in `tools/ane_timing.h`; `tools/test_ane_timing.c` runs on the host (no device) as part of `make check` and covers the mean, the write, the call order and an unwritable path. The summary line only gains a trailing `mean` field.
+
+## 0.4.8 (2026-10-10)
+
+This release is for the Apple M2 Max (T6021). It also holds the v0.4.7 changes below, which were tagged without a changelog heading. The GitHub release notes list the hardware evidence and its limits.
+
+- `ane_t6021`, `libane`: new `DRM_IOCTL_ANE_PROG_LOOKUP` (0x7, appended to the
+  uAPI). A process asks the driver for a program by the SHA-256 digest of its
+  sections. If the driver already holds that program, the process skips the
+  section allocation. A kernel module that lacks the call, or a miss, falls
+  back to the old load path. Measured on one M2 Max, module build `bd34a12`
+  (#141, `receipts/2026-10-10-m2-max-prog-lookup`): three passes over the
+  38 Qwen3.8-2B programs, one process each, loaded 38 of 38 every time. The
+  allocator total grew by 2,416,623,616 B, 196,608 B and 0 B. On `ca09ce8` the
+  second pass failed 5 times with `BO_INIT failed`. One run, zero-valued
+  inputs.
+- `tools/qwen_m2_decode.py --resident`, `ResidentSession` and the proxy A/B
+  harness, with host tests (#144). A resident decode on `bd34a12` gave logits
+  that equal the per-call baseline (`receipts/2026-10-10-m2-max-resident-qwen-decode`).
+- Receipts for the Parakeet whole encoder on the M2 Max (#138, #142).
+
+- `tools/qwen_m2_decode.py` warns at the start of a run when numpy uses the reference BLAS, and
+  `docs/qwen-m2-decoder-requirements.md` says to install `blas-openblas`. Measured on the M2 Max
+  (2026-10-10, module `bd34a12`): the output projection took 604 ms per generated token on the reference
+  BLAS (any thread count) and 20 ms on OpenBLAS; the resident Qwen3.8-2B decode went from a generation
+  step p50 of 0.826 s (1.21 tokens per second) to 0.211 s and 0.226 s in two runs (4.64 and 4.48), with
+  the same decoder files and the same 16 generated tokens. The float32 logits differ at the rounding
+  level (largest difference 4.0e-5, so the old logits hash no longer matches); the new hash is the same in
+  both runs. Receipt: `receipts/2026-10-10-m2-max-resident-decode-openblas/`. Verified the same package
+  swap on an M1 Max and an M1 (matvec 21 ms and 47.5 ms).
+
+- `docs/ultra-test-runbook.md`, `docs/h15-volunteer.md`: audit against the
+  code they describe. Opt-in path is `/etc/omarchy-mac-boot/dtb-overlays.opt-in`
+  (`omarchy-ane-dt` has read that since 2026-10-04; the runbook still named the
+  `omarchy-platform` one). Stage 2 names the die-1 smoke honestly: the shipped
+  smoke measures the runner's default device and its `die` field is computed
+  from the first bound node, so the die-1 run is `ANE_DEVICE=1` and the report
+  must say which run each JSON came from; the stop rule adds the die-1 mailbox
+  (0x2285408000), which `promotion_check.py` counts as an ANE line; the
+  `ultra-die1.md §9.2` anchors point at §9 fact 2, the only numbering that
+  section has. `h15-volunteer.md`: the kernel fork is
+  `joshuaswarren/aurora-linux-tbnet` (branch `ane-driver-aurora` at `efe6e359`
+  re-verified via the old name's redirect), and the collector-not-wired check
+  is re-dated 2026-10-10.
+
+- `ane_t6021`: the parked-BO pool never parked anything: the pool entry's
+  size was never recorded, so every admission check saw 0 bytes and every
+  freed duplicate section was really freed (measured on the M2,
+  2026-10-09, boot 6fcfac08: `bo_pool_bytes` stayed 0 through a whole
+  A/B). `ane_t6021_pool_park()` and `ane_t6021_pool_park_uncharged()` now
+  take the size and record it on the entry themselves, so the caller
+  cannot forget it.
+- `tools/ane-session`: a LOAD whose (anec bytes, ports bytes) pair is
+  already loaded rebinds the name with no device work; FREE drops the
+  name binding only and the cached program dies at QUIT. A configure
+  pass that FREEs and re-LOADs the same 38-program table now costs zero
+  `BO_INIT`s (measured 2026-10-09: every pass's duplicate sections had
+  asked for a fresh 223 MiB dma32 hole the window no longer had).
+- `tools/ane-bo-probe`: each step now prints the power-of-two IOVA size
+  class the request lands in (the dma32 IOVA allocator rounds and
+  naturally aligns every coherent allocation to that class, so a
+  223 MiB BO needs a free 256 MiB window).
+- `ane_t6021`: a freed duplicate section BO of at least `bo_pool_min_kb`
+  (default 2048 KiB) now parks in the BO pool under a runtime budget
+  `bo_pool_max_mb` (default 512 MiB, 0644), evicting the oldest park by
+  real free. `BO_INIT` of the same page-aligned size gets the same dma
+  range back, so repeated configure passes stop churning the dma32
+  window into fragments no 224 MiB section fits: measured 2026-10-09 on
+  boot 2105990f, a 222,980,416-byte `BO_INIT` failed in every process
+  at `bo_total_bytes` 2.76 GB after the passes had run. New read-only
+  `bo_pool_bytes`. The policy lives in `ane/t6021/ane_t6021_pool.h`
+  with a host unit test (`tools/test_t6021_pool`).
+- `libane`: the ABI-2 open allocates its six section BOs in descending
+  size order, so the largest contiguous request lands while the
+  window's largest hole is still fresh. The ioctl regression records
+  the `BO_INIT` order and fails on the old order.
+- `libane`: the ABI-2 (M2) client releases its six section BOs as soon as
+  `PROG_LOAD` + `PROC_CREATE` succeed. On a first load the driver holds
+  the section bytes anyway (`fw_ref`); on a dedup hit the client's copy
+  is memory the firmware never reads. Before, every live `ane_nn` pinned
+  a full duplicate of its program's sections inside the sub-4-GiB window
+  until close, so a resident session failed `BO_INIT` for prog_006's
+  222,980,416 B kernel section once the 38-program set was cached:
+  measured 2026-10-09 on boot 2105990f, `REFUSE: prog_006` with
+  `bo_total_bytes` at 2,757,607,424. The host regression
+  (`tools/test_libane_ioctl`, "resident pattern" case) fails on the old
+  libane and passes now.
+- `ane_t6021`: `trace_td=1` now creates the debugfs blob in its own
+  directory, `ane_t6021_trace/trace_td` (was `ane_t6021/trace_td`). The
+  probe (`stats=1`, the default) owns the `ane_t6021` debugfs directory;
+  the trace setter created the same name again, lost the collision
+  (`debugfs: 'ane_t6021' already exists`), and the parameter flipped with
+  no `trace_td` file to read (measured on the M2, 2026-10-07). The trace
+  now owns its directory outright, so any load order works and neither
+  side removes the other's files. Update readers of the old path.
+
+## 0.4.6 (2026-10-06)
+
+This release makes each H14 (T6021, M2 Max) CALL faster and adds the first
+Ultra (two-die) plumbing. The CALL change is in `ane/t6021` only. On one
+M2 Max boot (aurora 11.38) with the same sampler, the ledger ANE cell goes
+from 2,932.5 to 3,348.0 jobs/s (+14.1 %) and the add median from 0.359 to
+0.257 ms with `call_poll_us=1000` on top of `call_settle_us=0`. The Ultra
+change also touches `ane.ko` and libane (see its entry). The M1 and M2
+drivers keep ABI 1 and ABI 2. The earlier removal of the 1,000 us settle
+(about 674 to about 3,206 jobs/s on the aurora 11.36 install, the
+`call_settle_us` entry below) did not reproduce its absolute figure on
+11.38: the same configuration measured 2,933 there. Quote the paired
+numbers from one boot.
+
+- `ane_t6021`: the CALL finish-event wait polls at a 1 us cadence for the
+  first `call_poll_us` microseconds (default 1000), then falls back to the
+  50-100 us sleep, so the 254 ms encoder does not spend its wait on timer
+  wakeups. `call_poll_us=0` restores the old cadence at run time. A 300 us
+  busy-spin head added +0.4 % for about one core and is not included.
+  Receipt: `receipts/2026-10-06-t6021-call-poll/README.md`.
+
+- Ultra die-1 plumbing (#120, static: no T6002 or T6022 hardware run).
+  `ane.ko` takes the SET base from the node's set `reg` window and
+  qualifies (compatible, SET base) pairs through a die-keyed table; T6002
+  die 1 is recognized behind `allow_unqualified`, and an unknown base
+  refuses. `ane.ko` names its stats debugfs directory per device, and die 0
+  keeps the legacy name. `ane_t6021` keys the T6022 per-die data on the same
+  window. `omarchy-ane-firmware-fetch` refuses on a die-1 node (no pin).
+  New opt-in overlays `t6002-ane-die1` and `t6022-ane-die1`. libane:
+  `ane_m2_init_ports()` takes a new `dev_id` argument, and `ane-run` gains
+  `--dev` / `ANE_DEVICE`. Callers of `ane_m2_init_ports()` must pass the
+  device id (0 for the first accel node).
+
+- `ane_t6021`: the Makefile searches `ane/src` with `-iquote`, so a kernel
+  header package that ships its own `include/uapi/drm/ane_accel.h`
+  (linux-aurora-headers does) no longer shadows the in-tree UAPI header.
+  Before the fix the out-of-tree `ane_t6021` build failed on stock aurora
+  11.36 headers with `ANE_M2_MAX_BINDS` and `ANE_ABI_M2_MAJOR` undeclared.
+  The M1-family module was not affected (#132).
+
+- `ane_t6021`: a CALL returns on the firmware's IO_T2H finish event with
+  no fixed sleep after it. `call_settle_us` now defaults to 0 (was 1000
+  us per call): the finish event already marks the output in DRAM. H14
+  add on the M2 Max drops from 1.478 to about 0.31 ms per call. A
+  completion timeout now logs at error level and quarantines as before.
+  Receipt: `receipts/2026-10-06-t6021-call-settle/README.md`.
+
+- `tools/wdt-hang-test`: an out-of-tree test module that arms the Apple SoC
+  watchdog (WD1) through the kernel-registered `apple_wdt` device (DT-window
+  fallback only), pets it from a kernel thread, then hangs the CPU with
+  interrupts off, to prove the unattended reset-to-stock recovery under a
+  one-shot boot (Limine `LoaderEntryOneShot`, GRUB `next_entry`). W=1 clean
+  on the 7.1.13-3-1-ARCH and aurora trees; experimental and hardware-gated:
+  it never autoloads and is not packaged. Receipt:
+  `receipts/2026-10-04-wdt-hang-test/README.md`.
+
+## 0.4.5 (2026-10-04)
+
+This release moves the device tree overlays and the opt-in file to the
+overlay contract of omarchy-mac-boot. The move breaks hand installs and
+opt-in files from earlier releases. The release also adds the opt-in H15
+(M3) bring-up module. It changes no code that DKMS builds and no libane
+code: `git diff v0.4.4..v0.4.5 -- dkms.conf ane/Makefile ane/src
+ane/include ane/ane_stats_show.c ane/t6021 libane` is empty, so `ane.ko`,
+`ane_t6021.ko`, libane and the ioctl interface (ABI 1 and ABI 2) are the
+bytes of v0.4.4. The new `ane/h15/` tree is not in `dkms.conf`, and the
+package does not build it. The packaged drivers, libane and the firmware
+fetch are unchanged, so this release has no new hardware run. The path move
+is tested on the host only.
+
+- Breaking: the overlays move to the overlay contract of omarchy-mac-boot
+  (#124; omacom/omarchy-mac-pkgs#3, the port of omacom/omarchy-mac#677).
+  They install to `/usr/lib/omarchy-mac-boot/dtb-overlays/PREFIX/`, the
+  directory that omarchy-mac-boot ships for package-owned overlays. They
+  were in `/usr/share/omarchy-platform/dtb-overlays`. The second `Target`
+  of `90-omarchy-ane-dt.hook` is now
+  `usr/lib/omarchy-mac-boot/dtb-overlays/*/*.dtbo`, the glob of the
+  omarchy-mac-boot hook. A package upgrade moves the files. A hand install
+  (`packaging/build-dtbo /`) must move: while `.dtbo` files are in
+  `/usr/lib/omarchy-platform/dtb-overlays` or
+  `/usr/share/omarchy-platform/dtb-overlays`, `omarchy-ane-dt apply`
+  refuses, keeps the current copies, and names the steps.
+- Breaking: the opt-in file is now
+  `/etc/omarchy-mac-boot/dtb-overlays.opt-in`. It was
+  `/etc/omarchy-platform/dtb-overlays.opt-in`. Re-add your opt-in lines to
+  the new file. Nothing reads the old file, and the package does not copy
+  its lines. `omarchy-ane-check`, the docs and the H15 and H16 runbooks
+  name the new file (#124).
+- On Arch Linux ARM installs without omarchy-mac-boot, the package creates
+  the overlay directory, and `omarchy-ane-dt apply`, `update-m1n1-dtbs`
+  and the two `90-omarchy-ane-dt` hooks work as before (#124).
+- H15 (M3) opt-in experimental bring-up module (#121): `ane/h15/` with
+  four SoC rows (T8122, T6030, T6031, T6034), a module with four stages
+  (dt, status, wrapper, boot) and a host self test of its ADT walker
+  (`make -C ane/h15 check`); three experimental overlays in `ane/h15/`
+  (T8122, T6030, T6031; opt-in key `ane-h15-experimental`); three
+  data-only overlays in `packaging/dt/`; and `tools/omarchy-ane-h15-stage`.
+  The README data-only table marks the new overlays (#122). The module has
+  no `MODULE_DEVICE_TABLE`, so nothing loads it automatically, and its
+  probe refuses unless `optin=` names the SoC. No M3 has run it. Only
+  stage 1 touches MMIO: it reads the PMGR power-state words and writes no
+  register. Stages 2 and 3 refuse on H15 until a macOS capture clears the
+  words that are INFERENCE now.
+- H15 host-side fixes (#123): the module compiles (a macro that holds a
+  list was used as an expression); the ADT walker matches child names,
+  accepts nodes with no properties, reads segment-ranges as 64-bit fields
+  and no longer reads an uninitialized error; the self test no longer hangs
+  on property sizes that are not a multiple of 4; the probe refuses
+  (`-ENXIO`) when `of_iomap` returns NULL; `ps_wait_ms` is a limit for each
+  word, as documented; the compile line in `ane/h15/README-bringup.md`
+  uses `-O dtb`. #123 reports a clean W=1 build against the aurora
+  `ane-driver-aurora` tree. The T8122 overlay applies to all five T8122
+  board device trees. New volunteer runbook: `docs/h15-volunteer.md`.
+
+### Known limits
+
+- No hardware ran this release. The code that DKMS builds and libane are
+  the bytes of v0.4.4, whose hardware results are in
+  `receipts/2026-10-03-omarchy-ane-0.4.4/README.md`. The path move is
+  tested on the host only, with fake roots
+  (`receipts/2026-10-04-omarchy-ane-0.4.5/README.md`). The release gates
+  did not install it on a Mac.
+- T6000 and T6020 stay on by default in the overlays table of this release.
+  The Omarchy package (omacom/omarchy-pkgs#745) keeps them opt-in through
+  its recipe until a passing row from the DKMS modules of this package
+  exists. On these chips, the overlay and the DKMS modules of this package
+  have not run: their rows ran the kernel's own ANE driver and device tree.
+
+## 0.4.4 (2026-10-03)
+
+This release fixes the packaging defects of v0.4.3 and changes no driver or
+libane code: `git diff v0.4.3..v0.4.4 -- ane libane dkms.conf` is empty, so
+`ane.ko`, `ane_t6021.ko`, libane and the ioctl interface (ABI 1 and ABI 2)
+are the bytes of v0.4.3. The v0.4.3 tag sits on `0477f72`, the merge of the
+T6000 promotion, one commit before its CHANGELOG move. So the v0.4.3 tarball
+has no 0.4.3 section, and it carries a committed `__pycache__` file, stale
+T6000/T6020 wording and a failing `test_promote_chip`. This release
+supersedes it: its tarball carries the 0.4.3 and 0.4.4 notes.
+
+- The promotion release step cuts the release it should (#117). The release
+  notes cover every promotion merged since the last tag (verdict, chip, row
+  shas, driver_source, merge sha), and the tag goes on the release commit,
+  so the tarball carries its own CHANGELOG section, with `## Unreleased`
+  kept as the first section. v0.4.3 tagged the T6000 merge before the
+  CHANGELOG move and named only T6000. As merged in #117, the move left the
+  entries under `## Unreleased` and wrote no version heading; this release
+  writes the heading, and `test_promote_from_verdict` checks the moved text
+  byte for byte, with an entry to move. Its fixture already held a
+  `## 0.4.1` heading, so the old check passed without one. After a release,
+  `## Unreleased` sits empty right above the released heading, and
+  `promote_chip.py` keeps a blank line between a new entry and that heading
+  (`test_promote_chip` checks it).
+- The promotion flip is state-independent (#117). The check's case lists and
+  the tested-header list take their order from rules (T8103, T6001 and T6021
+  first, promoted chips sorted after them), not from seats in the v0.4.2
+  five-chip list. Each `<chip>-ane.dts` carries one tool-written
+  `Overlay state:` line, the offline suites take their chips from the
+  overlays table, and `test_promote_chip` runs in the promotion gate. In
+  v0.4.3 a T6002 promote and revert reordered the check's opt-in list, and
+  the suite failed.
+- `propose` stages only the tracked files that the flip wrote (#117).
+  `git add -A` had shipped a committed `__pycache__` file in v0.4.3; it is
+  removed, and `__pycache__/` and `*.pyc` are ignored now.
+- The T6000/T6020 prose matches 0.4.3 (#117): the README's default-on line
+  and the evidence cells name the passing rows 6eb94f49985b and
+  3c9389040f51, the overlay dts headers and the libane receipt stop calling
+  them untested or opt-in, and the libane entry and receipt carry the
+  hardware numbers of #111.
+- The 0.4.3 section below lists the rest of what v0.4.3 shipped: the probe
+  change (#79), the T6020 firmware fetch at install, and the development-only
+  changes (#108, #109).
+
+### Research
+
+- `docs/ultra-die1.md`: a design for the die-1 ANE of T6002 (M1 Ultra) and
+  T6022 (M2 Ultra), from a read-only capture on one M1 Ultra under macOS and
+  the ADT decode of both Ultra boards (`receipts/2026-10-03-ultra-die1`).
+  Design only, no code: no Ultra runs Linux today.
+
+### Known limits
+
+- T6000 and T6020 are on by default from one passing community row each.
+  Both rows ran the kernel's own ANE driver and device tree; on these chips
+  the overlay and the DKMS modules of this package have not run.
+- The hardware results of this release are in
+  `receipts/2026-10-03-omarchy-ane-0.4.4/README.md`.
 
 ## 0.4.3 (2026-10-03)
 
@@ -70,6 +471,14 @@
   `open_ms` 67-72 ms less; on T6001 from 361.4 to 286.5 ms, `open_ms` 828.5 to
   760.1 ms; encoder output bit-exact across arms and smoke 20/20 on both
   chips. Protocol and runs: `receipts/2026-10-03-libane-no-staging/README.md`.
+- `omarchy-ane-probe` reads data-only tables whose sections or `reg` lists
+  are wrapped as `{v, src}` leaves (#79). Before, a wrapped `reg` list failed
+  the whole `soc_table` section.
+- On T6020 the pacman hook fetches the ANE firmware at install and upgrade:
+  `omarchy-ane-firmware-fetch` has `apple,t6020` in its default list.
+- Development only, not installed by the package: every shell script runs
+  with `set -euo pipefail`, the H13 program-load verifier is split and has a
+  golden test (#108), and the pre-push hook finds `privacy_check.py` (#109).
 
 ## 0.4.2 (2026-10-03)
 

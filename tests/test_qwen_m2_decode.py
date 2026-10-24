@@ -120,6 +120,8 @@ def test_lanes_and_states_chain_across_programs_and_steps():
     ]
     dec = Decoder.__new__(Decoder)
     dec.progs, dec.max_len = progs, 4
+    dec.session, dec.resident_states = None, False
+    dec.cpu_hist, dec.step_cpus = {}, []
     dec.reset()
 
     def call(i, arrays):

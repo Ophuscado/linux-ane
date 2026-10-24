@@ -1,6 +1,6 @@
 #!/bin/bash
 # asahi-dtbs OUT [URL REF]: the linux-asahi 7.1.13 board device trees, or with
-# URL and REF those of that kernel tree at that tag or branch, for every PREFIX
+# URL and REF those of that kernel tree at that tag, branch or commit, for every PREFIX
 # in packaging/dt/overlays and every packaging/dt/PREFIX-ane-dataonly.dts, for
 # tools/test_ane_overlays.py. A PREFIX with no board device tree gets none.
 #
@@ -21,10 +21,25 @@ repo=$(dirname -- "$(realpath -- "$0")")/..
 src=$out/linux d=$out/linux/scripts/dtc
 mkdir -p "$out/bin" "$out/dtbs"
 if [[ ! -d $src/.git ]]; then
-  git -c advice.detachedHead=false clone -q --depth 1 --branch "$tag" --filter=blob:none --sparse \
-    "$url" "$src"
+  git init -q "$src"
+  git -C "$src" remote add origin "$url"
   git -C "$src" sparse-checkout set --no-cone /arch/arm64/boot/dts/apple/ /include/dt-bindings/ /scripts/dtc/
 fi
+# A restored cache is only a source cache, not authority for the requested ref.
+[[ $(git -C "$src" remote get-url origin) == "$url" ]] || {
+  echo "asahi-dtbs: $src belongs to a different repository" >&2; exit 2;
+}
+# Check before checkout as Git may otherwise replace ignored source files.
+state=$(git -C "$src" status --porcelain --untracked-files=all --ignored)
+[[ -z $state ]] || {
+  echo "asahi-dtbs: $src has modified or extra source files" >&2; exit 1;
+}
+if [[ $(git -C "$src" rev-parse --verify HEAD 2>/dev/null || true) != "$tag" ]]; then
+  git -C "$src" fetch -q --depth 1 --filter=blob:none -- origin "$tag"
+  git -C "$src" -c advice.detachedHead=false checkout -q --detach FETCH_HEAD
+fi
+# Only generated DTBs are replaced; unrelated output files are left alone.
+rm -f -- "$out/dtbs/"*.dtb
 
 flex -o "$out/dtc-lexer.lex.c" "$d/dtc-lexer.l"
 bison -o "$out/dtc-parser.tab.c" --defines="$out/dtc-parser.tab.h" -t -l "$d/dtc-parser.y"
