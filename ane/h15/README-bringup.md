@@ -63,7 +63,7 @@ template is `ane/h16/`.
   translation on and a valid TTBR. `PASS reason=dart-no-stream-enabled`
   means nothing is enabled: a started core could not fetch its firmware. It
   does not show whether the mapping covers the firmware, whether the core would
-  run, or anything about the mailbox. On the M6 (T8152) the same kind of read (w7H, PR 183 and 185)
+  run, or anything about the mailbox. On the M6 (T8152) the same kind of read (PR 183 and 185)
   found every ENABLE_STREAMS word 0: iBoot left no stream enabled.
 - `stage=5` or `stage=run`: refused without `confirm_run=1`, with
   `run_wait_ms` outside 10 to 2000 (default 300), and on any SoC row whose
@@ -319,7 +319,7 @@ Without them (only if stage 4 found a live stream):
   inferred. Whether iBoot's firmware phys addresses repeat between boots is not known, which is why
   `fw_seg` must come from the same boot's ADT. Whether the T6030 firmware lays TEXT and DATA out
   like the M6 (DATA IOVA = vm-base + TEXT size) is inferred; `h15-segments.py` refuses a dump where it
-  does not hold. Instance 0 of the four DART windows may not be enough for the firmware fetch (w7H's
+  does not hold. Instance 0 of the four DART windows may not be enough for the firmware fetch (an
   open question on the M6).
 - Stage 5 reads CPU_CONTROL and writes it (bits 4 and 5 only). Nobody has run
   that on an H15 part. The M6 (T8152) result it is modelled on: the same RUN

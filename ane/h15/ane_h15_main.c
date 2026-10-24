@@ -732,11 +732,11 @@ static int ane_h15_stage_dart(struct ane_h15 *ane)
 
 /* ---- stage 5 map_fw=1: give the core a DART mapping before RUN ----
  *
- * The pattern of the M6 module (ane/h18, PR 185, w7H): attach the ANE to its DART through the iommu API, so the DART
+ * The pattern of the M6 module (ane/h18, PR 185): attach the ANE to its DART through the iommu API, so the DART
  * driver programs tunables, TTBR, TCR and the stream enable with the domains powered, then iommu_map() the two segments
- * the boot loader left in DRAM at the addresses the firmware is linked at. The M6 board result relayed by Main (01:19Z,
- * not yet in a merged receipt): with the map in place the firmware sent HELLO and EPMAP and accepted replies. None of it
- * has run on an H15 part.
+ * the boot loader left in DRAM at the addresses the firmware is linked at. A later M6 board report, relayed without a
+ * merged receipt: with the map in place the firmware sent HELLO and EPMAP and accepted replies. None of it has run on
+ * an H15 part.
  *
  * What this module cannot know and the tester must give: the physical addresses, which iBoot picks at boot and which the
  * Linux device tree does not carry for the ANE (m1n1 writes asc-firmware reserved regions only for dcp, dcpext and ave).
