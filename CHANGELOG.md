@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Host tools
+
+- `tools/surface_pack.c` and `tools/surface_pack.py` write a dense array straight into a prepared ANE input surface and read an output surface straight into a dense fp16 array. The numpy version zeroed a buffer, converted, assigned through a strided view, copied to bytes and copied again into the input buffer, and copied the output twice. The C version touches only the port's strided rows, because the padding of a prepared buffer is zero from creation. The bytes and arrays are identical to the numpy version, including fp32 overflow, subnormals, infinities and NaN, and `tests/test_surface_pack.py` checks that on seven shapes. On a 13-inch M1, in the S1 int8 decode (5 held-out prompts x 64 positions, each arm twice), the step p50 fell from 0.0650 to 0.0622 s (4.2 percent). The logits hashes of all five prompts were identical in every arm.
+
 ## 0.5.0 (2026-10-24)
 
 This release adds the bring-up of the M6 ANE (T8152) through the firmware handshake and the channel table, the T6021 program unload with the firmware's free request answered, the H15 stages up to the RTKit session, and an fp16 Q6_K head kernel. The unload and every H18 and H15 step are opt-in, and `unload_on_close` is off by default. One default changes in `ane_t6021`: EXEC and PROC_CREATE refuse a program id that the file did not load or look up. The H18 results are board measurements on one Mac mini M6. The H15 stages have not run on an H15 part.
