@@ -14,6 +14,9 @@
  *   PSD slots on (stage power) and that CPU_CONTROL reads 0 before the core runs (read_ctrl).
  * - PSD slot window layout and request protocol: drivers/pmdomain/apple/pmgr-psd.c of the same kernel tree,
  *   proven on this board for slot 71 (ATC0 USB).
+ * - RTKit management protocol (message types, the power state values), the T8152 counted FIFO layout of a Postoffice channel and the
+ *   Gen3 DART register layout: drivers/soc/apple/rtkit.c, drivers/soc/apple/mailbox.c and drivers/iommu/apple-dart.c of the kernel tree this
+ *   Image is built from (linux-aurora, commit dc7b5b9c539b85bdf2557f2a0eb44223a4219de9, the last commit that changed all three).
  * INFERENCE, not measured: that ANE slots 30 and 31 accept state 0 (run) and what the ASC wrapper reads
  * once they are on. The ANE needs more than the PSD slots (clock-ids 329, 328 and 375 are not modeled).
  */
