@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0+ OR MIT
 /*
- * Apple T8152 (M6) J873 with the ANE node and DART as t8152-j873-ane-dart.dts, plus the ADT tunables of instances 1 to 3 and stream 11 on
- * every instance. Two changes at once: build t8152-j873-ane-dart.dts for a run that isolates the instances.
+ * Apple T8152 (M6) J873 with the ANE node and DART as t8152-j873-ane-dart.dts, plus stream 11 (mapper-ane-mpm) on every instance.
+ * Two changes are not made at once: build t8152-j873-ane-dart.dts first.
  */
 
 #include "t8152-j873.dts"
 #include "t8152-j873-ane.dtsi"
 #include "t8152-j873-ane-dart.dtsi"
-#include "t8152-j873-ane-dart-tunables.dtsi"
 #include "t8152-j873-ane-dart-sid11.dtsi"

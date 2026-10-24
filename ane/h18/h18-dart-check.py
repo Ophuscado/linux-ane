@@ -6,7 +6,7 @@ Usage: h18-dart-check.py ADT.bin DTB
 
 For /arm-io/dart-ane instances 0 to 3 (the ADT reg windows 0 to 3, plus the 0x200000000 translation of the board
 device tree) the script requires in the DTB: a node at that address with the same size, the ADT interrupt, and, where the
-node has apple,tunable, exactly the ADT dart-tunables-instance-N records (24 byte records: u32 offset, u32 size,
+node has apple,tunable (the driver refuses a node without it), exactly the ADT dart-tunables-instance-N records (24 byte records: u32 offset, u32 size,
 u64 mask, u64 value). It also requires that the ane node's iommus names every instance with stream 0, and that any
 other stream is a stream of the ADT iommu-parent of the ane node (mapper-ane reg 0, mapper-ane-mpm reg 11) on every
 instance. It needs dtc on the PATH and prints one line per check; the exit status is 1 on the first mismatch. Nothing is written.
@@ -108,7 +108,7 @@ def main():
         say(cells(body, 'interrupts')[1] == irq, 'instance %d: interrupt %d' % (i, irq))
         t = cells(body, 'apple,tunable')
         want = [x for rec in tun[i] for x in (rec[0], rec[2], rec[3])]
-        say(t is None or t == want, 'instance %d: %s' % (i, 'no tunables in the node' if t is None else
+        say(t == want, 'instance %d: %s' % (i, 'no tunables in the node (the driver refuses such a node)' if t is None else
                                                           '%d tunable records equal the ADT' % len(tun[i])))
         phand[cells(body, 'phandle')[0]] = i
     iom = cells(ane, 'iommus') or []
