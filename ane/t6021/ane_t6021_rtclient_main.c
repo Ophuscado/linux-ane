@@ -545,7 +545,7 @@ static void ane_rtclient_validate_chman(struct ane_rtclient *ane)
  * when there is none, a negative errno for an entry that is not a request (the ring is not what we think) or an allocation that failed.
  * A MALLOC gets a fresh buffer. A FREE or UNREMAP (header = the IOVA the firmware gives back, see ane_t6021_mring.h) gets the answer the firmware
  * waits for without a timeout while it holds its shared-memory lock: body zero, header 1, doorbell bit 5. Ignoring it would wedge the firmware's
- * program manager with the command already acknowledged. The buffer the firmware gave back stays allocated to the driver (freed at teardown). */
+ * program manager with the command already acknowledged. The buffer the firmware gave back is matched to its legacy table entry and freed after the answer is out (see ane_t6021_legtab.h). */
 static int ane_rtclient_malloc_service(struct ane_rtclient *ane, unsigned int *cursor)
 {
 	struct ane_t6021 *a = ane->fw;
