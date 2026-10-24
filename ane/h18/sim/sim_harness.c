@@ -92,6 +92,8 @@ void sim_hs_react(void)
 
 			if (c == 2 && sim_table_bad == 100)
 				ring = sim_dma[1].iova + 0x80;	/* inside the table entries */
+			if (c == 2 && sim_table_bad == 102)
+				ring = 0xffffffffffffff00ULL;	/* ring + slots * 0x40 wraps past 2^64 */
 			if (c == 2 && sim_table_bad == 101)
 				ring = sim_dma[1].iova + 0x8800;	/* the IO ring */
 
@@ -1002,7 +1004,7 @@ static void pos_boot(void)
 		int pass, k, w3 = -1, db = -1, nsc3, nh2t, ok;
 		u8 *ipc;
 
-		for (pass = 0; pass < 10; pass++) {
+		for (pass = 0; pass < 11; pass++) {
 			kboot_setup();
 			alias_mbox = true;
 			rtkit_hello = true;
@@ -1025,6 +1027,7 @@ static void pos_boot(void)
 			if (pass == 7) sim_table_bad = 4;
 			if (pass == 8) sim_table_bad = 100;
 			if (pass == 9) sim_table_bad = 101;
+			if (pass == 10) sim_table_bad = 102;
 			ret = probe_now();
 			ipc = sim_n_dma > 1 ? sim_dma[1].va : NULL;
 			nsc3 = 0;
@@ -1052,6 +1055,8 @@ static void pos_boot(void)
 				chk(ret == -EIO && result("boot", "FAIL", "handshake-channel-step-failed") && sim_cmds_seen == 1, "CH5 a failing acknowledgement (+6 = 2) is a FAIL, CONFIG_GET is not sent");
 			if (pass == 5)
 				chk(ret == -EINVAL && result("boot", "REFUSED", "hs_chan=1 needs handshake=1 and hs_cmds=1 needs hs_chan=1") && writes() == 0, "CH6 hs_cmds=1 without hs_chan=1 is refused before any write");
+			if (pass == 10)
+				chk(ret == -EPROTO && result("boot", "FAIL", "handshake-channel-step-failed") && nsc3 == 0 && sim_db_writes == 0 && sim_cmds_seen == 0, "CH9 a ring address near 2^64 that wraps the old bound check: FAIL, nothing written");
 			if (pass == 8 || pass == 9)
 				chk(ret == -EPROTO && result("boot", "FAIL", "handshake-channel-step-failed") && nsc3 == 0 && sim_db_writes == 0 && sim_cmds_seen == 0 && log_count("overlaps") == 1, pass == 8 ? "CH8 a ring that overlaps the table entries: FAIL, nothing written" : "CH8 a ring that overlaps another ring: FAIL, nothing written");
 			if (pass == 6 || pass == 7)

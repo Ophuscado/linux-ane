@@ -191,8 +191,14 @@ sim-mutation-chnos3:
 	$(call mutant,chnos3,s/ane_h18_scratch_write(ane, 3, ANE_H18_HS_READY);/(void)0; \/* NEG: no SCRATCH3 *\//,NEG: no SCRATCH3,pos)
 
 # a ring outside the table surface is accepted
+CHNOVALID_SED := s/ring - tb->iova >= tb->size || size \* ANE_H18_CH_SLOT > tb->size - (ring - tb->iova)/0 \/* NEG: ring bound off *\//
 sim-mutation-chnovalid:
-	$(call mutant,chnovalid,s/ring + size \* ANE_H18_CH_SLOT > tb->iova/0 \/* NEG: ring bound off *\/ > tb->iova/,NEG: ring bound off,pos)
+	$(call mutant,chnovalid,$(CHNOVALID_SED),NEG: ring bound off,pos)
+
+# the ring bound is the old form that wraps past 2^64
+CHNOWRAP_SED := s/ring - tb->iova >= tb->size || size \* ANE_H18_CH_SLOT > tb->size - (ring - tb->iova)/ring + size * ANE_H18_CH_SLOT > tb->iova + tb->size \/* NEG: wrapping bound *\//
+sim-mutation-chnowrap:
+	$(call mutant,chnowrap,$(CHNOWRAP_SED),NEG: wrapping bound,pos)
 
 # a SCRATCH3 that stays READY is accepted
 sim-mutation-chs3skip:
@@ -233,12 +239,13 @@ sim-all: sim-test sim-negative-psd-never sim-negative-psd-wrong sim-negative-dt 
 	sim-mutation-chs3skip \
 	sim-mutation-chnoack \
 	sim-mutation-chnobell \
-	sim-mutation-chnoverlap
+	sim-mutation-chnoverlap \
+	sim-mutation-chnowrap
 
 clean:
 	$(MAKE) -C $(KERNELDIR) M=$(PWD) clean
 	rm -f sim/sim_h18
 
-.PHONY: sim-mutation-chnoverlap sim-mutation-chnoinit sim-mutation-chnos3 sim-mutation-chnovalid sim-mutation-chs3skip sim-mutation-chnoack sim-mutation-chnobell sim-mutation-hsnowake sim-mutation-hsnohigh sim-mutation-hsnofree sim-mutation-hsbys7 sim-mutation-hsnoreqgate sim-mutation-hsnolimit sim-mutation-hsowndom sim-mutation-hsmask sim-mutation-noqueue sim-mutation-noshutfail sim-mutation-nostate6 sim-mutation-nostop sim-mutation-noackstate sim-mutation-mapgate sim-mutation-nofail sim-mutation-noundomap sim-mutation-norpmput sim-mutation-nocredit sim-mutation-wronghalf sim-mutation-nover sim-mutation-dartgate sim-mutation-hellogate sim-negative-boot sim-mutation-noconfirmboot sim-mutation-nopreflight sim-mutation-nohalt default modules sim-test sim-negative-psd-never sim-negative-psd-wrong sim-negative-dt sim-negative-args \
+.PHONY: sim-mutation-chnowrap sim-mutation-chnoverlap sim-mutation-chnoinit sim-mutation-chnos3 sim-mutation-chnovalid sim-mutation-chs3skip sim-mutation-chnoack sim-mutation-chnobell sim-mutation-hsnowake sim-mutation-hsnohigh sim-mutation-hsnofree sim-mutation-hsbys7 sim-mutation-hsnoreqgate sim-mutation-hsnolimit sim-mutation-hsowndom sim-mutation-hsmask sim-mutation-noqueue sim-mutation-noshutfail sim-mutation-nostate6 sim-mutation-nostop sim-mutation-noackstate sim-mutation-mapgate sim-mutation-nofail sim-mutation-noundomap sim-mutation-norpmput sim-mutation-nocredit sim-mutation-wronghalf sim-mutation-nover sim-mutation-dartgate sim-mutation-hellogate sim-negative-boot sim-mutation-noconfirmboot sim-mutation-nopreflight sim-mutation-nohalt default modules sim-test sim-negative-psd-never sim-negative-psd-wrong sim-negative-dt sim-negative-args \
 	sim-mutation-noconfirm sim-mutation-nowindow sim-mutation-noundo sim-mutation-noack sim-mutation-nogate sim-all clean
 endif
