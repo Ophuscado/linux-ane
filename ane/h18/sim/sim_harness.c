@@ -124,7 +124,7 @@ static void reset_all(void)
 	alias_mbox = false;
 	rtkit_hello = false;
 	rtkit_start = false;
-	rtkit_stop = false;
+	rtkit_stop = 0;
 	sim_n_tx_msgs = sim_idle_sent = sim_stop_needs_idle = sim_no_shutdown_reply = 0;
 	sim_iop_ack_state = 0x20;
 	map_fw = false;
@@ -668,26 +668,46 @@ static void pos_boot(void)
 		alias_mbox = true;
 		rtkit_hello = true;
 		rtkit_start = true;
-		rtkit_stop = true;
+		rtkit_stop = 1;
+		sim_start_chan = 536;
+		sim_start_hello = 3;
+		sim_stop_needs_idle = 1;
+		ret = probe_now();
+		chk(ret == 0 && result("boot", "PASS", "core-ran-and-stopped") && sim_n_tx_msgs == 8 && sim_tx_msgs[6] == 0xb0000000000010ULL && sim_tx_msgs[7] == 0x60000000000001ULL,
+		    "R4 boot rtkit_stop: AP power QUIESCED then IOP power SLEEP follow the boot messages and the core stops after the IOP acknowledgement");
+		chk(log_count("rtkit shutdown: ap_acked=1 iop_acked=1 iop_idle=0") == 1, "R4 boot rtkit_stop: both acknowledgements seen");
+		/* rtkit_stop=2: OFF then OFF, the pair the board stopped with */
+		boot_setup();
+		alias_mbox = true;
+		rtkit_hello = true;
+		rtkit_start = true;
+		rtkit_stop = 2;
 		sim_start_chan = 536;
 		sim_start_hello = 3;
 		sim_stop_needs_idle = 1;
 		ret = probe_now();
 		chk(ret == 0 && result("boot", "PASS", "core-ran-and-stopped") && sim_n_tx_msgs == 8 && sim_tx_msgs[6] == 0xb0000000000000ULL && sim_tx_msgs[7] == 0x60000000000000ULL,
-		    "R4 boot rtkit_stop: AP power OFF then IOP power OFF follow the boot messages and the core stops after the idle message");
-		chk(log_count("rtkit shutdown: ap_off_acked=1 iop_off_acked=1 iop_idle=1") == 1, "R4 boot rtkit_stop: both acknowledgements and the idle message seen");
+		    "R6 boot rtkit_stop=2: AP power OFF then IOP power OFF, the core stops after the IOP acknowledgement");
+		/* rtkit_stop=3 is refused */
+		boot_setup();
+		alias_mbox = true;
+		rtkit_hello = true;
+		rtkit_start = true;
+		rtkit_stop = 3;
+		ret = probe_now();
+		chk(ret == -EINVAL && !writes(), "R7 boot rtkit_stop=3 is refused before any write");
 		/* a firmware that never answers the shutdown: no PASS, the slots stay, the core is reported as not stopped */
 		boot_setup();
 		alias_mbox = true;
 		rtkit_hello = true;
 		rtkit_start = true;
-		rtkit_stop = true;
+		rtkit_stop = 1;
 		sim_start_chan = 536;
 		sim_start_hello = 3;
 		sim_stop_needs_idle = 1;
 		sim_no_shutdown_reply = 1;
 		ret = probe_now();
-		chk(ret != 0 && result("boot", "FAIL", "core-not-stopped") && log_count("iop_idle=0") == 1 && sim_n_tx_msgs == 7, "R5 boot rtkit_stop: no shutdown answer gives FAIL core-not-stopped, AP OFF sent once, no IOP OFF");
+		chk(ret != 0 && result("boot", "FAIL", "core-not-stopped") && log_count("ap_acked=0 iop_acked=0") == 1 && sim_n_tx_msgs == 7, "R5 boot rtkit_stop: no shutdown answer gives FAIL core-not-stopped, AP QUIESCED sent once, no IOP SLEEP");
 	}
 	/* without rtkit_hello the messages are only logged */
 	boot_setup();
@@ -801,9 +821,9 @@ static int neg_boot(void)
 	boot_setup();
 	alias_mbox = true;
 	rtkit_hello = true;
-	rtkit_stop = true;
+	rtkit_stop = 1;
 	ret = probe_now();
-	if (ret != -EINVAL || writes() || !result("boot", "REFUSED", "rtkit_stop=1 needs rtkit_start=1")) { printf("    rtkit_stop without rtkit_start\n"); bad = 1; }
+	if (ret != -EINVAL || writes() || !result("boot", "REFUSED", "rtkit_stop=1 or 2 needs rtkit_start=1")) { printf("    rtkit_stop without rtkit_start\n"); bad = 1; }
 	/* rtkit_hello without alias_mbox is refused before any write */
 	boot_setup();
 	rtkit_hello = true;

@@ -204,10 +204,9 @@ static inline void sim_fw_react(u64 msg0)
 	} else if (type == 0xb) {
 		if (state == 0x20 || !sim_no_shutdown_reply)
 			sim_fw_enqueue(536, (0xbULL << 52) | state);
-	} else if (type == 6 && state == 0 && !sim_no_shutdown_reply) {
-		sim_fw_enqueue(536, (7ULL << 52) | 0);
-		sim_fw_enqueue(536, 0xcULL << 52);
-		sim_idle_sent = 1;
+	} else if (type == 6 && (state == 1 || state == 0) && !sim_no_shutdown_reply) {
+		sim_fw_enqueue(536, (7ULL << 52) | state);
+		sim_idle_sent = 1;	/* the modelled core accepts the RUN clear once the IOP acknowledged the shutdown state */
 	}
 }
 

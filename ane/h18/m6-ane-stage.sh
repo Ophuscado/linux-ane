@@ -12,7 +12,7 @@
 # dart=1 reads twelve words of the ANE DART before RUN (needs two slots); hello=1 answers the firmware's RTKit management HELLO
 # (version 12) and endpoint map in the TX half of that channel (RX +0x00, TX +0x10), one paired 16 byte access per message, nothing else.
 # hello=2 also starts the system endpoints (crash log and the like), answers the firmware's IOP power state acknowledgement with AP power state ON, and
-# starts the application endpoints once the AP power state is acknowledged. hello=3 also runs the RTKit shutdown (AP and IOP power state OFF) before RUN is cleared.
+# starts the application endpoints once the AP power state is acknowledged. hello=3 also runs the restartable RTKit shutdown (AP power state QUIESCED, IOP power state SLEEP) before RUN is cleared, hello=4 the OFF shutdown the board stopped with.
 # Step 5 is step 4 with map_fw=1, for a DTB that has the ANE DART: it needs power-domains and iommus in the ANE node, attaches the ANE to
 # its DART through the iommu API and maps the two preloaded firmware segments before RUN. The state and slots arguments are ignored there
 # (the kernel's PSD driver owns the slots). Step 5 counts as step 4: it needs a step 3 PASS and runs once per boot.
@@ -38,7 +38,7 @@ fi
 
 WORK=${WORK:-/var/tmp/m6-ane}
 KO=${KO:-$WORK/ane_h18.ko}
-KO_SHA256=${KO_SHA256:-6de2f0d82427084cb4b7f1efba9b9646f96b30763768c00fe3863020241e6c21}
+KO_SHA256=${KO_SHA256:-b8850f85b85dc0a8097528bbc50729e68043ed7254bac38aac68b4e3d1305c1e}
 WANT_UNAME=${WANT_UNAME:-7.1.12-aurora-m6usb-ARCH}
 UNAME_R=${UNAME_R:-$(uname -r)}
 BOOT_ID_FILE=${BOOT_ID_FILE:-/proc/sys/kernel/random/boot_id}
@@ -68,7 +68,7 @@ case "$slots" in 1|2) ;; *) die "slots must be 1 or 2" ;; esac
 if [ "$step" = 4 ]; then
   case "$wait_ms" in *[!0-9]*|"") die "wait_ms must be a number" ;; esac
   [ "$wait_ms" -ge 10 ] && [ "$wait_ms" -le 2000 ] || die "wait_ms must be 10 to 2000"
-  case "$dart$hello" in 00|01|02|03|10|11|12|13) ;; *) die "dart must be 0 or 1 and hello 0 to 3 (2 also starts the endpoints, 3 also runs the RTKit shutdown)" ;; esac
+  case "$dart$hello" in 00|01|02|03|04|10|11|12|13|14) ;; *) die "dart must be 0 or 1 and hello 0 to 4 (2 also starts the endpoints, 3 also runs the restartable RTKit shutdown, 4 the OFF shutdown)" ;; esac
   if [ "$fw" = 1 ]; then
     [ -e "$DT_NODE/iommus" ] && [ -e "$DT_NODE/power-domains" ] || die "step 5 needs a DTB with iommus and power-domains in the ANE node"
   fi
@@ -121,6 +121,7 @@ case "$step" in
      [ "$hello" = 0 ] || args="$args rtkit_hello=1"
      [ "$hello" -ge 2 ] && args="$args rtkit_start=1"
      [ "$hello" = 3 ] && args="$args rtkit_stop=1"
+     [ "$hello" = 4 ] && args="$args rtkit_stop=2"
      : > "$WORK/step4-run-$boot" ;;
 esac
 case "$step" in 1) want_stage=dt ;; 2) want_stage=psd ;; 3) want_stage=power ;; 4) want_stage=boot ;; esac

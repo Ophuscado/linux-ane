@@ -68,10 +68,12 @@
 #define ANE_H18_RTK_EPMAP	8	/* the reply has the same type */
 #define ANE_H18_RTK_AP_PWR	0xb	/* SET_AP_PWR_STATE */
 #define ANE_H18_RTK_PWR_ON	0x20
-#define ANE_H18_RTK_PWR_OFF	0x00
+#define ANE_H18_RTK_PWR_OFF	0x00	/* rtkit_stop=2: OFF on both sides, cannot be restarted (apple_rtkit_poweroff) */
+#define ANE_H18_RTK_PWR_QUIESCED	0x10	/* the AP state of apple_rtkit_shutdown */
+#define ANE_H18_RTK_PWR_SLEEP	0x01	/* the IOP state of apple_rtkit_shutdown: sleeping, can be restarted (OFF cannot) */
 #define ANE_H18_RTK_IOP_IDLE	0xc
 #define ANE_H18_RTK_SET_IOP_PWR	6
-#define ANE_H18_RTK_STOP_WAIT_MS	600	/* how long the shutdown handshake waits for the IOP idle message */
+#define ANE_H18_RTK_STOP_WAIT_MS	600	/* how long the shutdown handshake waits for the IOP acknowledgement */
 #define ANE_H18_RTK_APP_EP	0x20	/* endpoints from here are application endpoints, started only once the coprocessor runs */
 #define ANE_H18_RTK_VERSION	12	/* the version macOS and Linux answer with on this firmware family */
 

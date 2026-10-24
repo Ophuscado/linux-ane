@@ -101,7 +101,7 @@ rm -f "$T/work/step4-run-0123abcd"
 # the dart and hello flags of step 4
 expect "step 4 dart=1 with one slot refused" 2 bash "$S" 4 0123abcd GO 1 1 300 1
 expect "step 4 dart=2 refused" 2 bash "$S" 4 0123abcd GO 1 2 300 2
-expect "step 4 hello=4 refused (early)" 2 bash "$S" 4 0123abcd GO 1 2 300 0 4
+expect "step 4 hello=5 refused (early)" 2 bash "$S" 4 0123abcd GO 1 2 300 0 5
 [ ! -e "$T/work/step4-run-0123abcd" ] && echo "  PASS a refused step 4 leaves no marker" || { echo "  FAIL marker after refused step 4"; fails=$((fails + 1)); }
 sleep 1
 FAKE_STAGE=boot expect "step 4 with dart=1 and hello=1 passes" 0 bash "$S" 4 0123abcd GO 1 2 800 1 1
@@ -125,14 +125,18 @@ grep -q 'map_fw' "$T/insmod.args" && { echo "  FAIL step 4 carries map_fw"; fail
 rm -f "$T/work/step4-run-0123abcd"
 sleep 1
 # hello 2 starts the endpoints, hello 3 also runs the RTKit shutdown, hello 4 is refused
-expect "step 4 with hello=4 refused" 2 bash "$S" 4 0123abcd GO 1 2 800 0 4
+expect "step 4 with hello=5 refused" 2 bash "$S" 4 0123abcd GO 1 2 800 0 5
 sleep 1
 FAKE_STAGE=boot expect "step 4 with hello=2 passes" 0 bash "$S" 4 0123abcd GO 1 2 800 0 2
 grep -q 'alias_mbox=1 rtkit_hello=1 rtkit_start=1' "$T/insmod.args" && ! grep -q 'rtkit_stop' "$T/insmod.args" && echo "  PASS hello=2 args: hello and start, no stop" || { echo "  FAIL hello=2 args"; fails=$((fails + 1)); }
 rm -f "$T/work/step4-run-0123abcd"
 sleep 1
 FAKE_STAGE=boot expect "step 4 with hello=3 passes" 0 bash "$S" 4 0123abcd GO 1 2 800 1 3
-grep -q 'read_dart=1 rtkit_hello=1 rtkit_start=1 rtkit_stop=1' "$T/insmod.args" && echo "  PASS hello=3 args: hello, start and stop" || { echo "  FAIL hello=3 args"; fails=$((fails + 1)); }
+grep -q 'read_dart=1 rtkit_hello=1 rtkit_start=1 rtkit_stop=1' "$T/insmod.args" && echo "  PASS hello=3 args: hello, start and stop=1" || { echo "  FAIL hello=3 args"; fails=$((fails + 1)); }
+rm -f "$T/work/step4-run-0123abcd"
+sleep 1
+FAKE_STAGE=boot expect "step 4 with hello=4 passes" 0 bash "$S" 4 0123abcd GO 1 2 800 0 4
+grep -q 'rtkit_hello=1 rtkit_start=1 rtkit_stop=2' "$T/insmod.args" && echo "  PASS hello=4 args: hello, start and stop=2" || { echo "  FAIL hello=4 args"; fails=$((fails + 1)); }
 rm -f "$T/work/step4-run-0123abcd"
 sleep 1
 # after a step 4 ran, no ANE step of any number may start until a reboot

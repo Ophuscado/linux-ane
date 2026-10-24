@@ -42,8 +42,10 @@ else in the ASC, IORVBAR or mailbox windows.
   - `rtkit_start=1` (needs `rtkit_hello=1`): after the last endpoint map message, start the system endpoints the firmware announced (STARTEP). When
     the firmware acknowledges the IOP power state ON, answer with AP power state ON. When the firmware acknowledges that, start the application endpoints
     it announced (endpoint 0x20 and above). A buffer request is logged and not answered.
-  - `rtkit_stop=1` (needs `rtkit_start=1`): before RUN is cleared, send AP power state OFF, then IOP power state OFF when the AP acknowledgement arrives, and
-    wait up to 600 ms for the firmware's idle message. Whether this lets the core reach STOPPED is not known.
+  - `rtkit_stop=1` (needs `rtkit_start=1`): before RUN is cleared, send AP power state QUIESCED (0x10), then IOP power state SLEEP (0x1) when the AP
+    acknowledgement arrives, as `apple_rtkit_shutdown` does, and wait up to 600 ms for the IOP acknowledgement. That pair can be restarted. Whether it lets
+    the core reach STOPPED is not known. `rtkit_stop=2` sends OFF (0x0) on both sides instead, as `apple_rtkit_poweroff` does. The board stopped the
+    core with that pair. The core cannot be restarted after it.
   - `rtkit_hello=1` (needs `alias_mbox=1`): answer the firmware's RTKit management HELLO with version 12 and its endpoint map, nothing else. The
     reply goes to TX as one paired 16 byte store. No reply is sent without a free TX slot, for a message of another type or endpoint, or when the
     firmware's version range excludes 12. At most four replies per run.
@@ -51,6 +53,9 @@ else in the ASC, IORVBAR or mailbox windows.
 With power-domains in the node (the overlay `t8152-j873-ane-dart.dtsi`), the kernel's PSD driver owns slots 30 and 31. The module then
 requests no PSD state and no undo. It takes a runtime PM reference in stages power and boot, which powers the slots and fails if the power-on fails,
 and releases it after a clean stop. Binding the module powers the domain, so stage dt is no longer free of hardware access with that overlay.
+With `iommus` in the node, the iommu core also attaches a default domain to the device when the module binds, in every stage. On the board the DART's
+first-use initialisation ran from that attach, at boot, while the PSD group was still at state 6, and the boot was fine. After a stage the group stays at state 1
+if the DART holds a reference, so the stage script's check for a slot that did not return to state 6 cannot fire in this mode.
 
 ## Why the ANE is powered by PSD slots
 
@@ -88,6 +93,13 @@ the mailbox or the DART.
 Board run of stage boot (Mac mini M6, 2026-10-23, `psd_slots=2`, 300 ms): CPU_STATUS went from 0xa to 0x8 within 11 ms of the RUN write and stayed
 0x8. The plain-bank status words stayed 0 and no message was read. Clearing RUN did not return the core to STOPPED, so the stage reported
 core-not-stopped and left the slots on. That run watched the plain bank, not the alias bank.
+
+Board runs with the DART overlay (Mac mini M6, 2026-10-24, `psd_slots=2`, payload with the ANE DART node): before the map the DART stream enable words
+were 0 (the boot loader leaves no stream enabled). After the attach and the two maps they read 0xffff. After RUN the firmware sent the RTKit HELLO (version
+12) and two endpoint map messages: endpoints 0 and 1, then endpoint 0x20 with the last flag. The module answered them. With `rtkit_start=1` it started endpoint 1
+(the firmware answered with a buffer request for its own crash log, 12 pages at an address inside its data segment, which the module logs and does not answer).
+The firmware then acknowledged IOP power state ON (0x20). The module sent AP power state ON, the firmware acknowledged it, and the module started endpoint 0x20.
+Endpoint 0x20 sent nothing in the next 1.2 s. With `rtkit_stop=2` the AP and IOP OFF messages were acknowledged, and clearing RUN then returned the core to STOPPED.
 
 ## Build and sim
 
