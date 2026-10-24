@@ -475,6 +475,11 @@ static void chk(int ok, const char *name)
 		fails++;
 }
 
+static int sim_in_dart(u64 pa)
+{
+	return pa >= SIM_DART_PA && pa < SIM_DART_PA + SIM_DART_SIZE;
+}
+
 static int log_count(const char *needle)
 {
 	const char *p = sim_log;
@@ -1365,7 +1370,7 @@ static void pos_boot(void)
 		int pass, k, w3 = -1, db = -1, nsc3, nh2t, ok;
 		u8 *ipc;
 
-		for (pass = 0; pass < 27; pass++) {
+		for (pass = 0; pass < 28; pass++) {
 			kboot_setup();
 			alias_mbox = true;
 			rtkit_hello = true;
@@ -1406,6 +1411,7 @@ static void pos_boot(void)
 			if (pass == 24) sim_prog_mode = 4;
 			if (pass == 25) sim_prog_mode = 5;
 			if (pass == 26) sim_prog_mode = 6;
+			if (pass == 27) read_dart = true;
 			ret = probe_now();
 			ipc = sim_n_dma > 1 ? sim_dma[1].va : NULL;
 			nsc3 = 0;
@@ -1426,7 +1432,7 @@ static void pos_boot(void)
 					chk(ret == 0 && ok && sim_cmds_seen == 9 && sim_cmd_ops[4] == 0x200 && sim_cmd_ops[5] == 0x202 && sim_cmd_ops[6] == 0x204 && sim_cmd_ops[7] == 0x203 && sim_cmd_ops[8] == 0x201 &&
 					    !sim_prog_loaded && !sim_prog_created,
 					    "PG1 hs_prog=1: LOAD_PROGRAM, CREATE_PROCESS, PROCEDURE_CALL, TERMINATE_PROCESS, DESTROY_PROGRAM in that order after the four start commands, the firmware holds nothing afterwards");
-					chk(log_count("LOAD_PROGRAM program id 0x5a") == 1 && log_count("CREATE_PROCESS process id 0x77") == 1 && sim_out_written &&
+					chk(log_count("DART exception state (before LOAD_PROGRAM) not read: read_dart=0") == 1 && log_count("DART exception state (after the call) not read: read_dart=0") == 1 && log_count("LOAD_PROGRAM program id 0x5a") == 1 && log_count("CREATE_PROCESS process id 0x77") == 1 && sim_out_written &&
 					    log_count("buffer 4 (output, 0x4000 bytes): 2 nonzero words, first 11223344 11223344") == 1 && log_count("buffer 5 (input, 0x4000 bytes): 16 nonzero words, first aaaaaaaa") == 1,
 					    "PG2 the ids come back from the replies, the sections and buffers reach the firmware (it checked every IOVA), the output buffer is read back and logged");
 					chk(log_count("PROCEDURE_CALL finished after") == 1 && log_count("IO_T2H slot 0 header=") == 1 && log_count("IO_T2H slot 1 header=") == 1 && sim_t2h_posted == 2 && sim_t2h_back == 2 && log_count("write doorbell BIT(6)") == 2,
@@ -1448,6 +1454,20 @@ static void pos_boot(void)
 					    "PG9 a call without a finish event: FAIL, nothing is unloaded (the firmware may be hung), the stop still runs");
 				if (pass == 23)
 					chk(ret == -EIO && sim_prog_n == 3 && sim_prog_ops[1] == 0x202 && sim_prog_ops[2] == 0x201 && !sim_prog_loaded, "PG10 CREATE_PROCESS refused: the program is destroyed, no call");
+				if (pass == 27) {
+					int dw = 0, dr = 0;
+
+					for (kk = 0; kk < sim_n_events; kk++)
+						if (sim_in_dart(sim_events[kk].pa)) {
+							if (sim_events[kk].write)
+								dw++;
+							else
+								dr++;
+						}
+					chk(ret == 0 && ok && dw == 0 && sim_faults == 0 && log_count("DART exc before LOAD_PROGRAM stream ") == 8 && log_count("DART exc after the call stream ") == 8 &&
+					    log_count("DART exc before LOAD_PROGRAM bitmap word 7 (+0x401c)") == 1 && log_count("DART exc after the call +0x1c0 = ") == 1 && dr >= 2 * (5 + 8 + 8 * 9),
+					    "PG18 read_dart=1 with hs_prog: the DART exception state (five words, eight bitmap words, at most eight stream records) is read before LOAD_PROGRAM and after the call, never written");
+				}
 				if (pass == 26)
 					chk(ret == -EIO && sim_prog_n == 2 && sim_prog_ops[0] == 0x200 && sim_prog_ops[1] == 0x202 && sim_prog_loaded && live == 0 && log_count("rtkit shutdown:") == 1,
 					    "PG17 CREATE_PROCESS not answered: FAIL, no DESTROY_PROGRAM and nothing else sent to the firmware, the stop still runs and the surfaces are freed afterwards");

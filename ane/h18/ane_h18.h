@@ -125,6 +125,9 @@ static inline enum ane_h18_mal_kind ane_h18_mal_classify(u64 hdr, u64 size, u64 
 #define ANE_H18_PROG_MAX_BYTES	0xc000000	/* all buffers together, 192 MiB */
 #define ANE_H18_PROG_COOKIE	0xADD0	/* the call cookie of the T6021 driver, returned in the IO_T2H events */
 #define ANE_H18_PROG_PRIORITY	2
+#define ANE_H18_DART_EXC_WORDS	8	/* words of the DART exception bitmap read (256 streams) */
+#define ANE_H18_DART_EXC_MAXSID	256	/* streams whose 0x40 byte record lies inside the DART window (0xc000) */
+#define ANE_H18_DART_EXC_SIDS	8	/* at most this many stream records printed */
 #define ANE_H18_CSNE_RESOURCE_INFO_GET	0x22	/* 100 byte command, the kext copies 16 bytes from +0x20 and +0x50 of the reply */
 /* ANE DART (dart,gen3, instance 0): read only liveness words, see ane_h18_read_dart_words(). */
 #define ANE_H18_DART_NREAD	12
