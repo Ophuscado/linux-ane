@@ -199,6 +199,10 @@ expect "step 5 with premap=1 and chan=3 refused" 2 bash "$S" 5 0123abcd GO 1 2 8
 sleep 1
 expect "step 5 with dinst=2 and dart=0 refused" 2 bash "$S" 5 0123abcd GO 1 2 800 0 3 1 1 4 2 0
 sleep 1
+FAKE_STAGE=boot expect "step 5 with premap=1 and dart=0 passes (only dinst needs dart=1)" 0 bash "$S" 5 0123abcd GO 1 2 800 0 3 1 1 4 0 1
+grep -q 'hs_prog=1 hs_premap=1' "$T/insmod.args" && ! grep -q 'dart_inst' "$T/insmod.args" && echo "  PASS premap alone reaches the module without dart_inst" || { echo "  FAIL premap alone"; fails=$((fails + 1)); }
+rm -f "$T/work/step4-run-0123abcd"
+sleep 1
 expect "step 5 with dinst=16 refused" 2 bash "$S" 5 0123abcd GO 1 2 800 1 3 1 1 4 16 0
 sleep 1
 FAKE_STAGE=boot expect "step 5 with chan=4, dinst=2 and premap=1 passes" 0 bash "$S" 5 0123abcd GO 1 2 800 1 3 1 1 4 2 1

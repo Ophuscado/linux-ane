@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `ane/h18` names the source of the PREMAP_BUFFER layout (the kernelcache of build 26A434). A malformed answer to PREMAP_BUFFER is a protocol failure now, and only a well formed refusal lets the program stage go on. The stage script asks for `dart=1` only when a DART instance mask is given.
+
 - `ane/h18` gains `dart_inst` and `hs_premap` for the program stage. `dart_inst=<mask>` reads the ANE DART instances 0 to 3 read only before LOAD_PROGRAM and after the call. `hs_premap=1` sends PREMAP_BUFFER (0x20d, type 2) for one request pool before LOAD_PROGRAM, as the macOS kext does at init. The stage script takes both as arguments 12 and 13. The sim has five new cases and five mutants. Neither has run on the board yet.
 
 - `ane/h18` with `hs_prog=1` and `read_dart=1` reads the exception state of the ANE DART before LOAD_PROGRAM and after the call. It only reads. It logs the error word and its address, the eight words of the bitmap of streams with a pending exception, and the record of the first eight streams with a bit set. The first program run on the Mac mini M6 needed this. The firmware answered LOAD_PROGRAM, CREATE_PROCESS and PROCEDURE_CALL for the H14 add program and posted one IO_T2H event with state 0. No finish event came within a second and the output buffer stayed zero. About 190 ms after the call the kernel logged an unhandled interrupt of the ANE DART. The kernel handler skips streams it does not own, so it printed nothing. Which stream faulted is not known yet.

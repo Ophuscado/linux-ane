@@ -872,7 +872,9 @@ static int ane_h18_cmd_body(struct ane_h18 *ane, struct ane_h18_ring *io, u16 op
 			dev_info(ane->dev, "ane_h18 cmd %#x answered after %ums: header=%#llx words=%#llx,%#llx id=%#x ack=%#x\n", op, waited, hdr, READ_ONCE(slot[1]), READ_ONCE(slot[2]), id, ack);
 			io->cursor = (io->cursor + 1) % io->slots;
 			*blk = cmd;
-			return (hdr == (dma | 1) && READ_ONCE(slot[1]) == len && READ_ONCE(slot[2]) == 0 && id == op && !ack) ? 0 : -EPROTO;
+			if (!(hdr == (dma | 1) && READ_ONCE(slot[1]) == len && READ_ONCE(slot[2]) == 0 && id == op))
+				return -EPROTO;	/* not the answer to this command */
+			return ack ? -EREMOTEIO : 0;	/* the firmware answered and refused */
 		}
 		usleep_range(500, 1000);
 	}
@@ -1321,7 +1323,10 @@ static void ane_h18_dart_inst(struct ane_h18 *ane, unsigned int k, const char *w
 }
 
 /* PREMAP_BUFFER (0x20d), as the macOS kext sends it at init for the inference request pool: a 0x3490 byte command, type 2, one request of 0x3898 bytes in a surface of the
- * DART's page size. The layout is the decode's: +8 1, +0x10 type, +0x54 1, +0x58 1, +0x60 4, +0x68 1, +0x70 the pool address, +0x78 a second value (premap_second, or the
+ * DART's page size. Source of the layout: the lab's static decode of AppleH16ANEInterface in the kernelcache of build 26A434 (mac18g): ANEFirmwareManager::sendPremapCmd at
+ * 0xfffffe000936007c builds the command; its only caller is ANEFirmwareManager::initializeInferenceRequestMemoryPool at 0xfffffe000935fd14 (call at 0xfffffe000935fff4),
+ * which passes type 2; the pool is count x 0x3898 bytes rounded to the DART page. Lab note m6-ane-engine-dma-RE.md section 4, sha256 eac93039f9c3f62883f83c2b563dda7b47e0d3b19e2fca2bd450527f0d8d6f60.
+ * The layout is the decode's: +8 1, +0x10 type, +0x54 1, +0x58 1, +0x60 4, +0x68 1, +0x70 the pool address, +0x78 a second value (premap_second, or the
  * pool size: which of the two values the kext passes is not decoded). A refusal (acknowledgement not zero) is logged and the program stage goes on. */
 static int ane_h18_premap(struct ane_h18 *ane, struct ane_h18_ring *io)
 {
@@ -1394,7 +1399,7 @@ static int ane_h18_prog_run(struct ane_h18 *ane, struct ane_h18_ring *io)
 	ane_h18_dart_exc(ane, "before LOAD_PROGRAM");
 	if (hs_premap) {
 		ret = ane_h18_premap(ane, io);
-		if (ret == -EPROTO) {
+		if (ret == -EREMOTEIO) {
 			dev_warn(ane->dev, "ane_h18 prog: PREMAP_BUFFER was refused, going on with LOAD_PROGRAM\n");
 			ret = 0;
 		} else if (ret) {
@@ -1541,7 +1546,7 @@ destroy:
 	}
 fail_nounload:
 	dev_info(ane->dev, "ane_h18 prog: sequence result %d\n", ret);
-	return ret == -EPROTO || ret == -ETIMEDOUT || ret == -EBUSY ? -EIO : ret;
+	return ret == -EPROTO || ret == -EREMOTEIO || ret == -ETIMEDOUT || ret == -EBUSY ? -EIO : ret;
 }
 
 /* The kext's step after it created its channels: the host owns every H2T slot, writes READY to SCRATCH3 and waits until the firmware clears it. With hs_cmds
@@ -1662,7 +1667,7 @@ static int ane_h18_chan_step(struct ane_h18 *ane, const struct ane_h18_hs_buf *t
 			if (ret) {
 				snprintf(when, sizeof(when), "after the failed %s", seq[i].name);
 				ane_h18_chan_snapshot(ane, when, true);
-				return ret == -EPROTO || ret == -ETIMEDOUT || ret == -EBUSY ? -EIO : ret;
+				return ret == -EPROTO || ret == -EREMOTEIO || ret == -ETIMEDOUT || ret == -EBUSY ? -EIO : ret;
 			}
 			if (seq[i].op == ANE_H18_CSNE_CONFIG_GET) {
 				memcpy(&v, blk + 8, 4);
