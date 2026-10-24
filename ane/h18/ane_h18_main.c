@@ -94,6 +94,14 @@ static bool map_fw;
 module_param(map_fw, bool, 0444);
 MODULE_PARM_DESC(map_fw, "Stage=boot: before RUN, attach the ANE to its DART through the iommu API and map the two preloaded firmware segments at their IOVAs. Needs power-domains and iommus in the node. Default off.");
 
+static bool rtkit_stop;
+module_param(rtkit_stop, bool, 0444);
+MODULE_PARM_DESC(rtkit_stop, "Stage=boot with rtkit_start=1: before RUN is cleared, send AP power state OFF and IOP power state OFF and wait for the acknowledgements and the IOP idle message. Default off.");
+
+static bool rtkit_start;
+module_param(rtkit_start, bool, 0444);
+MODULE_PARM_DESC(rtkit_start, "Stage=boot with rtkit_hello=1: also start the system endpoints after the last endpoint map message and answer the firmware's IOP power state acknowledgement with AP power state ON. Default off.");
+
 static bool rtkit_hello;
 module_param(rtkit_hello, bool, 0444);
 MODULE_PARM_DESC(rtkit_hello, "Stage=boot with alias_mbox=1: answer the firmware's RTKit management HELLO (version 12) and the endpoint map, nothing else. Default off.");
@@ -119,6 +127,11 @@ struct ane_h18 {
 	struct iommu_domain *domain;
 	bool kpsd;		/* the node has power-domains: the kernel's PSD driver owns the slots, this module only holds a runtime PM reference */
 	bool rpm_held;
+	u32 rtk_eps[8];		/* RTKit endpoints the firmware announced, one bit per endpoint number */
+	bool rtk_ap_on;
+	bool rtk_app_started;
+	bool rtk_shutdown;	/* the shutdown handshake is under way */
+	bool rtk_ap_off_acked, rtk_iop_off_acked, rtk_iop_idle;
 	bool psd_on[ANE_H18_NPSD];
 	bool fw_started;
 };
@@ -558,13 +571,41 @@ static void ane_h18_po_store16(void __iomem *p, const u32 w[4])
 #endif
 }
 
+/* Send one RTKit management message (endpoint 0) in TX as one paired store. Needs a free TX slot and stays under the per-run cap. */
+static int ane_h18_rtkit_send(struct ane_h18 *ane, u32 chan_off, const char *tag, u64 msg0, unsigned int *sent)
+{
+	const struct ane_h18_soc *s = ane->soc;
+	u32 st, r[4] = { (u32)msg0, (u32)(msg0 >> 32), 0, 0 };
+
+	if (*sent >= ANE_H18_PO_MAXSEND) {
+		dev_warn(ane->dev, "ane_h18 rtkit: send cap reached, not sending %#llx\n", msg0);
+		return -EBUSY;
+	}
+	st = readl(ane->mbox + chan_off + ANE_H18_PO_STATUS);
+	if (!(st & 0xf00)) {
+		dev_warn(ane->dev, "ane_h18 rtkit: no free TX slot (status %#x), not sending %#llx\n", st, msg0);
+		return -EBUSY;
+	}
+	dev_crit(ane->dev, "ane_h18 write TX of %s pa=%#llx: msg0=%#llx msg1=0 (one paired 16 byte store)\n", tag, s->mbox_pa + chan_off + ANE_H18_PO_TX, msg0);
+	ane_h18_po_store16(ane->mbox + chan_off + ANE_H18_PO_TX, r);
+	(*sent)++;
+	return 0;
+}
+
+/* System endpoints the Linux apple-rtkit driver starts after the endpoint map (crash log, syslog, debug, ioreport, oslog, tracekit). */
+static bool ane_h18_rtk_system_ep(unsigned int ep)
+{
+	return ep == 1 || ep == 2 || ep == 3 || ep == 4 || ep == 8 || ep == 0xa;
+}
+
 /* One RTKit management exchange on a Postoffice channel at window offset chan_off. Reads the status; with a message waiting it reads RX (raw words
- * logged) and answers HELLO and EPMAP in TX. Returns 1 if a message was read, and counts replies in *sent. It never sends anything for an unknown message
- * type or a message for another endpoint. */
+ * logged) and answers HELLO and EPMAP in TX. With rtkit_start it also starts the system endpoints after the last endpoint map message, and answers the
+ * firmware's IOP power state acknowledgement with AP power state ON. Returns 1 if a message was read, and counts messages sent in *sent. It never
+ * sends anything for an unknown message type or a message for another endpoint, and never answers a buffer request. */
 static int ane_h18_rtkit_step(struct ane_h18 *ane, u32 chan_off, const char *tag, unsigned int *sent)
 {
 	const struct ane_h18_soc *s = ane->soc;
-	u32 st, w[4] = { 0 }, r[4] = { 0 };
+	u32 st, w[4] = { 0 };
 	u64 msg0, msg1, reply = 0;
 	unsigned int type;
 
@@ -590,26 +631,62 @@ static int ane_h18_rtkit_step(struct ane_h18 *ane, u32 chan_off, const char *tag
 			return 1;
 		}
 		reply = ((u64)ANE_H18_RTK_HELLO_REPLY << ANE_H18_RTK_TYPE_SHIFT) | ((u64)ANE_H18_RTK_VERSION << 16) | ANE_H18_RTK_VERSION;
+		ane_h18_rtkit_send(ane, chan_off, tag, reply, sent);
 	} else if (type == ANE_H18_RTK_EPMAP) {
+		unsigned int base = (msg0 >> 32) & 7, i;
+		bool last = msg0 & (1ULL << 51);
+
+		for (i = 0; i < 32; i++)
+			if (msg0 & (1ULL << i)) {
+				unsigned int ep = base * 32 + i;
+
+				dev_info(ane->dev, "ane_h18 rtkit endpoint %#x discovered\n", ep);
+				if (ep < ARRAY_SIZE(ane->rtk_eps) * 32)
+					ane->rtk_eps[ep / 32] |= 1u << (ep % 32);
+			}
 		/* base in bits 34:32, last flag bit 51 (answered with the same flag), otherwise MORE = bit 0 */
-		reply = ((u64)ANE_H18_RTK_EPMAP << ANE_H18_RTK_TYPE_SHIFT) | (msg0 & (7ULL << 32)) | ((msg0 & (1ULL << 51)) ? (1ULL << 51) : 1ULL);
-	} else {
-		return 1;
+		reply = ((u64)ANE_H18_RTK_EPMAP << ANE_H18_RTK_TYPE_SHIFT) | (msg0 & (7ULL << 32)) | (last ? (1ULL << 51) : 1ULL);
+		if (ane_h18_rtkit_send(ane, chan_off, tag, reply, sent))
+			return 1;
+		if (last && rtkit_start) {
+			for (i = 0; i < ARRAY_SIZE(ane->rtk_eps) * 32; i++) {
+				if (!(ane->rtk_eps[i / 32] & (1u << (i % 32))) || !ane_h18_rtk_system_ep(i))
+					continue;
+				/* STARTEP: endpoint in bits 39:32, flag bit 1 */
+				if (ane_h18_rtkit_send(ane, chan_off, tag, ((u64)ANE_H18_RTK_STARTEP << ANE_H18_RTK_TYPE_SHIFT) | ((u64)i << 32) | (1ULL << 1), sent))
+					break;
+			}
+		}
+	} else if (type == ANE_H18_RTK_IOP_PWR_ACK) {
+		dev_info(ane->dev, "ane_h18 rtkit: IOP power state acknowledged: %#llx\n", msg0 & 0xffff);
+		if (ane->rtk_shutdown && (msg0 & 0xffff) == ANE_H18_RTK_PWR_OFF)
+			ane->rtk_iop_off_acked = true;
+		else if (rtkit_start && !ane->rtk_ap_on && (msg0 & 0xff) == ANE_H18_RTK_PWR_ON &&
+			 !ane_h18_rtkit_send(ane, chan_off, tag, ((u64)ANE_H18_RTK_AP_PWR << ANE_H18_RTK_TYPE_SHIFT) | ANE_H18_RTK_PWR_ON, sent))
+			ane->rtk_ap_on = true;
+	} else if (type == ANE_H18_RTK_AP_PWR) {
+		dev_info(ane->dev, "ane_h18 rtkit: AP power state acknowledged: %#llx\n", msg0 & 0xffff);
+		if (ane->rtk_shutdown && (msg0 & 0xffff) == ANE_H18_RTK_PWR_OFF) {
+			ane->rtk_ap_off_acked = true;
+			/* the IOP power state follows the AP one: OFF, as the Linux driver does at shutdown */
+			ane_h18_rtkit_send(ane, chan_off, tag, ((u64)ANE_H18_RTK_SET_IOP_PWR << ANE_H18_RTK_TYPE_SHIFT) | ANE_H18_RTK_PWR_OFF, sent);
+		} else if (rtkit_start && !ane->rtk_shutdown && (msg0 & 0xff) == ANE_H18_RTK_PWR_ON && !ane->rtk_app_started) {
+			unsigned int i;
+
+			/* the coprocessor is running now: start the application endpoints it announced */
+			ane->rtk_app_started = true;
+			for (i = ANE_H18_RTK_APP_EP; i < ARRAY_SIZE(ane->rtk_eps) * 32; i++) {
+				if (!(ane->rtk_eps[i / 32] & (1u << (i % 32))))
+					continue;
+				if (ane_h18_rtkit_send(ane, chan_off, tag, ((u64)ANE_H18_RTK_STARTEP << ANE_H18_RTK_TYPE_SHIFT) | ((u64)i << 32) | (1ULL << 1), sent))
+					break;
+			}
+		}
+	} else if (type == ANE_H18_RTK_IOP_IDLE) {
+		dev_info(ane->dev, "ane_h18 rtkit: the firmware reports IOP idle\n");
+		if (ane->rtk_shutdown)
+			ane->rtk_iop_idle = true;
 	}
-	if (*sent >= ANE_H18_PO_MAXSEND) {
-		dev_warn(ane->dev, "ane_h18 rtkit: reply cap reached, no reply\n");
-		return 1;
-	}
-	st = readl(ane->mbox + chan_off + ANE_H18_PO_STATUS);
-	if (!(st & 0xf00)) {
-		dev_warn(ane->dev, "ane_h18 rtkit: no free TX slot (status %#x), no reply\n", st);
-		return 1;
-	}
-	r[0] = (u32)reply;
-	r[1] = (u32)(reply >> 32);
-	dev_crit(ane->dev, "ane_h18 write TX of %s pa=%#llx: msg0=%#llx msg1=0 (one paired 16 byte store)\n", tag, s->mbox_pa + chan_off + ANE_H18_PO_TX, reply);
-	ane_h18_po_store16(ane->mbox + chan_off + ANE_H18_PO_TX, r);
-	(*sent)++;
 	return 1;
 }
 
@@ -635,6 +712,14 @@ static int ane_h18_stage_boot(struct ane_h18 *ane)
 	}
 	if (rtkit_hello && !alias_mbox) {
 		ane_h18_result(ane, "boot", "REFUSED", "rtkit_hello=1 needs alias_mbox=1");
+		return -EINVAL;
+	}
+	if (rtkit_stop && !rtkit_start) {
+		ane_h18_result(ane, "boot", "REFUSED", "rtkit_stop=1 needs rtkit_start=1");
+		return -EINVAL;
+	}
+	if (rtkit_start && !rtkit_hello) {
+		ane_h18_result(ane, "boot", "REFUSED", "rtkit_start=1 needs rtkit_hello=1");
 		return -EINVAL;
 	}
 	if (read_dart && !ane->kpsd && psd_slots != ANE_H18_NPSD) {
@@ -727,6 +812,22 @@ static int ane_h18_stage_boot(struct ane_h18 *ane)
 			po = readl(ane->mbox + chan_off + ANE_H18_PO_STATUS);
 			msgs += ane_h18_po_pop(ane, chan_off, tag, po);
 		}
+	}
+	if (rtkit_stop && ane->rtk_ap_on) {
+		/* RTKit shutdown as the Linux driver does it: AP power state OFF, then IOP power state OFF once that is acknowledged, then wait for IOP idle */
+		u32 chan_off = ANE_H18_PO_ALIAS_OFF + s->mbox_num * 2 * ANE_H18_PO_STRIDE;
+		char tag[16];
+
+		snprintf(tag, sizeof(tag), "alias%u", s->mbox_num * 2);
+		ane->rtk_shutdown = true;
+		if (!ane_h18_rtkit_send(ane, chan_off, tag, ((u64)ANE_H18_RTK_AP_PWR << ANE_H18_RTK_TYPE_SHIFT) | ANE_H18_RTK_PWR_OFF, &sent)) {
+			for (waited = 0; waited < ANE_H18_RTK_STOP_WAIT_MS && !ane->rtk_iop_idle; waited += 10) {
+				usleep_range(10000, 11000);
+				ane_h18_rtkit_step(ane, chan_off, tag, &sent);
+			}
+		}
+		dev_info(ane->dev, "ane_h18 rtkit shutdown: ap_off_acked=%d iop_off_acked=%d iop_idle=%d after %ums\n", ane->rtk_ap_off_acked, ane->rtk_iop_off_acked,
+			 ane->rtk_iop_idle, waited);
 	}
 	/* Stop the core again. */
 	ctrl = readl(ane->asc + ANE_H18_ASC_CPU_CONTROL);

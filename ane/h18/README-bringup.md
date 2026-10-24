@@ -39,6 +39,11 @@ else in the ASC, IORVBAR or mailbox windows.
     firmware segments the boot loader left in DRAM at their IOVAs: TEXT at 0x10000000000 read only, DATA at 0x100000c4000 read and write
     (the ADT `segment-ranges`). The DART driver programs the DART at the attach. With `read_dart=1` the twelve DART words are read before and after.
     The mapping is released after a clean stop. If the core does not stop, it stays.
+  - `rtkit_start=1` (needs `rtkit_hello=1`): after the last endpoint map message, start the system endpoints the firmware announced (STARTEP). When
+    the firmware acknowledges the IOP power state ON, answer with AP power state ON. When the firmware acknowledges that, start the application endpoints
+    it announced (endpoint 0x20 and above). A buffer request is logged and not answered.
+  - `rtkit_stop=1` (needs `rtkit_start=1`): before RUN is cleared, send AP power state OFF, then IOP power state OFF when the AP acknowledgement arrives, and
+    wait up to 600 ms for the firmware's idle message. Whether this lets the core reach STOPPED is not known.
   - `rtkit_hello=1` (needs `alias_mbox=1`): answer the firmware's RTKit management HELLO with version 12 and its endpoint map, nothing else. The
     reply goes to TX as one paired 16 byte store. No reply is sent without a free TX slot, for a message of another type or endpoint, or when the
     firmware's version range excludes 12. At most four replies per run.

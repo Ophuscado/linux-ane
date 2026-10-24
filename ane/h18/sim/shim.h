@@ -167,8 +167,49 @@ extern int sim_start_chan;		/* channel that receives sim_start_msgs messages whe
 extern int sim_start_msgs;
 extern int sim_start_hello;		/* RUN queues an RTKit HELLO (min 11, max 12) and a last EPMAP (base 0, bitmap 3) on the alias channel */
 extern u32 sim_po_out_off, sim_alias_credits, sim_hello_min, sim_hello_max, sim_hello_ep, sim_hello_type;
+/* sim_start_hello == 3: a firmware that reacts to what the host writes to TX of the alias channel (RTKit management protocol) */
+extern u32 sim_tx_w[4];
+extern int sim_tx_got;
+extern u64 sim_tx_msgs[32];
+extern int sim_n_tx_msgs, sim_idle_sent, sim_stop_needs_idle, sim_no_shutdown_reply;
+extern u32 sim_iop_ack_state;
 extern u64 sim_asc_pa, sim_rvbar_pa, sim_mbox_pa;
 extern u32 sim_asc_size, sim_rvbar_size, sim_mbox_size;
+
+static inline void sim_fw_enqueue(int ch, u64 msg0)
+{
+	int slot = (sim_po_head[ch] + sim_po_n[ch]) % SIM_PO_Q;
+
+	sim_po_msg[ch][slot][0] = (u32)msg0;
+	sim_po_msg[ch][slot][1] = (u32)(msg0 >> 32);
+	sim_po_msg[ch][slot][2] = 0;
+	sim_po_msg[ch][slot][3] = 0;
+	sim_po_n[ch]++;
+}
+
+/* the host finished a 16 byte TX message: let the modelled firmware react */
+static inline void sim_fw_react(u64 msg0)
+{
+	unsigned int type = (msg0 >> 52) & 0xff;
+	u64 state = msg0 & 0xffff;
+
+	if (sim_n_tx_msgs < 32)
+		sim_tx_msgs[sim_n_tx_msgs] = msg0;
+	sim_n_tx_msgs++;
+	if (type == 2) {
+		sim_fw_enqueue(536, (8ULL << 52) | 3);
+		sim_fw_enqueue(536, (8ULL << 52) | (1ULL << 51) | (1ULL << 32) | 1);
+	} else if (type == 8 && (msg0 & (1ULL << 51))) {
+		sim_fw_enqueue(536, (7ULL << 52) | sim_iop_ack_state);
+	} else if (type == 0xb) {
+		if (state == 0x20 || !sim_no_shutdown_reply)
+			sim_fw_enqueue(536, (0xbULL << 52) | state);
+	} else if (type == 6 && state == 0 && !sim_no_shutdown_reply) {
+		sim_fw_enqueue(536, (7ULL << 52) | 0);
+		sim_fw_enqueue(536, 0xcULL << 52);
+		sim_idle_sent = 1;
+	}
+}
 
 static inline int sim_psd_of(u64 pa, u32 *off)
 {
@@ -284,7 +325,11 @@ static inline void bus_write(u64 pa, u32 v)
 		if (v & 0x10) {
 			sim_core_running = 1;
 			sim_cpu_status = sim_run_status;
-			if (sim_start_chan >= 0 && sim_start_hello) {
+			if (sim_start_chan >= 0 && sim_start_hello == 3) {
+				sim_po_n[sim_start_chan] = 0;
+				sim_po_head[sim_start_chan] = 0;
+				sim_fw_enqueue(sim_start_chan, ((u64)sim_hello_type << 52) | ((u64)sim_hello_max << 16) | sim_hello_min);
+			} else if (sim_start_chan >= 0 && sim_start_hello) {
 				u64 hello = ((u64)sim_hello_type << 52) | ((u64)sim_hello_max << 16) | sim_hello_min;
 				u64 epmap = (8ULL << 52) | (1ULL << 51) | 3;
 
@@ -307,14 +352,21 @@ static inline void bus_write(u64 pa, u32 v)
 					sim_po_n[sim_start_chan]++;
 				}
 			}
-		} else if (!sim_core_stuck) {
+		} else if (!sim_core_stuck && !(sim_stop_needs_idle && !sim_idle_sent)) {
 			sim_core_running = 0;
 			sim_cpu_status = 0xa;
 		}
 		return;
 	}
-	if (i < 0 && sim_in(pa, sim_mbox_pa, sim_mbox_size) && sim_psd_state[0] != 6)
-		return;		/* an inbox write with the ANE slot on is a legal bus access */
+	if (i < 0 && sim_in(pa, sim_mbox_pa, sim_mbox_size) && sim_psd_state[0] != 6) {
+		/* an inbox write with the ANE slot on is a legal bus access; a modelled firmware reads TX of the alias channel */
+		if (sim_start_hello == 3 && pa >= sim_mbox_pa + 0x10c10 && pa < sim_mbox_pa + 0x10c20) {
+			sim_tx_w[(pa - sim_mbox_pa - 0x10c10) / 4] = v;
+			if (pa == sim_mbox_pa + 0x10c1c)
+				sim_fw_react(((u64)sim_tx_w[1] << 32) | sim_tx_w[0]);
+		}
+		return;
+	}
 	if (i < 0)
 		sim_faults++;
 }
