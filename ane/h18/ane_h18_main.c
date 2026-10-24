@@ -128,7 +128,8 @@ struct ane_h18 {
 	bool kpsd;		/* the node has power-domains: the kernel's PSD driver owns the slots, this module only holds a runtime PM reference */
 	bool rpm_held;
 	u32 rtk_eps[8];		/* RTKit endpoints the firmware announced, one bit per endpoint number */
-	bool rtk_ap_on;
+	bool rtk_ap_sent;	/* AP power ON was sent */
+	bool rtk_ap_on;		/* the firmware acknowledged AP power ON */
 	bool rtk_app_started;
 	bool rtk_shutdown;	/* the shutdown handshake is under way */
 	bool rtk_ap_acked, rtk_iop_acked, rtk_iop_idle;
@@ -668,9 +669,9 @@ static int ane_h18_rtkit_step(struct ane_h18 *ane, u32 chan_off, const char *tag
 		dev_info(ane->dev, "ane_h18 rtkit: IOP power state acknowledged: %#llx\n", msg0 & 0xffff);
 		if (ane->rtk_shutdown && (msg0 & 0xffff) == ane->rtk_iop_state)
 			ane->rtk_iop_acked = true;
-		else if (rtkit_start && !ane->rtk_ap_on && (msg0 & 0xff) == ANE_H18_RTK_PWR_ON &&
+		else if (rtkit_start && !ane->rtk_ap_sent && (msg0 & 0xff) == ANE_H18_RTK_PWR_ON &&
 			 !ane_h18_rtkit_send(ane, chan_off, tag, ((u64)ANE_H18_RTK_AP_PWR << ANE_H18_RTK_TYPE_SHIFT) | ANE_H18_RTK_PWR_ON, sent))
-			ane->rtk_ap_on = true;
+			ane->rtk_ap_sent = true;
 	} else if (type == ANE_H18_RTK_AP_PWR) {
 		dev_info(ane->dev, "ane_h18 rtkit: AP power state acknowledged: %#llx\n", msg0 & 0xffff);
 		if (ane->rtk_shutdown && (msg0 & 0xffff) == ane->rtk_ap_state) {
@@ -679,6 +680,8 @@ static int ane_h18_rtkit_step(struct ane_h18 *ane, u32 chan_off, const char *tag
 			ane_h18_rtkit_send(ane, chan_off, tag, ((u64)ANE_H18_RTK_SET_IOP_PWR << ANE_H18_RTK_TYPE_SHIFT) | ane->rtk_iop_state, sent);
 		} else if (rtkit_start && !ane->rtk_shutdown && (msg0 & 0xff) == ANE_H18_RTK_PWR_ON && !ane->rtk_app_started) {
 			unsigned int i;
+
+			ane->rtk_ap_on = true;
 
 			/* the coprocessor is running now: start the application endpoints it announced */
 			ane->rtk_app_started = true;
@@ -827,6 +830,7 @@ static int ane_h18_stage_boot(struct ane_h18 *ane)
 		char tag[16];
 
 		snprintf(tag, sizeof(tag), "alias%u", s->mbox_num * 2);
+		sent = 0;	/* the shutdown has its own send budget: the boot messages cannot starve it */
 		ane->rtk_shutdown = true;
 		ane->rtk_ap_state = rtkit_stop == 2 ? ANE_H18_RTK_PWR_OFF : ANE_H18_RTK_PWR_QUIESCED;
 		ane->rtk_iop_state = rtkit_stop == 2 ? ANE_H18_RTK_PWR_OFF : ANE_H18_RTK_PWR_SLEEP;
@@ -864,6 +868,10 @@ static int ane_h18_stage_boot(struct ane_h18 *ane)
 	if (ret) {
 		ane_h18_result(ane, "boot", "FAIL", "read-refused");
 		return ret;
+	}
+	if (rtkit_stop && !(ane->rtk_ap_on && ane->rtk_ap_acked && ane->rtk_iop_acked)) {
+		ane_h18_result(ane, "boot", "FAIL", "rtkit-shutdown-incomplete");
+		return -EIO;
 	}
 	ane_h18_result(ane, "boot", "PASS", running_seen ? "core-ran-and-stopped" : "core-never-reported-running");
 	return 0;

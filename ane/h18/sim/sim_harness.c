@@ -715,6 +715,17 @@ static void pos_boot(void)
 		ret = probe_now();
 		chk(ret == 0 && result("boot", "PASS", "core-ran-and-stopped") && sim_n_tx_msgs == 8 && sim_tx_msgs[6] == 0xb0000000000000ULL && sim_tx_msgs[7] == 0x60000000000000ULL,
 		    "R6 boot rtkit_stop=2: AP power OFF then IOP power OFF, the core stops after the IOP acknowledgement");
+		/* a firmware that ignores the shutdown while the core still accepts the RUN clear: the stage must not report PASS */
+		boot_setup();
+		alias_mbox = true;
+		rtkit_hello = true;
+		rtkit_start = true;
+		rtkit_stop = 1;
+		sim_start_chan = 536;
+		sim_start_hello = 3;
+		sim_no_shutdown_reply = 1;
+		ret = probe_now();
+		chk(ret != 0 && result("boot", "FAIL", "rtkit-shutdown-incomplete") && log_count("verdict=PASS") == 0, "R8 boot rtkit_stop: an unanswered shutdown is FAIL rtkit-shutdown-incomplete even when the core stopped");
 		/* rtkit_stop=3 is refused */
 		boot_setup();
 		alias_mbox = true;
