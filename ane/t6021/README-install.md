@@ -206,8 +206,17 @@ IOVA — under the fw lock, before the exchange goes out:
 A `fw_ref` BO never goes back to the kernel, and its bytes stay counted
 against the `bo_total_max_mb` cap (12 GiB by default):
 
-- a section BO of a sent `LOAD_PROGRAM` is held until reboot, because the
-  cached firmware program keeps reading it;
+- a section BO of a sent `LOAD_PROGRAM` is held while the program is
+  loaded, because the firmware keeps reading it. When the last file that
+  loaded or looked the program up closes, the driver unloads the program
+  (terminate its process with command 0x203, destroy it with 0x201, both
+  acknowledged) and then gives the section buffers back. They follow the
+  usual rule for a BO the firmware no longer reads: freed, or parked under
+  the `bo_pool_max_mb` budget, where their bytes stay counted until the
+  pool is drained (set `bo_pool_max_mb` to 0 to see `bo_total_bytes` fall
+  to the io pool). If either command fails or times out, the sections stay
+  held for good and the device is quarantined. The module parameter
+  `unload_on_close=0` restores the old behaviour (hold until reboot);
 - an io BO is parked in a pool when its last reference drops. Its IOVA
   stays mapped. The next `BO_INIT` of the same page-aligned size takes it,
   zeroes it and gives it to the new owner. After a quarantine, io BOs are
@@ -299,8 +308,8 @@ exposes the ABI 2 ioctl set per `ane/src/uapi/drm/ane_accel.h`
   handle.
 - `DRM_IOCTL_ANE_BO_FREE` — drop the handle. The memory frees when
   its last reference drops, except a BO the firmware received: a
-  program section is held until reboot, an io BO is parked for reuse
-  (see "BO lifetime").
+  program section is held while its program is loaded, an io BO is parked
+  for reuse (see "BO lifetime").
 - `DRM_IOCTL_ANE_SUBMIT` — rejected with `-ENOTTY` on T6021.
 - `DRM_IOCTL_ANE_PROG_LOAD` (0x200) — build the LOAD_PROGRAM message
   (1..9 section records; each record carries the caller's
