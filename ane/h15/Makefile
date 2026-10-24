@@ -220,7 +220,7 @@ sim-negative-rtkit: sim/sim_h15
 
 # stage 6 runs without confirm_rtkit=1
 sim-mutation-rtk-noconfirm:
-	$(call pd_mutant,rtk-noconfirm,s/if (stg == 6 \&\& !confirm_rtkit) {/if (0 \/* NEG: confirm_rtkit ignored *\/) {/,NEG: confirm_rtkit ignored,neg-rtkit)
+	$(call pd_mutant,rtk-noconfirm,s/if (stg >= 6 \&\& !confirm_rtkit) {/if (0 \/* NEG: confirm_rtkit ignored *\/) {/,NEG: confirm_rtkit ignored,neg-rtkit)
 
 # HELLO is answered whatever versions the firmware offers
 sim-mutation-rtk-nover:
@@ -241,6 +241,34 @@ sim-mutation-rtk-noshutdown:
 # messages of other endpoints are treated as management messages (the crash log request gets answered)
 sim-mutation-rtk-anyep:
 	$(call pd_mutant,rtk-anyep,s/if (m1 \& 0xff)/if (0 \/* NEG: any endpoint answered *\/)/,NEG: any endpoint answered,pos)
+
+# Stage 7 (confirm_chan=1): the SCRATCH handshake and the channel step. neg-chan = refusals, odd firmware, stuck core.
+sim-negative-chan: sim/sim_h15
+	./sim/sim_h15 neg-chan
+
+# stage 7 runs without confirm_chan=1
+sim-mutation-chan-noconfirm:
+	$(call pd_mutant,chan-noconfirm,s/if (stg == 7 \&\& !confirm_chan) {/if (0 \/* NEG: confirm_chan ignored *\/) {/,NEG: confirm_chan ignored,neg-chan)
+
+# the handshake goes on although the firmware does not show READY
+sim-mutation-chan-noready:
+	$(call pd_mutant,chan-noready,s/if (w\[7\] != ANE_H15_HS_READY) {/if (0 \/* NEG: READY not required *\/) {/,NEG: READY not required,neg-chan)
+
+# the request band of SCRATCH0 is not checked
+sim-mutation-chan-nolimit:
+	$(call pd_mutant,chan-nolimit,s/if (w\[0\] >= ANE_H15_HS_REQ_LIMIT) {/if (0 \/* NEG: request limit skipped *\/) {/,NEG: request limit skipped,neg-chan)
+
+# the firmware-supplied surface sizes are not bounded before the allocation
+sim-mutation-chan-nosizes:
+	$(call pd_mutant,chan-nosizes,s/if (ipc_size > ANE_H15_HS_IPC_MAX || heap_size > ANE_H15_HS_HEAP_MAX) {/if (0 \/* NEG: size limits skipped *\/) {/,NEG: size limits skipped,neg-chan)
+
+# two rings of the table may overlap
+sim-mutation-chan-noringoverlap:
+	$(call pd_mutant,chan-noringoverlap,s/if (lo < rings\[j\].iova + (u64)rings\[j\].slots \* ANE_H15_CH_SLOT \&\& hi > rings\[j\].iova) {/if (0 \/* NEG: ring overlap ignored *\/) {/,NEG: ring overlap ignored,neg-chan)
+
+# the host-to-firmware slots are not made host owned before READY
+sim-mutation-chan-noownership:
+	$(call pd_mutant,chan-noownership,s/if (rings\[i\].type)/if (1 \/* NEG: ownership skipped *\/)/,NEG: ownership skipped,pos)
 
 sim-negative-nopsguard:
 	rm -rf /tmp/ane_h15-nopsguard && mkdir -p /tmp/ane_h15-nopsguard
@@ -309,5 +337,7 @@ clean:
 	sim-mutation-dart-noconfirm sim-mutation-run-nopin sim-negative-map sim-mutation-map-noundo \
 	sim-mutation-map-noramcheck sim-mutation-map-textrw sim-mutation-map-nooverlap \
 	sim-mutation-map-noiommus sim-mutation-map-nostoppedcheck sim-negative-rtkit sim-mutation-rtk-noconfirm sim-mutation-rtk-nover \
-	sim-mutation-rtk-nocap sim-mutation-rtk-nofull sim-mutation-rtk-noshutdown sim-mutation-rtk-anyep clean
+	sim-mutation-rtk-nocap sim-mutation-rtk-nofull sim-mutation-rtk-noshutdown sim-mutation-rtk-anyep sim-negative-chan sim-mutation-chan-noconfirm \
+	sim-mutation-chan-noready sim-mutation-chan-nolimit sim-mutation-chan-nosizes \
+	sim-mutation-chan-noringoverlap sim-mutation-chan-noownership clean
 endif

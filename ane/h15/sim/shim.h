@@ -404,6 +404,47 @@ static inline bool IS_ERR(const void *p)
 }
 static inline bool IS_ERR_OR_NULL(const void *p) { return !p || IS_ERR(p); }
 
+/* ---- DMA API for stage 7: zeroed surfaces at IOVAs far from the firmware segments ---- */
+#define PAGE_SIZE 0x4000UL
+#define ALIGN(x, a) (((x) + (a) - 1) / (a) * (a))
+#define wmb() do { } while (0)
+#define dma_wmb() do { } while (0)
+#define dma_rmb() do { } while (0)
+#define READ_ONCE(x) (*(volatile __typeof__(x) *)&(x))
+#define WRITE_ONCE(x, v) (*(volatile __typeof__(x) *)&(x) = (v))
+typedef u64 dma_addr_t;
+#define DMA_BIT_MASK(n) ((1ULL << (n)) - 1)
+struct sim_dma { void *va; dma_addr_t iova; size_t size; int live; };
+extern struct sim_dma sim_dma[8];
+extern int sim_n_dma, sim_dma_fail, sim_dma_mask_bits;
+static inline int dma_set_mask_and_coherent(struct device *d, u64 mask)
+{
+	(void)d;
+	sim_dma_mask_bits = 64 - __builtin_clzll(mask);
+	return 0;
+}
+static inline void *dma_alloc_coherent(struct device *d, size_t size, dma_addr_t *iova, int gfp)
+{
+	(void)d; (void)gfp;
+	if (sim_dma_fail == sim_n_dma + 1 || sim_n_dma >= 8)
+		return NULL;
+	sim_dma[sim_n_dma].va = calloc(1, size);
+	sim_dma[sim_n_dma].iova = 0x3ff00000000ULL - 0x4000000ULL * (sim_n_dma + 1);
+	sim_dma[sim_n_dma].size = size;
+	sim_dma[sim_n_dma].live = 1;
+	*iova = sim_dma[sim_n_dma].iova;
+	return sim_dma[sim_n_dma++].va;
+}
+static inline void dma_free_coherent(struct device *d, size_t size, void *va, dma_addr_t iova)
+{
+	int k;
+
+	(void)d; (void)size;
+	for (k = 0; k < sim_n_dma; k++)
+		if (sim_dma[k].va == va && sim_dma[k].iova == iova)
+			sim_dma[k].live = 0;
+}
+
 /* ---- iommu API for stage 5 map_fw=1: records every call with the bus event count at that moment ---- */
 #define SZ_16K 0x4000ull
 #define IOMMU_READ 1
@@ -417,7 +458,11 @@ static inline int region_intersects(u64 start, size_t size, unsigned long flags,
 	(void)start; (void)size; (void)flags; (void)desc;
 	return sim_region_ram;
 }
-struct iommu_domain { int dummy; };
+#define __IOMMU_DOMAIN_DMA_API (1U << 1)
+struct iommu_domain { unsigned int type; };
+extern struct iommu_domain sim_default_dom;
+extern int sim_default_dom_none;
+static inline struct iommu_domain *iommu_get_domain_for_dev(struct device *d) { (void)d; return sim_default_dom_none ? NULL : &sim_default_dom; }
 enum { SIM_IO_ALLOC = 1, SIM_IO_ATTACH, SIM_IO_MAP, SIM_IO_UNMAP, SIM_IO_DETACH, SIM_IO_FREE };
 struct sim_iocall { int code; u64 iova, pa, size; int prot; int ev; };
 extern struct sim_iocall sim_iocalls[64];

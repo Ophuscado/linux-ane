@@ -83,6 +83,10 @@ int sim_pd_attach_fail_at = -1;
 int sim_link_fail_at = -1;
 int sim_pd_attach_calls;
 int sim_module_gets;
+struct sim_dma sim_dma[8];
+int sim_n_dma, sim_dma_fail, sim_dma_mask_bits;
+struct iommu_domain sim_default_dom = { __IOMMU_DOMAIN_DMA_API };
+int sim_default_dom_none;
 int sim_region_ram = REGION_DISJOINT;
 struct sim_iocall sim_iocalls[64];
 int sim_n_iocalls, sim_io_fail, sim_n_dom_live;
@@ -233,6 +237,11 @@ static void reset_all(void)
 	sim_write_hook = NULL;
 	sim_read_hook = NULL;
 	sim_write64_hook = NULL;
+	confirm_chan = false;
+	chan_cmds = false;
+	hs_wait_ms = 1000;
+	{ int k; for (k = 0; k < sim_n_dma; k++) free(sim_dma[k].va); }
+	sim_n_dma = sim_dma_fail = sim_dma_mask_bits = sim_default_dom_none = 0;
 	confirm_rtkit = false;
 	rtkit_wait_ms = 2000;
 	rtkit_stop = 1;
@@ -812,7 +821,7 @@ static int neg_wrong_stage(void)
 	/* unknown stage string: -EINVAL, NO RESULT, nothing mapped */
 	reset_all();
 	optin = "t8122";
-	stage = "7";
+	stage = "8";
 	build_node(&ane_t8122_soc, 2, "apple,t8122-ane");
 	ret = probe_now();
 	if (ret != -EINVAL) {
@@ -1850,12 +1859,160 @@ static void fw_host_msg(u64 m0, u64 m1)
 	}
 }
 
+/* ---- stage 7 firmware model: SCRATCH words, the channel table, rings, the doorbell ---- */
+#define SCR_OFF 0x1840050u
+#define SCR_READY 0x08042006u
+#define SCR_WAKE 0xf7fbdff9u
+#define DOORBELL_OFF 0x1844000u
+static bool fw_chan;
+static struct {
+	bool s7_zero, s0_big, s3_big, no_table, s3_stuck, no_answer, bad_ack, bad_ring, overlap_ring;
+} hso;
+static bool fw_h2t_ok;
+static int fw_cmds, fw_io_cursor;
+static u64 fw_ipc_iova, fw_ipc_size;
+
+static void *dma_host(u64 iova)
+{
+	int k;
+
+	for (k = 0; k < sim_n_dma; k++)
+		if (iova >= sim_dma[k].iova && iova < sim_dma[k].iova + sim_dma[k].size)
+			return (u8 *)sim_dma[k].va + (iova - sim_dma[k].iova);
+	return NULL;
+}
+
+static u64 dma_size_at(u64 iova)
+{
+	int k;
+
+	for (k = 0; k < sim_n_dma; k++)
+		if (iova >= sim_dma[k].iova && iova < sim_dma[k].iova + sim_dma[k].size)
+			return sim_dma[k].size;
+	return 0;
+}
+
+static void scr_set(const struct ane_h15_soc *s, unsigned int i, u32 v)
+{
+	eng_set(s, SCR_OFF + 4 * i, v);
+}
+
+static const struct { const char *name; u32 type, bit, slots, off; } fw_tab[8] = {
+	{ "TERMINAL", 2, 0, 0x20, 0x800 }, { "SHAREDMALLOC", 1, 2, 0x10, 0x1000 }, { "BUF_H2T", 0, 3, 0x10, 0x1400 },
+	{ "BUF_T2H", 1, 4, 0x10, 0x1800 }, { "IO", 0, 1, 0x10, 0x8800 }, { "IO_T2H", 1, 5, 0x10, 0x1c00 },
+	{ "DEBUG", 1, 6, 0x10, 0x2000 }, { "DATA_CHAIN_H2T", 0, 7, 0x10, 0x2400 },
+};
+
+static void fw_publish(const struct ane_h15_soc *s)
+{
+	u64 pub = ((u64)eng_get(s, SCR_OFF + 4) << 32) | eng_get(s, SCR_OFF);
+	u8 *blk = dma_host(pub), *ipc, *e;
+	unsigned int i;
+
+	if (!blk || hso.no_table)
+		return;
+	memcpy(&fw_ipc_iova, blk + 8, 8);
+	ipc = dma_host(fw_ipc_iova);
+	fw_ipc_size = dma_size_at(fw_ipc_iova);
+	if (!ipc)
+		return;
+	for (i = 0; i < 8; i++) {
+		u64 slots = fw_tab[i].slots, ring = fw_ipc_iova + fw_tab[i].off;
+
+		if (hso.bad_ring && i == 2)
+			ring = fw_ipc_iova + fw_ipc_size + 0x1000;
+		if (hso.overlap_ring && i == 3)
+			ring = fw_ipc_iova + fw_tab[2].off;
+		e = ipc + i * 0x100;
+		memset(e, 0, 0x100);
+		strcpy((char *)e, fw_tab[i].name);
+		memcpy(e + 0x40, &fw_tab[i].type, 4);
+		memcpy(e + 0x44, &fw_tab[i].bit, 4);
+		memcpy(e + 0x48, &slots, 8);
+		memcpy(e + 0x50, &ring, 8);
+	}
+	scr_set(s, 0, (u32)fw_ipc_iova);
+	scr_set(s, 1, (u32)(fw_ipc_iova >> 32));
+	scr_set(s, 7, SCR_READY);
+}
+
+static void fw_s3_ready(const struct ane_h15_soc *s)
+{
+	u8 *ipc = dma_host(fw_ipc_iova);
+	unsigned int i, k;
+
+	fw_h2t_ok = ipc != NULL;
+	for (i = 0; ipc && i < 8; i++) {
+		if (fw_tab[i].type)
+			continue;
+		for (k = 0; k < fw_tab[i].slots; k++) {
+			u64 hdr;
+
+			memcpy(&hdr, ipc + fw_tab[i].off + k * 0x40, 8);
+			if (hdr != 1)
+				fw_h2t_ok = false;
+		}
+	}
+	if (!hso.s3_stuck)
+		scr_set(s, 3, 0);
+}
+
+static void fw_doorbell(u32 v)
+{
+	u8 *ipc = dma_host(fw_ipc_iova), *slotp, *cmd;
+	u64 hdr, len1, zero = 0;
+	u16 id, ack = 0;
+	u32 tick = 0x16e3600;
+
+	if (!ipc || !(v & 2))
+		return;
+	slotp = ipc + fw_tab[4].off + (fw_io_cursor % fw_tab[4].slots) * 0x40;
+	memcpy(&hdr, slotp, 8);
+	if (hdr & 1)
+		return;
+	cmd = dma_host(hdr);
+	if (!cmd)
+		return;
+	fw_cmds++;
+	fw_io_cursor++;
+	if (hso.no_answer)
+		return;
+	memcpy(&id, cmd + 4, 2);
+	if (hso.bad_ack)
+		ack = 1;
+	memcpy(cmd + 6, &ack, 2);
+	if (id == 3)
+		memcpy(cmd + 8, &tick, 4);
+	memcpy(&len1, slotp + 8, 8);
+	memcpy(slotp + 16, &zero, 8);
+	hdr |= 1;
+	memcpy(slotp, &hdr, 8);
+}
+
 static void rt_write(u64 pa, u32 v)
 {
 	const struct ane_h15_soc *s = dm_soc;
 	bool run = pa == s->engine_pa + s->cpu_control && (v & DM_RUN) && !dm_nostart;
 
 	dm_write(pa, v);
+	if (fw_chan && pa >= s->engine_pa + SCR_OFF && pa < s->engine_pa + SCR_OFF + 0x20) {
+		unsigned int i = (pa - s->engine_pa - SCR_OFF) / 4;
+
+		if (i == 7 && v == SCR_WAKE)
+			fw_publish(s);
+		else if (i == 3 && v == SCR_READY)
+			fw_s3_ready(s);
+	}
+	if (fw_chan && pa == s->engine_pa + DOORBELL_OFF)
+		fw_doorbell(v);
+	if (run && fw_chan) {
+		scr_set(s, 0, hso.s0_big ? 0x21 : 8);
+		scr_set(s, 1, 0xc440);
+		scr_set(s, 2, 0x100);
+		scr_set(s, 3, hso.s3_big ? 0x8000000 : 0xf00000);
+		scr_set(s, 5, 0x100090);
+		scr_set(s, 7, hso.s7_zero ? 0 : SCR_READY);
+	}
 	if (run) {
 		if (fwo.a2i_full)
 			eng_set(s, s->mbox + 0x110, 0x10000);
@@ -1895,6 +2052,7 @@ static void rt_setup(const struct ane_h15_soc *s, const char *compat)
 	stage = "rtkit";
 	confirm_rtkit = true;
 	fq_n = n_sent = fw_ep1 = fw_ep20 = 0;
+	fw_chan = false;
 	memset(&fwo, 0, sizeof(fwo));
 	sim_write_hook = rt_write;
 	sim_write64_hook = rt_write64;
@@ -2068,6 +2226,217 @@ static int neg_rtkit(void)
 	return fails;
 }
 
+/* ---- stage 7 (confirm_chan=1): the SCRATCH handshake and the channel step on top of the session ---- */
+static void ch_setup(void)
+{
+	const struct ane_h15_soc *s = &ane_t6030_soc;
+
+	map_setup(s, "apple,t6030-ane");
+	dart_set(s, true);		/* default DMA domain: the DART driver enabled the stream at boot, no attach */
+	sim_attach_hook = NULL;
+	stage = "chan";
+	confirm_rtkit = true;
+	confirm_chan = true;
+	fq_n = n_sent = fw_ep1 = fw_ep20 = 0;
+	memset(&fwo, 0, sizeof(fwo));
+	memset(&hso, 0, sizeof(hso));
+	fw_chan = true;
+	fw_h2t_ok = false;
+	fw_cmds = fw_io_cursor = 0;
+	fw_ipc_iova = fw_ipc_size = 0;
+	sim_write_hook = rt_write;
+	sim_write64_hook = rt_write64;
+	sim_read_hook = rt_read;
+	rtkit_wait_ms = 500;
+}
+
+static int scr_writes(const struct ane_h15_soc *s)
+{
+	return events_in(s->engine_pa + SCR_OFF, 0x20, 1);
+}
+
+/* the value written to SCRATCHi, the n-th write there (0 = first) */
+static bool scr_write_seq(const struct ane_h15_soc *s, const u32 *idx, const u32 *val, int n)
+{
+	int i, k = 0;
+
+	for (i = 0; i < sim_n_events && i < SIM_MAX_EVENTS; i++) {
+		u64 pa = sim_events[i].pa;
+
+		if (!sim_events[i].write || pa < s->engine_pa + SCR_OFF || pa >= s->engine_pa + SCR_OFF + 0x20)
+			continue;
+		if (k >= n || (pa - s->engine_pa - SCR_OFF) / 4 != idx[k] || sim_events[i].val != val[k])
+			return false;
+		k++;
+	}
+	return k == n;
+}
+
+static void pos_chan(void)
+{
+	const struct ane_h15_soc *s = &ane_t6030_soc;
+	unsigned int rstage;
+	char verdict[32], reason[128], seq[64];
+	u8 *blk;
+	u64 v64;
+	u32 v32;
+	int ret, c;
+
+	for (c = 0; c < 2; c++) {
+		ch_setup();
+		chan_cmds = c;
+		ret = probe_now();
+		chk(ret == 0 && parse_result(&rstage, verdict, sizeof(verdict), reason, sizeof(reason)) &&
+		    rstage == 7 && !strcmp(verdict, "PASS") && !strcmp(reason, "rtkit-channels-and-shutdown"),
+		    c ? "C2 chan_cmds=1: RESULT stage=7 PASS rtkit-channels-and-shutdown" : "C1 RESULT stage=7 PASS rtkit-channels-and-shutdown");
+		{
+			static const u32 idx[] = { 0, 1, 7, 3 };
+			u32 val[4] = { sim_n_dma >= 1 ? (u32)sim_dma[0].iova : 0, sim_n_dma >= 1 ? (u32)(sim_dma[0].iova >> 32) : 0, SCR_WAKE, SCR_READY };
+
+			chk(scr_write_seq(s, idx, val, 4) && scr_writes(s) == 4,
+			    "C: SCRATCH writes are exactly S0 (pool low), S1 (pool high), S7 (wake), S3 (READY), in that order, nothing else in the window");
+		}
+		io_seq(seq, sizeof(seq));
+		chk(!strcmp(seq, "MMUU") && sim_n_dom_live == 0, "C: firmware mapped into the default DMA domain, no attach, no domain freed, unmapped after the stop");
+		chk(sim_n_dma == (c ? 4 : 3) && sim_dma[0].size == 0x40000 && sim_dma[1].size == 0x10000 && sim_dma[2].size == 0xf00000 &&
+		    (!c || sim_dma[3].size == 0x4000), "C: surfaces POOL 0x40000, IPC 0x10000 (max(page, S1+1) rounded), HEAP 0xf00000 (and CMD 0x4000 with commands)");
+		{
+			int k, live = 0;
+
+			for (k = 0; k < sim_n_dma; k++)
+				live += sim_dma[k].live;
+			chk(live == 0, "C: every surface freed after the core stopped");
+		}
+		blk = sim_n_dma ? sim_dma[0].va : NULL;
+		chk(blk != NULL, "C: init block present");
+		if (blk) {
+			memcpy(&v64, blk + 0x00, 8);
+			chk(v64 == 0x10000000000ULL, "C: block +0x00 = TEXT iova (the firmware surface)");
+			memcpy(&v64, blk + 0x08, 8);
+			chk(v64 == sim_dma[1].iova, "C: block +0x08 = IPC surface iova");
+			memcpy(&v64, blk + 0x10, 8);
+			chk(v64 == 0x380000, "C: block +0x10 = 0x380000 (the h15g config size)");
+			memcpy(&v64, blk + 0x18, 8);
+			chk(v64 == 0x0fc80000, "C: block +0x18 = 0x10000000 - 0x380000");
+			memcpy(&v64, blk + 0x20, 8);
+			chk(v64 == sim_dma[2].iova, "C: block +0x20 = HEAP iova");
+			memcpy(&v64, blk + 0x28, 8);
+			chk(v64 == 0xf00000, "C: block +0x28 = the heap request, 0xf00000");
+			memcpy(&v64, blk + 0x50, 8);
+			chk(v64 == 0xc441, "C: block +0x50 = SCRATCH1 + 1 = 0xc441");
+			memcpy(&v64, blk + 0x58, 8);
+			chk(v64 == sim_dma[0].iova, "C: block +0x58 = POOL iova");
+			memcpy(&v32, blk + 0x68, 4);
+			chk(v32 == 0x40, "C: block +0x68 = 0x40");
+			memcpy(&v32, blk + 0x6c + 0xc0, 4);
+			chk(v32 == 4, "C: template word +0xc0 = 4");
+		}
+		chk(fw_h2t_ok, "C: every host-to-firmware ring slot was host owned (header 1) when SCRATCH3 was written");
+		chk(c ? (fw_cmds == 2 && events_in(s->engine_pa + DOORBELL_OFF, 4, 1) == 2) : (fw_cmds == 0 && events_in(s->engine_pa + DOORBELL_OFF, 4, 1) == 0),
+		    c ? "C2: PRINT_ENABLE and CONFIG_GET answered, the doorbell written exactly twice (BIT(1))" : "C1: the doorbell is never written without chan_cmds");
+		chk((eng_get(s, s->cpu_status) & DM_STOPPED) && sim_pm_get == 1 && sim_pm_put == 1 && sim_module_gets == 0, "C: core stopped, claim released");
+		ane_h15_remove(&pdev);
+	}
+	/* stage 6 on the same firmware never touches the SCRATCH window */
+	ch_setup();
+	stage = "rtkit";
+	probe_now();
+	chk(scr_writes(s) == 0 && sim_n_dma == 0, "C3 stage 6 writes no SCRATCH word and allocates no surface");
+	ane_h15_remove(&pdev);
+}
+
+static void ch_refused(const char *tag, const char *want_reason, bool no_scr, bool no_dma, bool ret_nonzero)
+{
+	const struct ane_h15_soc *s = &ane_t6030_soc;
+	unsigned int rstage;
+	char verdict[32], reason[128], name[160];
+	int ret = probe_now();
+
+	snprintf(name, sizeof(name), "%s: RESULT stage=7 %s", tag, want_reason);
+	chk((ret != 0) == ret_nonzero && parse_result(&rstage, verdict, sizeof(verdict), reason, sizeof(reason)) &&
+	    rstage == 7 && strstr(reason, want_reason), name);
+	snprintf(name, sizeof(name), "%s: %s%s", tag, no_scr ? "no SCRATCH write" : "SCRATCH writes bounded", no_dma ? ", no surface allocated" : "");
+	chk((!no_scr || scr_writes(s) == 0) && (!no_dma || sim_n_dma == 0) && sim_bus_faults == 0, name);
+}
+
+static int neg_chan(void)
+{
+	const struct ane_h15_soc *s = &ane_t6030_soc;
+	int k, live;
+
+	/* NC1 .. NC3: refusals before any bus access */
+	ch_setup();
+	confirm_chan = false;
+	ch_refused("NC1 no confirm_chan", "confirm_chan=1", true, true, true);
+	chk(sim_n_events == 0, "NC1 no confirm_chan: zero bus events");
+	ch_setup();
+	map_fw = false;
+	ch_refused("NC2 no map_fw", "stage 7 needs map_fw", true, true, true);
+	ch_setup();
+	hs_wait_ms = 5;
+	ch_refused("NC3 hs_wait_ms=5", "stage 7 needs map_fw", true, true, true);
+	/* NC4 SCRATCH7 is not READY */
+	ch_setup();
+	hso.s7_zero = true;
+	ch_refused("NC4 SCRATCH7 not READY", "handshake-not-ready", true, true, true);
+	/* NC5 SCRATCH0 >= 0x21 */
+	ch_setup();
+	hso.s0_big = true;
+	ch_refused("NC5 SCRATCH0 = 0x21", "handshake-not-done", true, true, true);
+	/* NC6 a heap request above the limit */
+	ch_setup();
+	hso.s3_big = true;
+	ch_refused("NC6 heap request 128 MiB", "handshake-not-done", true, true, true);
+	/* NC7 the firmware never publishes a table */
+	ch_setup();
+	hso.no_table = true;
+	hs_wait_ms = 50;
+	ch_refused("NC7 no table address", "handshake-no-table-address", false, false, true);
+	chk(scr_writes(s) == 3, "NC7 no table address: S0, S1 and S7 written, SCRATCH3 never");
+	/* NC8 a ring outside the table's surface: nothing written before the check, no READY */
+	ch_setup();
+	hso.bad_ring = true;
+	ch_refused("NC8 ring outside the surface", "handshake-not-done", false, false, true);
+	chk(scr_writes(s) == 3 && !fw_h2t_ok, "NC8 ring outside the surface: no SCRATCH3 write, no slot header set");
+	/* NC9 overlapping rings */
+	ch_setup();
+	hso.overlap_ring = true;
+	ch_refused("NC9 rings overlap", "handshake-not-done", false, false, true);
+	chk(scr_writes(s) == 3 && !fw_h2t_ok, "NC9 rings overlap: no SCRATCH3 write, no slot header set");
+	/* NC10 SCRATCH3 is never cleared */
+	ch_setup();
+	hso.s3_stuck = true;
+	hs_wait_ms = 50;
+	ch_refused("NC10 SCRATCH3 never cleared", "handshake-not-done", false, false, true);
+	/* NC11 commands: no answer, then a failing acknowledgement */
+	ch_setup();
+	chan_cmds = true;
+	hso.no_answer = true;
+	hs_wait_ms = 50;
+	ch_refused("NC11 no command answer", "handshake-not-done", false, false, true);
+	chk(events_in(s->engine_pa + DOORBELL_OFF, 4, 1) == 1, "NC11 no command answer: the doorbell was written once, not retried");
+	ch_setup();
+	chan_cmds = true;
+	hso.bad_ack = true;
+	ch_refused("NC12 failing acknowledgement", "handshake-not-done", false, false, true);
+	/* NC13 a surface allocation fails (the IPC surface): no SCRATCH write */
+	ch_setup();
+	sim_dma_fail = 2;
+	ch_refused("NC13 IPC allocation fails", "handshake-not-done", true, false, true);
+	/* NC14 no default DMA domain */
+	ch_setup();
+	sim_default_dom_none = 1;
+	ch_refused("NC14 no default DMA domain", "fw-map-failed", true, true, true);
+	/* NC15 a stuck core after a complete handshake: surfaces kept, module pinned */
+	ch_setup();
+	dm_stuck = true;
+	ch_refused("NC15 stuck core", "core-not-stopped", false, false, false);
+	for (k = 0, live = 0; k < sim_n_dma; k++)
+		live += sim_dma[k].live;
+	chk(sim_n_dma == 3 && live == 3 && sim_module_gets == 1, "NC15 stuck core: the surfaces stay allocated, the module is pinned");
+	return fails;
+}
+
 int main(int argc, char **argv)
 {
 	const char *mode = argc > 1 ? argv[1] : "pos";
@@ -2085,6 +2454,7 @@ int main(int argc, char **argv)
 		pos_dart();
 		pos_map();
 		pos_rtkit();
+		pos_chan();
 		printf("%s\n", fails ? "SIM-TEST: FAILED"
 				     : "SIM-TEST: all positive controls PASS");
 	} else if (!strcmp(mode, "neg-ps-stuck")) {
@@ -2127,6 +2497,9 @@ int main(int argc, char **argv)
 	} else if (!strcmp(mode, "neg-pd-eacces-alone")) {
 		printf("sim-h15 negative control: -EACCES with zero or one domain\n");
 		fails = neg_pd_eacces_alone();
+	} else if (!strcmp(mode, "neg-chan")) {
+		printf("sim-h15 negative control: stage 7 refusals, an odd table, a silent firmware, the stuck core\n");
+		fails = neg_chan();
 	} else if (!strcmp(mode, "neg-rtkit")) {
 		printf("sim-h15 negative control: stage 6 refusals, a silent or odd firmware, the stuck core\n");
 		fails = neg_rtkit();
@@ -2141,7 +2514,7 @@ int main(int argc, char **argv)
 		fails = neg_run();
 	} else {
 		fprintf(stderr,
-			"usage: sim_h15 [pos|neg-run|neg-dart|neg-map|neg-rtkit|neg-ps-stuck|neg-wrong-stage|neg-truncated-dt|neg-rpm-fail|neg-pd-attach-fail|neg-pd-link-fail|neg-pd-rpm-err|neg-pd-eacces-alone|neg-read-ps-stuck|neg-read-window|neg-read-forbidden]\n");
+			"usage: sim_h15 [pos|neg-run|neg-dart|neg-map|neg-rtkit|neg-chan|neg-ps-stuck|neg-wrong-stage|neg-truncated-dt|neg-rpm-fail|neg-pd-attach-fail|neg-pd-link-fail|neg-pd-rpm-err|neg-pd-eacces-alone|neg-read-ps-stuck|neg-read-window|neg-read-forbidden]\n");
 		return 2;
 	}
 	return fails ? 1 : 0;

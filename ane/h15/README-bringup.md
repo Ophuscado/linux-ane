@@ -113,6 +113,21 @@ template is `ane/h16/`.
   `rtkit-shutdown-incomplete` (the core is still stopped by clearing RUN), or `core-not-stopped` (reboot). The M6
   runs this session on its Postoffice (ane/h18); the H15 transport is the unknown. **Run it only after a stage 5 result
   with a mailbox message in it.**
+- `stage=7` or `stage=chan`: stage 6 (all its gates, `map_fw`, `fw_seg`) plus the macOS handshake after AP power ON and
+  the channel step, behind `confirm_run=1`, `confirm_rtkit=1` AND `confirm_chan=1`; it needs `map_fw=1`. It maps the
+  firmware into the ANE's default DMA domain instead of attaching an own one (the surfaces come from the DMA API).
+  Reads SCRATCH0..7 (engine + 0x1840050 .. + 0x184006c, from the kext's T6030 case): READY in SCRATCH7, SCRATCH0 below 0x21,
+  the IPC (max(page, SCRATCH1 + 1)) and HEAP (SCRATCH3) requests within limits, else nothing is written. Then allocates
+  POOL (0x40000), IPC and HEAP surfaces, fills the 0x174 byte init block (the T6021/M6 layout, config size 0x380000), writes
+  SCRATCH0 (pool low), SCRATCH1 (pool high), SCRATCH7 (wake 0xf7fbdff9), waits `hs_wait_ms` (10 to 5000, default 1000) for the
+  firmware's table address, checks all eight table entries (each ring must lie inside the surface that holds the table, not
+  overlap the table or each other), makes the host the owner of every host-to-firmware slot, writes READY to SCRATCH3 and
+  waits for the firmware to clear it. `chan_cmds=1` then sends PRINT_ENABLE and CONFIG_GET on the IO ring (doorbell
+  BIT(bit) at engine + 0x1844000, the only doorbell write) and logs the answers. The RTKit session of stage 6 runs around
+  it and the shutdown still follows. Surfaces are freed only after the core stopped. Verdicts: `PASS
+  rtkit-channels-and-shutdown`, or `FAIL handshake-not-ready`, `handshake-no-table-address`, `handshake-not-done`
+  (the log names the step) on top of stage 6's. **Nothing here has run on an H15 part**; the register offsets are decoded
+  from the macOS kext, not measured. Run it only after stage 6 on the same machine reached AP power ON.
 
 ## Build (host cross build)
 
