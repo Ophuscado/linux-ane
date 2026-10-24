@@ -118,7 +118,7 @@ step 3 PASS with a `did not return to state 6` line exits 3. `test-stage-script.
 plus 0x200000000. `t8152-j873-ane.dts` includes both files, as `t8152-j873-gpupsd.dts` does for the GPU. The node has
 no `power-domains` property, because attaching a PSD domain writes the slot request before any stage decides.
 
-`t8152-j873-ane-dart.dtsi` adds the ANE DART (`dart,gen3`, instance 0, the ADT tunables, the shared TLBI doorbell, interrupt 789), a
+`t8152-j873-ane-dart.dtsi` adds the ANE DART (`dart,gen3`, instance 0, the ADT tunables, the DMA range of the ADT vm-base and vm-size, the shared TLBI doorbell, interrupt 789), a
 PSD group for slots 30 and 31 (state 1 on both, as the board accepted) and the `iommus` and `power-domains` links of the `ane0` node.
 `t8152-j873-ane-dart.dts` includes all three files. None of it has run: no ANE DART access has gone through the kernel's DART driver.
 

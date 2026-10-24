@@ -41,6 +41,8 @@
 			apple,static-topology;
 			apple,num-streams = <16>;
 			power-domains = <&psd_ane0>;
+			/* ADT vm-base 0x10000000000, vm-size 0x30000000000 */
+			apple,dma-range = /bits/ 64 <0x10000000000 0x30000000000>;
 			/* ADT dart-tunables-instance-0 as (offset, mask, value) */
 			apple,tunable = <0x20c 0x80000121 0x80000121>,
 					<0x220 0x00000f0f 0x00000f0f>,
