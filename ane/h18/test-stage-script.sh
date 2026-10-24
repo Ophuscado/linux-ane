@@ -90,7 +90,7 @@ sleep 1
 expect "step 4 with wait_ms 5 refused" 2 bash "$S" 4 0123abcd GO 1 2 5
 expect "step 4 with a non-number wait refused" 2 bash "$S" 4 0123abcd GO 1 2 abc
 FAKE_STAGE=boot expect "step 4 passes with GO after a step 3 PASS" 0 bash "$S" 4 0123abcd GO 1 2 500
-grep -q 'stage=boot confirm_power=1 confirm_boot=1 psd_state=1 psd_slots=2 boot_wait_ms=500' "$T/insmod.args" && echo "  PASS step 4 args" || { echo "  FAIL step 4 args"; fails=$((fails + 1)); }
+grep -q 'stage=boot confirm_power=1 confirm_boot=1 psd_state=1 psd_slots=2 boot_wait_ms=500 alias_mbox=1' "$T/insmod.args" && echo "  PASS step 4 args" || { echo "  FAIL step 4 args"; fails=$((fails + 1)); }
 sleep 1
 FAKE_STAGE=boot expect "a second step 4 on one boot is refused" 2 bash "$S" 4 0123abcd GO
 rm -f "$T/work/step4-run-0123abcd"
@@ -98,6 +98,16 @@ sleep 1
 FAKE_STAGE=boot FAKE_VERDICT=FAIL expect "a failed step 4 gives rc 1" 1 bash "$S" 4 0123abcd GO
 grep -q 'reboot' "$T/out" && echo "  PASS a failed step 4 says to reboot" || { echo "  FAIL step 4 reboot message"; fails=$((fails + 1)); }
 rm -f "$T/work/step4-run-0123abcd"
+# the dart and hello flags of step 4
+expect "step 4 dart=1 with one slot refused" 2 bash "$S" 4 0123abcd GO 1 1 300 1
+expect "step 4 dart=2 refused" 2 bash "$S" 4 0123abcd GO 1 2 300 2
+expect "step 4 hello=2 refused" 2 bash "$S" 4 0123abcd GO 1 2 300 0 2
+[ ! -e "$T/work/step4-run-0123abcd" ] && echo "  PASS a refused step 4 leaves no marker" || { echo "  FAIL marker after refused step 4"; fails=$((fails + 1)); }
+sleep 1
+FAKE_STAGE=boot expect "step 4 with dart=1 and hello=1 passes" 0 bash "$S" 4 0123abcd GO 1 2 800 1 1
+grep -q 'stage=boot confirm_power=1 confirm_boot=1 psd_state=1 psd_slots=2 boot_wait_ms=800 alias_mbox=1 read_dart=1 rtkit_hello=1' "$T/insmod.args" && echo "  PASS step 4 dart and hello args" || { echo "  FAIL step 4 dart and hello args"; fails=$((fails + 1)); }
+rm -f "$T/work/step4-run-0123abcd"
+sleep 1
 # after a step 4 ran, no ANE step of any number may start until a reboot
 touch "$T/work/step4-run-0123abcd"
 expect "step 1 after a step 4 is refused" 2 bash "$S" 1 0123abcd

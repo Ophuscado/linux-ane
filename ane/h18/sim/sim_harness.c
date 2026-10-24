@@ -27,7 +27,8 @@ u64 sim_rvbar_val = 0x10000000001ULL;
 int sim_core_running, sim_core_stuck, sim_ctrl_writes;
 u32 sim_po_msg[SIM_PO_CH][SIM_PO_Q][4];
 int sim_po_n[SIM_PO_CH], sim_po_head[SIM_PO_CH];
-int sim_start_chan = -1, sim_start_msgs;
+int sim_start_chan = -1, sim_start_msgs, sim_start_hello;
+u32 sim_po_out_off, sim_alias_credits = 1, sim_hello_min = 11, sim_hello_max = 12, sim_hello_ep, sim_hello_type = 1;
 
 #include "../ane_h18_soc.c"
 #include "../ane_h18_main.c"
@@ -111,6 +112,16 @@ static void reset_all(void)
 	keep_on = false;
 	read_mbox = false;
 	read_ctrl = false;
+	read_dart = false;
+	alias_mbox = false;
+	rtkit_hello = false;
+	sim_start_hello = 0;
+	sim_po_out_off = 0;
+	sim_alias_credits = 1;
+	sim_hello_min = 11;
+	sim_hello_max = 12;
+	sim_hello_ep = 0;
+	sim_hello_type = 1;
 	confirm_boot = false;
 	boot_wait_ms = 300;
 	sim_cpu_status = 0xa;
@@ -506,6 +517,123 @@ static void pos_boot(void)
 	ret = probe_now();
 	chk(ret == 0 && log_count("ane_h18 msg ch12") == 1, "B3 boot: a message on candidate channel 12 is read");
 
+	/* read_dart: twelve reads of the DART block, after both PSD acknowledges and before the RUN write, never a write */
+	boot_setup();
+	read_dart = true;
+	ret = probe_now();
+	chk(ret == 0 && result("boot", "PASS", "core-ran-and-stopped"), "D1 boot read_dart: PASS");
+	chk(events_in(SIM_DART_PA, SIM_DART_SIZE, 0) == ANE_H18_DART_NREAD && events_in(SIM_DART_PA, SIM_DART_SIZE, 1) == 0, "D1 boot read_dart: twelve DART reads, no DART write");
+	chk(sim_faults == 0, "D1 boot read_dart: zero faults (the DART block was read with both slots on)");
+	{
+		int first_dart = -1, last_dart = -1, run = -1, psd_ack2 = -1, k;
+
+		for (k = 0; k < sim_n_events; k++) {
+			if (sim_in(sim_events[k].pa, SIM_DART_PA, SIM_DART_SIZE)) {
+				if (first_dart < 0)
+					first_dart = k;
+				last_dart = k;
+			}
+			if (sim_events[k].write && sim_events[k].pa == sim_asc_pa + 0x44 && sim_events[k].val == 0x10)
+				run = k;
+			if (sim_events[k].write && sim_events[k].pa == psd_pa(1) + 0x90 && sim_events[k].val == 1)
+				psd_ack2 = k;
+		}
+		chk(first_dart > psd_ack2 && psd_ack2 >= 0 && last_dart < run && run > 0, "D1 boot read_dart: DART reads sit after PSD slot 31 on and before the RUN write");
+	}
+	chk(log_count("CRIT: ane_h18 read DART0_0 pa=0x419800000") == 1 && log_count("CRIT: ane_h18 read DART0_0x1438 pa=0x419801438") == 1, "D1 boot read_dart: each read is logged before it is done");
+	ane_h18_remove(&pdev);
+	chk(sim_n_iomap == sim_n_iounmap, "D1 boot read_dart: the DART mapping is released on remove");
+	/* without read_dart the DART block is never touched, and no window is mapped for it */
+	boot_setup();
+	ret = probe_now();
+	chk(ret == 0 && events_in(SIM_DART_PA, SIM_DART_SIZE, 0) == 0 && events_in(SIM_DART_PA, SIM_DART_SIZE, 1) == 0, "D2 boot: no DART access without read_dart");
+	/* alias bank: the status word at window + 0x10c20 is read only with alias_mbox, and a message there is logged raw */
+	boot_setup();
+	ret = probe_now();
+	chk(ret == 0 && events_in(sim_mbox_pa + ANE_H18_PO_ALIAS_OFF, 0x1000, 0) == 0, "A1 boot: the alias bank is not read without alias_mbox");
+	boot_setup();
+	alias_mbox = true;
+	sim_start_chan = 536;
+	sim_start_msgs = 1;
+	ret = probe_now();
+	chk(ret == 0 && log_count("ane_h18 msg alias24 rx=0x1000,0,0x100,0") == 1, "A2 boot alias_mbox: a message on the alias channel is read and logged raw");
+	{
+		int k, st = 0;
+
+		for (k = 0; k < sim_n_events; k++)
+			if (!sim_events[k].write && sim_events[k].pa == sim_mbox_pa + 0x10c20)
+				st++;
+		chk(st >= 1 && events_in(sim_mbox_pa, sim_mbox_size, 1) == 0, "A2 boot alias_mbox: the status word at window + 0x10c20 is read, the mailbox is never written");
+	}
+
+	/* RTKit exchange: HELLO answered with version 12 and the last EPMAP answered with the same flag, in TX (+0x10) only; RX is +0x00 */
+	{
+		int k, hello_w = 0, epmap_w = 0, wrong_half = 0;
+
+		boot_setup();
+		alias_mbox = true;
+		rtkit_hello = true;
+		sim_start_chan = 536;
+		sim_start_hello = 1;
+		ret = probe_now();
+		chk(ret == 0 && result("boot", "PASS", "core-ran-and-stopped"), "H1 boot rtkit_hello: PASS");
+		for (k = 0; k < sim_n_events; k++) {
+			u64 pa = sim_events[k].pa;
+
+			if (!sim_events[k].write || !sim_in(pa, sim_mbox_pa, sim_mbox_size))
+				continue;
+			if (pa >= sim_mbox_pa + 0x10c00 && pa < sim_mbox_pa + 0x10c10)
+				wrong_half++;
+			if (pa == sim_mbox_pa + 0x10c10 && sim_events[k].val == 0x000c000c)
+				hello_w++;
+			if (pa == sim_mbox_pa + 0x10c14 && sim_events[k].val == 0x00200000)
+				hello_w++;
+			if (pa == sim_mbox_pa + 0x10c14 && sim_events[k].val == 0x00880000)
+				epmap_w++;
+		}
+		chk(hello_w == 2 && epmap_w == 1 && wrong_half == 0, "H1 boot rtkit_hello: HELLO_REPLY version 12 and the EPMAP reply go to TX (+0x10) only, never to RX");
+		chk(events_in(sim_mbox_pa, sim_mbox_size, 1) == 8 && log_count("CRIT: ane_h18 write TX of alias24 pa=0x316010c10") == 2, "H1 boot rtkit_hello: two replies of four words, each logged before");
+		if (log_count("ane_h18 rtkit rx type=") != 2 || sim_faults)
+			printf("    rx lines %d, faults %d\n", log_count("ane_h18 rtkit rx type="), sim_faults);
+		chk(log_count("ane_h18 rtkit rx type=") == 2 && sim_faults == 0, "H1 boot rtkit_hello: both messages decoded and logged, zero faults");
+	}
+	/* without rtkit_hello the messages are only logged */
+	boot_setup();
+	alias_mbox = true;
+	sim_start_chan = 536;
+	sim_start_hello = 1;
+	ret = probe_now();
+	chk(ret == 0 && events_in(sim_mbox_pa, sim_mbox_size, 1) == 0 && log_count("ane_h18 rtkit rx type=") == 2, "H2 boot alias_mbox without rtkit_hello: messages logged, nothing written");
+	/* unknown type, another endpoint, firmware versions without 12, no inbox credit: no reply */
+	for (i = 0; i < 4; i++) {
+		boot_setup();
+		alias_mbox = true;
+		rtkit_hello = true;
+		sim_start_chan = 536;
+		sim_start_hello = 1;
+		if (i == 0) sim_hello_type = 3;
+		if (i == 1) sim_hello_ep = 1;
+		if (i == 2) { sim_hello_min = 13; sim_hello_max = 14; }
+		if (i == 3) sim_alias_credits = 0;
+		ret = probe_now();
+		chk(ret == 0 && events_in(sim_mbox_pa, sim_mbox_size, 1) == (i == 3 ? 0 : 4), i == 0 ? "H3 boot rtkit_hello: an unknown type gets no reply (only the EPMAP is answered)" : i == 1 ? "H3 boot rtkit_hello: a message for another endpoint gets no reply (only the EPMAP is answered)" : i == 2 ? "H3 boot rtkit_hello: firmware versions 13 to 14 get no HELLO reply (only the EPMAP is answered)" : "H3 boot rtkit_hello: no inbox credit, nothing written");
+	}
+	/* status read before RUN */
+	boot_setup();
+	alias_mbox = true;
+	ret = probe_now();
+	{
+		int first_alias = -1, run = -1, k;
+
+		for (k = 0; k < sim_n_events; k++) {
+			if (first_alias < 0 && !sim_events[k].write && sim_events[k].pa == sim_mbox_pa + 0x10c20)
+				first_alias = k;
+			if (sim_events[k].write && sim_events[k].pa == sim_asc_pa + 0x44 && sim_events[k].val == 0x10)
+				run = k;
+		}
+		chk(ret == 0 && first_alias > 0 && first_alias < run && log_count("ane_h18 alias status before RUN") == 1, "H4 boot alias_mbox: the alias STATUS word is read and logged before the RUN write");
+	}
+
 	/* the core never reports running: PASS with its own reason, still stopped at the end */
 	boot_setup();
 	sim_run_status = 0x2a;
@@ -532,6 +660,24 @@ static int neg_boot(void)
 	boot_wait_ms = 5;
 	ret = probe_now();
 	if (ret != -EINVAL || writes()) { printf("    boot_wait_ms 5\n"); bad = 1; }
+
+	/* rtkit_hello without alias_mbox is refused before any write */
+	boot_setup();
+	rtkit_hello = true;
+	ret = probe_now();
+	if (ret != -EINVAL || writes() || !result("boot", "REFUSED", "rtkit_hello=1 needs alias_mbox=1")) { printf("    rtkit_hello without alias_mbox\n"); bad = 1; }
+	/* read_dart needs both slots: with one slot it is refused before any write or DART read */
+	boot_setup();
+	read_dart = true;
+	psd_slots = 1;
+	ret = probe_now();
+	if (ret != -EINVAL || writes() || events_in(SIM_DART_PA, SIM_DART_SIZE, 0) || !result("boot", "REFUSED", "read_dart=1 needs psd_slots=2 (the DART block is read only with both ANE slots on)")) { printf("    read_dart with one slot\n"); bad = 1; }
+	/* a preflight stop never reads the DART */
+	boot_setup();
+	read_dart = true;
+	sim_rvbar_val = 0x10000000000ULL;
+	ret = probe_now();
+	if (ret != -EBUSY || events_in(SIM_DART_PA, SIM_DART_SIZE, 0) || ctrl_write_events()) { printf("    DART read after a failed preflight\n"); bad = 1; }
 
 	/* preflight: each deviation stops before the RUN write and puts the slots back */
 	{

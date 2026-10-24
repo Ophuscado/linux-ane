@@ -26,7 +26,18 @@ else in the ASC, IORVBAR or mailbox windows.
   CPU_CONTROL with RUN set (the one write to the ASC window), reads CPU_STATUS every 10 ms for `boot_wait_ms` (default 300) and the
   status words of the three candidate Postoffice channels, reads the outbox of any channel that holds a message (at most 8 messages,
   raw 16 bytes logged), writes CPU_CONTROL with RUN clear and waits for STOPPED. If the core does not stop, the PSD slots stay on
-  and a reboot is required. The module sends no mailbox message in this stage.
+  and a reboot is required. The module sends no mailbox message unless `rtkit_hello=1` is given.
+  - `alias_mbox=1`: also read the status word of the alias-bank Postoffice channel (window + 0x10000, channel 2 * mailbox number, 0x316010c20 for
+    ANE0) once before RUN and on every poll, and read the message when its count is not zero. The channel layout is the one the kernel mailbox driver
+    uses on this SoC: RX at +0x00, TX at +0x10, status at +0x20. A message moves as one paired 16 byte access. The raw words are logged.
+  - `read_dart=1` (needs `psd_slots=2`): before RUN, read twelve words of the ANE DART (instance 0): config, version, the stream-enable word, and
+    the stream configuration words of streams 0, 10 and 13 and the TTBR words of streams 0, 1, 10, 13 and 14. Read only, each address is
+    logged before its read, so a hang names the word. It can wedge the machine: the block has manual availability, the macOS driver does not
+    touch it before forcing it available, and a read of such a block hung the USB DARTs on this board before their power chain was up. The
+    gate on both PSD slots is a hypothesis, not a measured safe condition. Only the first word is read before anything else runs.
+  - `rtkit_hello=1` (needs `alias_mbox=1`): answer the firmware's RTKit management HELLO with version 12 and its endpoint map, nothing else. The
+    reply goes to TX as one paired 16 byte store. No reply is sent without a free TX slot, for a message of another type or endpoint, or when the
+    firmware's version range excludes 12. At most four replies per run.
 
 ## Why the ANE is powered by PSD slots
 
@@ -43,11 +54,13 @@ GPU (`t8152-j873-psd.dtsi`, `t8152-j873-psd-gpu.dtsi`). The ADT has no PMGR powe
   script requests state 1 on slot 30 first; `psd_state` takes 0 to 5 without a rebuild.
 - Whether the ASC core is running or halted, and what the bits of CPU_STATUS mean on this chip. The ANE also has `clock-ids` 329,
   328 and 375, which this module does not touch.
-- The Postoffice channel of this ANE. The lab notebook's T8152 driver notes give `msgbox_using_postoffice + (msgbox_mailbox_num
-  << 1)`, which is channel 25 for mailbox number 12. A review reads the same expression as channel 12. The SMC node
-  fits neither. `read_mbox=1` reads the status word of channels 12, 24 and 25, and the log decides.
-- Whether the core can fetch its firmware at all: the ANE DART is off at this point and nothing here programs it. Stage boot shows what
-  the core does with IORVBAR as iBoot left it. If it never reports RUNNING or posts no message, the DART mapping is the next suspect.
+- The Postoffice channel of this ANE. Two decodes of the macOS wrapper driver agree on the alias bank. The node has a postoffice
+  property and no alias property. That puts the channel at window + 0x10000 + 2 * 12 * 0x80 = 0x316010c00, with status at +0x20. The plain-bank
+  channels 12, 24 and 25 that `read_mbox=1` reads are other apertures, so their zero status said nothing. Which half is RX and which is TX comes from the kernel
+  mailbox driver's T8152 layout (RX +0x00, TX +0x10). A third decode of the macOS driver names the halves the other way round.
+- Whether the core can fetch its firmware at all: nothing here programs the ANE DART. The macOS driver maps the two preloaded firmware
+  segments through it before RUN. `read_dart=1` shows what iBoot left in it. If it holds no mapping, an iommu domain for the ANE
+  has to map the two segments at the addresses in `segment-ranges`.
 - Everything about the DART. It is `dart,gen3` with manual availability, and the first read of such a DART hangs the
   bus until its power chain is up. The overlay has no DART node.
 
@@ -58,6 +71,10 @@ Mac mini M6, 2026-10-23, kernel 7.1.12-aurora-m6usb-ARCH. `stage=psd`: slots 30 
 ASC wrapper answered: CPU_STATUS 0xa, ASC_STATUS 0xa, IORVBAR 0x10000000001, which is the DART-side address of the preloaded
 firmware text with the valid bit set. Then REQUEST=6 was acknowledged. No bus fault. This run did not read CPU_CONTROL, slot 31,
 the mailbox or the DART.
+
+Board run of stage boot (Mac mini M6, 2026-10-23, `psd_slots=2`, 300 ms): CPU_STATUS went from 0xa to 0x8 within 11 ms of the RUN write and stayed
+0x8. The plain-bank status words stayed 0 and no message was read. Clearing RUN did not return the core to STOPPED, so the stage reported
+core-not-stopped and left the slots on. That run watched the plain bank, not the alias bank.
 
 ## Build and sim
 

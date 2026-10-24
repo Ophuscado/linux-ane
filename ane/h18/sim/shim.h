@@ -143,12 +143,16 @@ extern u32 sim_cpu_status, sim_cpu_ctrl, sim_run_status;
 extern u64 sim_rvbar_val;
 extern int sim_core_running, sim_core_stuck;
 extern int sim_ctrl_writes;
-#define SIM_PO_CH 64
+#define SIM_PO_CH 600	/* the alias bank channel of ANE0 is window offset 0x10c00 = channel 536 */
+#define SIM_DART_PA 0x419800000ULL
+#define SIM_DART_SIZE 0xc000
 #define SIM_PO_Q 24
 extern u32 sim_po_msg[SIM_PO_CH][SIM_PO_Q][4];
 extern int sim_po_n[SIM_PO_CH], sim_po_head[SIM_PO_CH];
 extern int sim_start_chan;		/* channel that receives sim_start_msgs messages when RUN is set; -1 = none */
 extern int sim_start_msgs;
+extern int sim_start_hello;		/* RUN queues an RTKit HELLO (min 11, max 12) and a last EPMAP (base 0, bitmap 3) on the alias channel */
+extern u32 sim_po_out_off, sim_alias_credits, sim_hello_min, sim_hello_max, sim_hello_ep, sim_hello_type;
 extern u64 sim_asc_pa, sim_rvbar_pa, sim_mbox_pa;
 extern u32 sim_asc_size, sim_rvbar_size, sim_mbox_size;
 
@@ -214,11 +218,15 @@ static inline u32 bus_read(u64 pa)
 
 			v = 0;
 			if (ch < SIM_PO_CH) {
+				u32 oo = ch == 536 ? sim_po_out_off : 0;
+
 				if (r == 0x20) {
 					v = (u32)(sim_po_n[ch] > 15 ? 15 : sim_po_n[ch]);	/* a 4-bit count */
-				} else if (r < 0x10 && sim_po_n[ch] > 0) {
-					v = sim_po_msg[ch][sim_po_head[ch]][r / 4];
-					if (r == 0xc) {		/* the last word read pops the message */
+					if (ch == 536)
+						v |= sim_alias_credits << 8;
+				} else if (r >= oo && r < oo + 0x10 && sim_po_n[ch] > 0) {
+					v = sim_po_msg[ch][sim_po_head[ch]][(r - oo) / 4];
+					if (r == oo + 0xc) {		/* the last word read pops the message */
 						sim_po_head[ch]++;
 						sim_po_n[ch]--;
 					}
@@ -227,6 +235,12 @@ static inline u32 bus_read(u64 pa)
 		} else {
 			v = (pa & 0xffff) | 0x10000;	/* distinguishable fake data */
 		}
+	} else if (sim_in(pa, SIM_DART_PA, SIM_DART_SIZE)) {
+		/* the DART block is only reachable with both ANE PSD slots on */
+		if (sim_psd_state[0] == 6 || sim_psd_state[1] == 6)
+			sim_faults++;
+		else
+			v = 0xda000000u | (u32)(pa & 0xffff);
 	} else {
 		sim_faults++;
 	}
@@ -259,7 +273,17 @@ static inline void bus_write(u64 pa, u32 v)
 		if (v & 0x10) {
 			sim_core_running = 1;
 			sim_cpu_status = sim_run_status;
-			if (sim_start_chan >= 0) {
+			if (sim_start_chan >= 0 && sim_start_hello) {
+				u64 hello = ((u64)sim_hello_type << 52) | ((u64)sim_hello_max << 16) | sim_hello_min;
+				u64 epmap = (8ULL << 52) | (1ULL << 51) | 3;
+
+				sim_po_msg[sim_start_chan][0][0] = (u32)hello; sim_po_msg[sim_start_chan][0][1] = (u32)(hello >> 32);
+				sim_po_msg[sim_start_chan][0][2] = sim_hello_ep; sim_po_msg[sim_start_chan][0][3] = 0;
+				sim_po_msg[sim_start_chan][1][0] = (u32)epmap; sim_po_msg[sim_start_chan][1][1] = (u32)(epmap >> 32);
+				sim_po_msg[sim_start_chan][1][2] = 0; sim_po_msg[sim_start_chan][1][3] = 0;
+				sim_po_n[sim_start_chan] = 2;
+				sim_po_head[sim_start_chan] = 0;
+			} else if (sim_start_chan >= 0) {
 				int k;
 
 				for (k = 0; k < sim_start_msgs && sim_po_n[sim_start_chan] < SIM_PO_Q; k++) {
@@ -278,6 +302,8 @@ static inline void bus_write(u64 pa, u32 v)
 		}
 		return;
 	}
+	if (i < 0 && sim_in(pa, sim_mbox_pa, sim_mbox_size) && sim_psd_state[0] != 6)
+		return;		/* an inbox write with the ANE slot on is a legal bus access */
 	if (i < 0)
 		sim_faults++;
 }
@@ -289,6 +315,12 @@ static inline void *of_iomap(struct device_node *n, int idx)
 		return NULL;
 	sim_n_iomap++;
 	return (void *)(uintptr_t)n->reg_pa[idx];
+}
+static inline void *ioremap(u64 pa, u32 size)
+{
+	(void)size;
+	sim_n_iomap++;
+	return (void *)(uintptr_t)pa;
 }
 static inline void iounmap(void *p) { (void)p; sim_n_iounmap++; }
 
