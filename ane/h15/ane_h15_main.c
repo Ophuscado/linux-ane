@@ -912,6 +912,12 @@ static int ane_h15_write_ctrl(struct ane_h15 *ane, u32 old, u32 val, const char 
 	return 0;
 }
 
+/* Stopped = STOPPED set and RUNNING clear (m1n1 R_CPU_STATUS; the M6 RUN write cleared STOPPED, RUNNING never read 1). */
+static bool ane_h15_core_stopped(u32 st)
+{
+	return !(st & ANE_H15_ST_RUNNING) && (st & ANE_H15_ST_STOPPED);
+}
+
 static int ane_h15_stage_run(struct ane_h15 *ane)
 {
 	const struct ane_h15_soc *s = ane->soc;
@@ -956,6 +962,17 @@ static int ane_h15_stage_run(struct ane_h15 *ane)
 		return ret;
 	}
 	if (map_fw) {
+		/* Attaching replaces the DART state a running core is fetching through: look first, and only on a stopped core. */
+		ret = ane_h15_read_word(ane, "CPU_STATUS", s->cpu_status, &st);
+		if (ret) {
+			ane_h15_result(ane, 5, "FAIL", "read-refused");
+			return ret;
+		}
+		if (!ane_h15_core_stopped(st)) {
+			dev_err(ane->dev, "ane_h15 map_fw: cpu_status=%#x, the core is not stopped: not touching the DART\n", st);
+			ane_h15_result(ane, 5, "FAIL", "core-not-stopped-before-map");
+			return -EBUSY;
+		}
 		ret = ane_h15_map_firmware(ane);
 		if (ret) {
 			ane_h15_result(ane, 5, "FAIL", "fw-map-failed");

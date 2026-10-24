@@ -206,6 +206,10 @@ sim-mutation-map-textrw:
 sim-mutation-map-nooverlap:
 	$(call pd_mutant,map-nooverlap,s/pa\[0\] < pa\[1\] + size\[1\] \&\& /0 \&\& /,0 \&\& pa\[1\] <,neg-map)
 
+# map_fw attaches and maps while the core may be running
+sim-mutation-map-nostoppedcheck:
+	$(call pd_mutant,map-nostoppedcheck,s/return !(st \& ANE_H15_ST_RUNNING) \&\& (st \& ANE_H15_ST_STOPPED);/return true; \/* NEG: stopped check skipped *\//,NEG: stopped check skipped,neg-map)
+
 # map_fw runs on a node without iommus
 sim-mutation-map-noiommus:
 	$(call pd_mutant,map-noiommus,s/if (!device_iommu_mapped(ane->dev)) {/if (0 \/* NEG: iommus not required *\/) {/,NEG: iommus not required,neg-map)
@@ -276,5 +280,5 @@ clean:
 	sim-negative-dart sim-mutation-run-nodartgate sim-mutation-dart-nottbr \
 	sim-mutation-dart-noconfirm sim-mutation-run-nopin sim-negative-map sim-mutation-map-noundo \
 	sim-mutation-map-noramcheck sim-mutation-map-textrw sim-mutation-map-nooverlap \
-	sim-mutation-map-noiommus clean
+	sim-mutation-map-noiommus sim-mutation-map-nostoppedcheck clean
 endif

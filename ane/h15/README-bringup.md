@@ -74,13 +74,15 @@ template is `ane/h16/`.
   set, RUNNING clear), RUN is clear, RVBAR equals `rvbar_expect` and both
   mailbox words read EMPTY, and the stage 4 scan finds a live DART stream
   (`run_unmapped=1` overrides this and expects silence). With `map_fw=1` it
-  first gives the core a DART mapping, the M6 module's pattern (PR 185): it
+  first reads CPU_STATUS and refuses unless the core is stopped (attaching replaces the
+  DART state a running core fetches through), then gives the core a DART mapping, the M6
+  module's pattern (PR 185): it
   attaches the ANE to its DART through the iommu API (so the `apple-dart`
   driver programs the DART and enables the stream) and `iommu_map()`s the two
   firmware segments iBoot preloaded, TEXT read only at the RVBAR entry address
   and DATA read+write right behind it, then runs the scan, which must now find
   the stream. The physical addresses come from `fw_seg=TEXTPA:SIZE,DATAPA:SIZE`,
-  taken from the live ADT of the same boot (`ane/h15/h15-segments.py`), because
+  taken from the live ADT of the same boot (`ane/h15/h15-segments.py ADT.bin [RVBAR]`, which also refuses a dump whose TEXT remap is not the RVBAR entry), because
   iBoot picks them and the Linux device tree does not carry them for the ANE
   (m1n1 writes asc-firmware regions only for dcp, dcpext and ave). Each segment
   must be 16 KiB aligned, at most 64 MiB, disjoint, and outside system RAM,

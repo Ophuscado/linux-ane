@@ -2,7 +2,10 @@
 # SPDX-License-Identifier: GPL-2.0-only OR MIT
 """Print the fw_seg= argument for ane_h15 stage=5 map_fw=1 from an ADT dump.
 
-Usage: h15-segments.py ADT.bin
+Usage: h15-segments.py ADT.bin [RVBAR]
+
+RVBAR is the IORVBAR a stage 2 run read on this SoC (default 0x10000000001, the T6030 value of PR 175). ane_h15
+maps TEXT at RVBAR & ~1, so the script refuses a dump whose TEXT remap is another address.
 
 ADT.bin must be the live ADT of the SAME boot you will insmod on: iBoot picks the physical addresses when it
 loads the firmware. Whether those addresses repeat from one boot to the next is NOT KNOWN, so do not reuse a
@@ -50,8 +53,9 @@ def find(node, *path):
 
 
 def main():
-    if len(sys.argv) != 2:
+    if len(sys.argv) not in (2, 3):
         sys.exit(__doc__)
+    rvbar = int(sys.argv[2], 0) if len(sys.argv) == 3 else 0x10000000001
     with open(sys.argv[1], 'rb') as f:
         data = f.read()
     root, _ = parse(data)
@@ -65,6 +69,8 @@ def main():
     for i, (phys, off, remap, sz) in enumerate(recs):
         print(f'record {i}: phys={phys:#x} iova_offset={off:#x} remap={remap:#x} size={sz & 0xffffffff:#x} flags={sz >> 32:#x}')
     text, data_ = recs
+    if text[2] != rvbar & ~1:
+        sys.exit(f'TEXT remap {text[2]:#x} is not the RVBAR entry {rvbar & ~1:#x}: ane_h15 would map TEXT at the wrong address')
     vm_base = text[2] - text[1]
     for _, off, remap, _ in recs:
         if remap != vm_base + off:

@@ -1717,6 +1717,17 @@ static int neg_map(void)
 		chk(ret != 0 && parse_result(&rstage, verdict, sizeof(verdict), reason, sizeof(reason)) &&
 		    !strcmp(verdict, "REFUSED") && sim_n_events == 0 && sim_n_iocalls == 0, name);
 	}
+	/* NM15 the core is already running (STOPPED clear, then RUNNING set): nothing mapped, nothing written */
+	for (i = 0; i < 2; i++) {
+		map_setup(s, "apple,t6030-ane");
+		eng_set(s, s->cpu_status, i ? 0x30002b : 0x300028);
+		ret = probe_now();
+		snprintf(name, sizeof(name), "NM15 core %s: FAIL core-not-stopped-before-map, no iommu call, no write",
+			 i ? "RUNNING" : "not STOPPED");
+		chk(ret != 0 && parse_result(&rstage, verdict, sizeof(verdict), reason, sizeof(reason)) &&
+		    !strcmp(verdict, "FAIL") && !strcmp(reason, "core-not-stopped-before-map") &&
+		    sim_n_iocalls == 0 && events_in(0, ~0ULL, 1) == 0, name);
+	}
 	/* NM14 a SoC row without a measured RVBAR: refused first */
 	map_setup(&ane_t8122_soc, "apple,t8122-ane");
 	ret = probe_now();
