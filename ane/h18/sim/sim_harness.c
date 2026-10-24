@@ -66,6 +66,7 @@ static u8 sim_blob[0x8000];
 static size_t sim_blob_len;
 int sim_prog_mode, sim_prog_n, sim_prog_loaded, sim_prog_created, sim_t2h_back, sim_out_written, sim_t2h_posted;
 u32 sim_prog_ops[16];
+int sim_pub_wait;
 
 /* the file: sections 1 to 5 and 7 (the add program's six), buffers 5 and 6 as inputs and 4 as the output, 0x4000 bytes each; input 5 starts with 0xaa bytes */
 static void make_blob(void)
@@ -181,6 +182,8 @@ static u16 sim_prog_cmd(u16 op, u8 *blk)
 	case 0x202:
 		if (sim_prog_mode == 2)
 			return 3;
+		if (sim_prog_mode == 6)
+			return 0xffff;
 		if (!sim_prog_loaded || prog != 0x5a)
 			return 4;
 		v = 0x77;
@@ -238,6 +241,10 @@ static u16 sim_prog_cmd(u16 op, u8 *blk)
 			memcpy(ev + 0x14, &proc, 4);
 			memcpy(ev + 0x1c, &st, 4);
 			ring[i * 8 + 1] = 0x28;
+			if (sim_prog_mode == 5) {	/* the length first, the address (the publication) three sleeps later */
+				sim_pub_wait = 3;
+				continue;
+			}
 			ring[i * 8] = sim_dma[0].iova + 0x1000 + i * 0x40;
 			sim_t2h_posted++;
 		}
@@ -334,6 +341,15 @@ void sim_hs_react(void)
 /* A firmware console that prints on every poll (chan_req 4): the terminal ring changes at each sleep once the table exists. */
 void sim_usleep_hook(void)
 {
+	if (sim_pub_wait && !--sim_pub_wait && sim_n_dma > 1) {	/* publish the two IO_T2H events of a call in mode 5 */
+		u64 *ring = (u64 *)((u8 *)sim_dma[1].va + 0xb000);
+		int q;
+
+		for (q = 0; q < 2; q++) {
+			ring[q * 8] = sim_dma[0].iova + 0x1000 + q * 0x40;
+			sim_t2h_posted++;
+		}
+	}
 	if (sim_chan_req == 4 && sim_n_dma > 1 && sim_scr_model && sim_scr[3] == 0 && sim_hs_table) {
 		u32 *t = (u32 *)((u8 *)sim_dma[1].va + 0x800);
 
@@ -420,6 +436,8 @@ void sim_db_react(u32 v)
 		if (op >= 0x200 && op <= 0x204) {
 			u16 ack = sim_prog_cmd(op, blk);
 
+			if (ack == 0xffff)	/* the modelled firmware does not answer this one */
+				return;
 			memcpy(blk + 6, &ack, 2);
 		}
 		if (op == ANE_H18_CSNE_RESOURCE_INFO_GET) {
@@ -540,7 +558,7 @@ static void reset_all(void)
 	hs_wait_ms = 50;
 	sim_scr_model = sim_n_dma = sim_dma_fail = sim_default_dom_none = sim_hs_mode = sim_hs_block_ok = sim_hs_wakes = 0;
 	hs_chan = hs_cmds = hs_start = hs_prog = false;
-	sim_prog_mode = sim_prog_n = sim_prog_loaded = sim_prog_created = sim_t2h_back = sim_out_written = sim_t2h_posted = 0;
+	sim_pub_wait = sim_prog_mode = sim_prog_n = sim_prog_loaded = sim_prog_created = sim_t2h_back = sim_out_written = sim_t2h_posted = 0;
 	sim_fw_err = sim_fw_released = sim_fw_requests = 0;
 	make_blob();
 	sim_db_writes = sim_hs_table = sim_s3_mode = sim_cmd_mode = sim_cmds_seen = sim_table_bad = sim_chan_req = 0;
@@ -1347,7 +1365,7 @@ static void pos_boot(void)
 		int pass, k, w3 = -1, db = -1, nsc3, nh2t, ok;
 		u8 *ipc;
 
-		for (pass = 0; pass < 25; pass++) {
+		for (pass = 0; pass < 27; pass++) {
 			kboot_setup();
 			alias_mbox = true;
 			rtkit_hello = true;
@@ -1386,6 +1404,8 @@ static void pos_boot(void)
 			if (pass == 22) sim_prog_mode = 3;
 			if (pass == 23) sim_prog_mode = 2;
 			if (pass == 24) sim_prog_mode = 4;
+			if (pass == 25) sim_prog_mode = 5;
+			if (pass == 26) sim_prog_mode = 6;
 			ret = probe_now();
 			ipc = sim_n_dma > 1 ? sim_dma[1].va : NULL;
 			nsc3 = 0;
@@ -1428,6 +1448,12 @@ static void pos_boot(void)
 					    "PG9 a call without a finish event: FAIL, nothing is unloaded (the firmware may be hung), the stop still runs");
 				if (pass == 23)
 					chk(ret == -EIO && sim_prog_n == 3 && sim_prog_ops[1] == 0x202 && sim_prog_ops[2] == 0x201 && !sim_prog_loaded, "PG10 CREATE_PROCESS refused: the program is destroyed, no call");
+				if (pass == 26)
+					chk(ret == -EIO && sim_prog_n == 2 && sim_prog_ops[0] == 0x200 && sim_prog_ops[1] == 0x202 && sim_prog_loaded && live == 0 && log_count("rtkit shutdown:") == 1,
+					    "PG17 CREATE_PROCESS not answered: FAIL, no DESTROY_PROGRAM and nothing else sent to the firmware, the stop still runs and the surfaces are freed afterwards");
+				if (pass == 25)
+					chk(ret == 0 && ok && sim_t2h_posted == 2 && sim_t2h_back == 2 && log_count("PROCEDURE_CALL finished after") == 1 && log_count("is not in a buffer the firmware was given") == 0 && log_count("IO_T2H slot 0 header=0x") == 1,
+					    "PG16 an IO_T2H slot whose length is written before its address is not consumed until the address is there: both events are read after publication, the call finishes");
 				if (pass == 24)
 					chk(ret == -EIO && sim_prog_n == 1 && log_count("did not write a program id") == 1, "PG11 a LOAD_PROGRAM reply without a program id is a FAIL, nothing is created");
 			}

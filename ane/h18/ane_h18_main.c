@@ -1182,12 +1182,13 @@ static unsigned int ane_h18_prog_t2h(struct ane_h18 *ane, unsigned int *cursor, 
 	if (!r)
 		return 0;
 	while (n < r->slots) {
-		u64 *slot = r->base + (size_t)*cursor * 8, hdr = READ_ONCE(slot[0]), len = READ_ONCE(slot[1]);
+		u64 *slot = r->base + (size_t)*cursor * 8, hdr = READ_ONCE(slot[0]), len;
 		const u8 *ev;
 
-		if ((hdr & 1) || !(hdr | len))	/* host owned (given back) or never written: the firmware posts a slot by writing its event address with bit 0 clear */
+		if ((hdr & 1) || !hdr)	/* host owned (given back) or not published yet: the firmware publishes a slot by writing its event address, bit 0 clear, and may write the length first */
 			break;
 		dma_rmb();
+		len = READ_ONCE(slot[1]);
 		dev_info(ane->dev, "ane_h18 prog: IO_T2H slot %u header=%#llx len=%#llx\n", *cursor, hdr, len);
 		ev = len >= 0x20 && len <= 0x1000 ? ane_h18_prog_cpu(ane, hdr, len) : NULL;
 		if (ev) {
@@ -1378,10 +1379,10 @@ static int ane_h18_prog_run(struct ane_h18 *ane, struct ane_h18_ring *io)
 	ane_h18_prog_settle(ane, 10, &t2h);
 	goto destroy;
 fail:
+	/* a command or the call timed out: the firmware may be hung and the unanswered slot is still ours to give back, so nothing more is sent to it */
+	if (ret == -ETIMEDOUT || ret == -EBUSY)	/* -EBUSY: the IO slot of an earlier unanswered command is not ours */
+		goto fail_nounload;
 	if (created) {
-		/* the call failed or was not answered: only unload when the firmware still answers commands, which a timeout says it does not */
-		if (ret == -ETIMEDOUT)
-			goto fail_nounload;
 		memset(cmd, 0, sizeof(cmd));
 		memcpy(cmd + 8, &prog, 4);
 		memcpy(cmd + 0xc, &proc, 4);
