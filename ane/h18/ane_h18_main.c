@@ -905,7 +905,7 @@ static int ane_h18_mal_service(struct ane_h18 *ane)
 	return 1;
 }
 
-static void ane_h18_chan_snapshot(struct ane_h18 *ane, const char *when);
+static void ane_h18_chan_snapshot(struct ane_h18 *ane, const char *when, bool full);
 
 /* One poll of the doorbell side while the host waits: answer the SHAREDMALLOC ring, acknowledge a pending interrupt the way the kext does (the value read is
  * written back to the ack register) and, when the pending value or a firmware-to-host ring changed, print the snapshot. `t` is the poll number in ms. */
@@ -937,16 +937,17 @@ static int ane_h18_chan_poll(struct ane_h18 *ane, unsigned int t, u64 *digest, u
 		*last_pend = pend;
 		if (ane->snap_left) {
 			ane->snap_left--;
-			ane_h18_chan_snapshot(ane, "ring change");
+			ane_h18_chan_snapshot(ane, "ring change", false);
 		}
 	}
 	return ret;
 }
 
 /* Read only look at the rings and the IPI pending register: what the firmware posted that nobody answered. A nonzero line of a firmware-to-host ring or the
- * terminal ring is logged (at most 24 lines of 16 bytes per ring, the rest counted), the first two slots of every host-to-firmware ring are logged, and so is
- * the pending register. Written by the firmware or by us: the log says which ring. Nothing is written. */
-static void ane_h18_chan_snapshot(struct ane_h18 *ane, const char *when)
+ * terminal ring is logged (at most 24 lines of 16 bytes per ring, 4 when `full` is false, the rest counted), the first two slots of every host-to-firmware ring
+ * are logged, and so is the pending register. With `full` the terminal ring text is logged too: the change snapshots leave it out, six of them with the text
+ * overflowed the kernel log ring on the board. Written by the firmware or by us: the log says which ring. Nothing is written. */
+static void ane_h18_chan_snapshot(struct ane_h18 *ane, const char *when, bool full)
 {
 	char (*names)[0x40] = ane->ch_names;
 	struct ane_h18_ring_copy *rings = ane->ch_rings;
@@ -966,7 +967,7 @@ static void ane_h18_chan_snapshot(struct ane_h18 *ane, const char *when)
 				dev_info(ane->dev, "ane_h18 chan snapshot %s: %s slot %u = %#llx %#llx %#llx\n", when, names[i], k, READ_ONCE(r[k * 8]), READ_ONCE(r[k * 8 + 1]), READ_ONCE(r[k * 8 + 2]));
 			continue;
 		}
-		if (rings[i].type == 2) {
+		if (rings[i].type == 2 && full) {
 			/* the terminal ring is the firmware console: print its text, one line per nonzero 64 byte slot (the firmware's own bytes, non-printable ones as '.') */
 			unsigned int shown = 0;
 
@@ -991,7 +992,7 @@ static void ane_h18_chan_snapshot(struct ane_h18 *ane, const char *when)
 
 			if (!(a | b))
 				continue;
-			if (lines++ < 24)
+			if (lines++ < (full ? 24 : 4))
 				dev_info(ane->dev, "ane_h18 chan snapshot %s: %s +%#x = %#llx %#llx\n", when, names[i], k * 16, a, b);
 			else
 				more++;
@@ -1091,7 +1092,7 @@ static int ane_h18_chan_step(struct ane_h18 *ane, const struct ane_h18_hs_buf *t
 			ane_h18_chan_poll(ane, k + 1, &digest, &last_pend);
 		}
 	}
-	ane_h18_chan_snapshot(ane, "after SCRATCH3");
+	ane_h18_chan_snapshot(ane, "after SCRATCH3", true);
 	if (!hs_cmds)
 		return 0;
 	/* The kext takes every command block from the pool surface, the one that holds the init block and that the firmware was told about at block +0x58 and +0x60. */
@@ -1117,7 +1118,7 @@ static int ane_h18_chan_step(struct ane_h18 *ane, const struct ane_h18_hs_buf *t
 			ret = ane_h18_cmd(ane, &io, seq[i].op, seq[i].len, seq[i].arg, 0, &blk);
 			if (ret) {
 				snprintf(when, sizeof(when), "after the failed %s", seq[i].name);
-				ane_h18_chan_snapshot(ane, when);
+				ane_h18_chan_snapshot(ane, when, true);
 				return ret == -EPROTO || ret == -ETIMEDOUT || ret == -EBUSY ? -EIO : ret;
 			}
 			if (seq[i].op == ANE_H18_CSNE_CONFIG_GET) {

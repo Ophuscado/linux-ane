@@ -136,6 +136,8 @@ void sim_usleep_hook(void)
 		u32 *t = (u32 *)((u8 *)sim_dma[1].va + 0x800);
 
 		t[0] = ++sim_term_tick;
+		for (int j = 1; j < 6; j++)	/* six nonzero 16 byte lines in all, to see the cap of a change snapshot */
+			t[4 * j] = 0x100 + j;
 	}
 }
 
@@ -1136,6 +1138,9 @@ static void pos_boot(void)
 				    "CH14 hs_start=1: PRINT_ENABLE, START, CONFIG_GET, RESOURCE_INFO_GET in the kext's order, the 100 byte reply logged in 16 byte lines");
 			if (pass == 16)
 				chk(ret == -EINVAL && result("boot", "REFUSED", "hs_chan=1 needs handshake=1, hs_cmds=1 needs hs_chan=1 and hs_start=1 needs hs_cmds=1") && writes() == 0, "CH15 hs_start=1 without hs_cmds=1 is refused before any write");
+			if (pass == 14)
+				chk(log_count("chan snapshot ring change: TERMINAL has 6 nonzero lines, 2 not printed") >= 1 && log_count("chan snapshot ring change: TERMINAL +0x30 = ") >= 1 && log_count("chan snapshot ring change: TERMINAL +0x40 = ") == 0 && log_count("chan snapshot ring change: TERMINAL text slot") == 0 && log_count("chan snapshot after SCRATCH3: TERMINAL text slot 0: ") == 1 && log_count("chan snapshot after SCRATCH3: TERMINAL has 6 nonzero lines, 0 not printed") == 1,
+				    "CH16 a change snapshot prints 4 nonzero lines of a ring and no terminal text, the explicit snapshot prints all 6 and the text");
 			if (pass == 14)
 				chk(log_count("chan snapshot ring change: IPI pending") == 11, "CH13 a console that changes at every poll gives at most 6 change snapshots per wait (6 + 5 in this run, 10 + 5 without the cap), not one per check");
 			if (pass == 12) {
