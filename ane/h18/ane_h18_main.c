@@ -825,7 +825,7 @@ static int ane_h18_stage_boot(struct ane_h18 *ane)
 	}
 	if (rtkit_stop && ane->rtk_ap_on) {
 		/* RTKit shutdown as apple_rtkit_shutdown does it: AP power state QUIESCED, then IOP power state SLEEP once that is acknowledged, then wait for the
-		 * IOP acknowledgement (or an idle message). OFF is not used: it cannot be restarted. */
+		 * IOP acknowledgement (or an idle message). rtkit_stop=2 sends OFF on both sides instead (apple_rtkit_poweroff), which cannot be restarted. */
 		u32 chan_off = ANE_H18_PO_ALIAS_OFF + s->mbox_num * 2 * ANE_H18_PO_STRIDE;
 		char tag[16];
 
