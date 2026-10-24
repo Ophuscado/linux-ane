@@ -63,7 +63,16 @@ template is `ane/h16/`.
   translation on and a valid TTBR. `PASS reason=dart-no-stream-enabled`
   means nothing is enabled: a started core could not fetch its firmware. It
   does not show whether the mapping covers the firmware, whether the core would
-  run, or anything about the mailbox. On the M6 (T8152) the same kind of read (PR 183 and 185)
+  run, or anything about the mailbox.
+  Reading the result: `locked_windows` counts bit 0 of PROTECT (PROTECT_TTBR_TCR, the
+  lock on the translation registers) only. A T6030 (J516S, run by a tester) printed bank 0
+  PROTECT = PROTECT_LOCK = `0x2` and the fourth window, at bank 0 + 0x4000, with another
+  version word, so the module skipped it. Bit 1 is the one the M2 Max record in
+  `docs/t6021-ane-bringup-findings.md` (section 18) ties to the write protection of the aperture at bank base + 0x4000
+  (the DAPF): on that chip the same `0x2` stood at Linux boot, writes to the aperture were dropped,
+  and the Linux DART driver programmed the translation registers of that bank without trouble. The fourth
+  window is that aperture at the same address. This is carried over from the M2 by analogy; it was not
+  measured on an M3. Stage 5 writes no PROTECT, PROTECT_LOCK or aperture register, and stops only if bit 0 is set. On the M6 (T8152) the same kind of read (PR 183 and 185)
   found every ENABLE_STREAMS word 0: iBoot left no stream enabled.
 - `stage=5` or `stage=run`: refused without `confirm_run=1`, with
   `run_wait_ms` outside 10 to 2000 (default 300), and on any SoC row whose
