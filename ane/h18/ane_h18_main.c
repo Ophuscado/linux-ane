@@ -1222,6 +1222,17 @@ static void ane_h18_term_log(struct ane_h18 *ane, const char *when)
 			}
 			txt[len] = 0;
 			dev_info(ane->dev, "ane_h18 fw log %s: %u ts %#llx: %s\n", when, k, ts, txt);
+			if (shown < 4) {	/* the first records again as raw bytes: tells text from a format reference */
+				char hex[65];
+				unsigned int n = len < 32 ? len : 32;
+
+				for (j = 0; j < n; j++) {
+					hex[j * 2] = "0123456789abcdef"[READ_ONCE(t[j]) >> 4];
+					hex[j * 2 + 1] = "0123456789abcdef"[READ_ONCE(t[j]) & 15];
+				}
+				hex[n * 2] = 0;
+				dev_info(ane->dev, "ane_h18 fw log %s: %u raw %u bytes: %s\n", when, k, n, hex);
+			}
 			shown++;
 		}
 	}
