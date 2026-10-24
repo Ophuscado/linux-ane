@@ -90,6 +90,11 @@ void sim_hs_react(void)
 		for (c = 0; c < 8; c++) {
 			u64 ring = sim_dma[1].iova + ch[c].off + (sim_table_bad == c + 1 ? 0x1000000 : 0);
 
+			if (c == 2 && sim_table_bad == 100)
+				ring = sim_dma[1].iova + 0x80;	/* inside the table entries */
+			if (c == 2 && sim_table_bad == 101)
+				ring = sim_dma[1].iova + 0x8800;	/* the IO ring */
+
 			strcpy((char *)t + c * 0x100, ch[c].n);
 			memcpy(t + c * 0x100 + 0x40, &ch[c].type, 4);
 			memcpy(t + c * 0x100 + 0x44, &ch[c].bit, 4);
@@ -997,7 +1002,7 @@ static void pos_boot(void)
 		int pass, k, w3 = -1, db = -1, nsc3, nh2t, ok;
 		u8 *ipc;
 
-		for (pass = 0; pass < 8; pass++) {
+		for (pass = 0; pass < 10; pass++) {
 			kboot_setup();
 			alias_mbox = true;
 			rtkit_hello = true;
@@ -1018,6 +1023,8 @@ static void pos_boot(void)
 			if (pass == 4) sim_cmd_mode = 2;
 			if (pass == 6) sim_table_bad = 2;
 			if (pass == 7) sim_table_bad = 4;
+			if (pass == 8) sim_table_bad = 100;
+			if (pass == 9) sim_table_bad = 101;
 			ret = probe_now();
 			ipc = sim_n_dma > 1 ? sim_dma[1].va : NULL;
 			nsc3 = 0;
@@ -1045,6 +1052,8 @@ static void pos_boot(void)
 				chk(ret == -EIO && result("boot", "FAIL", "handshake-channel-step-failed") && sim_cmds_seen == 1, "CH5 a failing acknowledgement (+6 = 2) is a FAIL, CONFIG_GET is not sent");
 			if (pass == 5)
 				chk(ret == -EINVAL && result("boot", "REFUSED", "hs_chan=1 needs handshake=1 and hs_cmds=1 needs hs_chan=1") && writes() == 0, "CH6 hs_cmds=1 without hs_chan=1 is refused before any write");
+			if (pass == 8 || pass == 9)
+				chk(ret == -EPROTO && result("boot", "FAIL", "handshake-channel-step-failed") && nsc3 == 0 && sim_db_writes == 0 && sim_cmds_seen == 0 && log_count("overlaps") == 1, pass == 8 ? "CH8 a ring that overlaps the table entries: FAIL, nothing written" : "CH8 a ring that overlaps another ring: FAIL, nothing written");
 			if (pass == 6 || pass == 7)
 				chk(ret == -EPROTO && result("boot", "FAIL", "handshake-channel-step-failed") && nsc3 == 0 && sim_db_writes == 0 && sim_cmds_seen == 0, pass == 6 ? "CH7 a ring outside the surface: FAIL, nothing written (no SCRATCH3, no ring slot, no doorbell)" : "CH7 another ring outside the surface: FAIL, nothing written");
 		}

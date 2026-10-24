@@ -810,6 +810,20 @@ static int ane_h18_chan_step(struct ane_h18 *ane, const struct ane_h18_hs_buf *t
 			have_io = true;
 		}
 	}
+	/* the rings must not overlap the table entries or each other: the ownership loop below writes into every H2T ring */
+	for (i = 0; i < ANE_H18_CH_COUNT; i++) {
+		u64 lo = rings[i].iova, hi = lo + (u64)rings[i].slots * ANE_H18_CH_SLOT;
+
+		if (lo < table + (u64)ANE_H18_CH_COUNT * ANE_H18_CH_ENTRY && hi > table) {
+			dev_err(ane->dev, "ane_h18 chan: ring %u overlaps the table, nothing written\n", i);
+			return -EPROTO;
+		}
+		for (k = 0; k < i; k++)
+			if (lo < rings[k].iova + (u64)rings[k].slots * ANE_H18_CH_SLOT && hi > rings[k].iova) {
+				dev_err(ane->dev, "ane_h18 chan: ring %u overlaps ring %u, nothing written\n", i, k);
+				return -EPROTO;
+			}
+	}
 	if (hs_cmds && (!have_io || !ane->doorbell)) {
 		dev_err(ane->dev, "ane_h18 chan: no IO ring of type 0 in the table, nothing written\n");
 		return -EPROTO;
