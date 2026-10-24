@@ -1259,7 +1259,7 @@ static int ane_platform_probe(struct platform_device *pdev)
 	ane->irq = platform_get_irq_byname(pdev, "ane");
 	if (ane->irq < 0) {
 		err = ane->irq;
-		goto detach_genpd;
+		goto detach_boost;
 	}
 	/* Polled completion design: the engine IRQ is validated but never
 	 * requested here. A DART fault IRQ stays owned by apple-dart. During
@@ -1269,7 +1269,7 @@ static int ane_platform_probe(struct platform_device *pdev)
 	ane->engine = devm_platform_ioremap_resource_byname(pdev, "engine");
 	if (IS_ERR(ane->engine)) {
 		err = PTR_ERR(ane->engine);
-		goto detach_genpd;
+		goto detach_boost;
 	}
 
 	/* m1n1 keys the SET block by ADT node name (ANE.ps_map); the live
@@ -1288,7 +1288,7 @@ static int ane_platform_probe(struct platform_device *pdev)
 	INIT_LIST_HEAD(&ane->preserved_list);
 	err = ane_boost_init(ane);
 	if (err < 0)
-		goto detach_genpd;
+		goto detach_boost;
 	err = ane_dvfs_init(ane);
 	if (err < 0)
 		goto detach_boost;
@@ -1302,7 +1302,7 @@ static int ane_platform_probe(struct platform_device *pdev)
 	 */
 	err = ane_iommu_domain_init(ane);
 	if (err < 0)
-		goto detach_genpd;
+		goto detach_dvfs;
 
 	/*
 	 * Managed runtime PM from here on. This resume is what raises the
@@ -1350,9 +1350,10 @@ disable_pm:
 	pm_runtime_disable(dev);
 	pm_runtime_dont_use_autosuspend(dev);
 	drm_mm_takedown(&ane->mm);
+detach_dvfs:
+	ane_dvfs_exit(ane);
 detach_boost:
 	ane_boost_exit(ane);
-detach_genpd:
 	ane_detach_genpd(ane);
 	return err;
 }

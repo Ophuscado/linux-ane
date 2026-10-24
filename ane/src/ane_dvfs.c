@@ -28,8 +28,11 @@
  *    so it is powered whenever this runs. All access is ioremap_np (of_iomap takes the bus's
  *    nonposted-mmio into account); a posted mapping took an SError in the first experiments.
  *  - The writes are exactly the words above: DVFS_ON 0/1, DVFS_CMD 0x80000000/1/10, the ANE_SYS
- *    bit of PS-REQ (read-modify-write, other bits untouched) and the level words 0 and 1.
- *    A failure at any step (PS-ACK missing) unwinds in the macOS order and leaves level 0.
+ *    bit of PS-REQ and the level words 0 and 1. The up sequence starts only when the hardware words
+ *    are the ones the proving runs saw (PS-REQ 0x60003000, level word 0 or a level word, DVFS_ON 0,
+ *    PMP-STATUS 1) and the PS-REQ readback after the ACK is 0x60003400; any other value leaves level 0.
+ *    A failure at any step (PS-ACK missing) unwinds in the macOS order and leaves level 0; after three
+ *    PS-ACK timeouts the driver stops trying until it is reloaded.
  */
 #include <linux/delay.h>
 #include <linux/device.h>
@@ -51,6 +54,10 @@
 #define PTD_REG_ANE_LEVEL	0x10c
 #define PTD_PMP_RUNNING		0x1
 #define PS_ANE_SYS		BIT_ULL(10)
+/* The PS-REQ words the runs that proved this sequence saw: booted, and with ANE_SYS requested. */
+#define PS_REQ_BOOT		0x0000000060003000ULL
+#define PS_REQ_UP		(PS_REQ_BOOT | PS_ANE_SYS)
+#define ANE_DVFS_MAX_TIMEOUTS	3
 #define PTD_LEVEL_WORD		0x2000000000000000ULL
 
 #define ANE_DVFS_LEVEL		1
@@ -102,11 +109,15 @@ static void ane_dvfs_release(struct ane_device *ane, bool level_set, bool psreq_
 void ane_dvfs_up(struct ane_device *ane)
 {
 	struct ane_dvfs *d = &ane->dvfs;
-	u64 req, ack;
+	u64 req, ack, lvl;
 	int err;
 
 	if (!d->dvfs || !d->ptd || d->active)
 		return;
+	if (d->ack_timeouts >= ANE_DVFS_MAX_TIMEOUTS) {
+		d->state = "disabled-after-ps-ack-timeouts";
+		return;
+	}
 
 	if ((ptd_read(ane, PTD_REG_PMP_STATUS) & PTD_PMP_RUNNING) != PTD_PMP_RUNNING) {
 		d->state = "pmp-not-running";
@@ -117,8 +128,13 @@ void ane_dvfs_up(struct ane_device *ane)
 		return;
 	}
 	req = ptd_read(ane, PTD_REG_PS_REQ);
-	if (req & PS_ANE_SYS) {
-		d->state = "ps-req-already-set";
+	if (req != PS_REQ_BOOT) {
+		d->state = (req & PS_ANE_SYS) ? "ps-req-already-set" : "ps-req-unexpected";
+		return;
+	}
+	lvl = ptd_read(ane, PTD_REG_ANE_LEVEL);
+	if (lvl != 0 && (lvl < PTD_LEVEL_WORD || lvl > (PTD_LEVEL_WORD | 5))) {
+		d->state = "level-word-unexpected";
 		return;
 	}
 
@@ -126,11 +142,24 @@ void ane_dvfs_up(struct ane_device *ane)
 	dvfs_step();
 	dvfs_cmd(ane, 0, 0);
 	dvfs_step();
+	/* Re-read right before the read-modify-write: nothing else may have changed the word meanwhile. */
+	req = ptd_read(ane, PTD_REG_PS_REQ);
+	if (req != PS_REQ_BOOT) {
+		d->state = "ps-req-changed";
+		ane_dvfs_release(ane, false, false);
+		return;
+	}
 	ptd_write(ane, PTD_REG_PS_REQ, req | PS_ANE_SYS);
 	err = read_poll_timeout(ptd_read, ack, ack & PS_ANE_SYS, 200, 50000, false,
 				ane, PTD_REG_PS_ACK);
 	if (err) {
+		d->ack_timeouts++;
 		d->state = "ps-ack-timeout";
+		ane_dvfs_release(ane, false, true);
+		return;
+	}
+	if (ptd_read(ane, PTD_REG_PS_REQ) != PS_REQ_UP) {
+		d->state = "ps-req-readback-unexpected";
 		ane_dvfs_release(ane, false, true);
 		return;
 	}
@@ -178,6 +207,7 @@ static void __iomem *ane_dvfs_map(struct ane_device *ane, const char *name, reso
 int ane_dvfs_init(struct ane_device *ane)
 {
 	struct ane_dvfs *d = &ane->dvfs;
+	int err;
 
 	d->state = "not-configured";
 	d->dvfs = ane_dvfs_map(ane, "dvfs", ANE_DVFS_WINDOW_SIZE);
@@ -191,7 +221,14 @@ int ane_dvfs_init(struct ane_device *ane)
 		return 0;
 	}
 	d->state = "level-0";
-	return device_create_file(ane->dev, &dev_attr_perf_state);
+	err = device_create_file(ane->dev, &dev_attr_perf_state);
+	if (err) {
+		iounmap(d->dvfs);
+		iounmap(d->ptd);
+		d->dvfs = d->ptd = NULL;
+		d->state = "not-configured";
+	}
+	return err;
 }
 
 void ane_dvfs_exit(struct ane_device *ane)

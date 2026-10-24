@@ -29,8 +29,9 @@ struct device_attribute { int x; };
 struct resource { u64 start, end; };
 #define resource_size(r) ((r)->end - (r)->start + 1)
 #define DEVICE_ATTR_RO(n) struct device_attribute dev_attr_##n
-#define device_create_file(d, a) 0
-#define device_remove_file(d, a) ((void)0)
+extern int files, create_err;
+#define device_create_file(d, a) (create_err ? create_err : (files ? -17 : (files++, 0)))
+#define device_remove_file(d, a) (files--)
 #define dev_get_drvdata(d) ((void *)0)
 #define dev_dbg(d, ...) ((void)0)
 #define sysfs_emit(b, ...) 0
@@ -47,7 +48,8 @@ void fake_writeq(u64 v, void *p);
 #define readq fake_readq
 #define writel fake_writel
 #define writeq fake_writeq
-#define iounmap(p) ((void)0)
+extern int maps;
+#define iounmap(p) (maps--)
 int fake_match(struct device_node *np, const char *prop, const char *name);
 int fake_addr(struct device_node *np, int idx, struct resource *res);
 void *fake_iomap(struct device_node *np, int idx);
@@ -68,7 +70,7 @@ with open(T + "/ane.h", "w") as f:
 #include "inc/common.h"
 struct ane_device {
 	struct device *dev;
-	struct ane_dvfs { void __iomem *dvfs; void __iomem *ptd; bool active; const char *state; } dvfs;
+	struct ane_dvfs { void __iomem *dvfs; void __iomem *ptd; bool active; unsigned int ack_timeouts; const char *state; } dvfs;
 };
 int ane_dvfs_init(struct ane_device *ane);
 void ane_dvfs_exit(struct ane_device *ane);
@@ -81,6 +83,8 @@ TEST = r"""
 
 int log_n;
 char log_buf[8192];
+int files, create_err, maps;
+static int perturb_cmd, perturb_psreq;
 static u64 mem_pa[64], mem_val[64];
 static int mem_n;
 static int ack_mode = 1;	/* 1: PS-ACK follows PS-REQ, 0: never */
@@ -95,7 +99,13 @@ static void put(u64 pa, u64 v) { int i; for (i = 0; i < mem_n; i++) if (mem_pa[i
 void fake_usleep(void) { }
 u32 fake_readl(void *p) { return (u32)get((u64)(uintptr_t)p); }
 u64 fake_readq(void *p) { return get((u64)(uintptr_t)p); }
-void fake_writel(u32 v, void *p) { log_n += sprintf(log_buf + log_n, "W32 %llx %08x\n", (u64)(uintptr_t)p, v); put((u64)(uintptr_t)p, v); }
+void fake_writel(u32 v, void *p)
+{
+	log_n += sprintf(log_buf + log_n, "W32 %llx %08x\n", (u64)(uintptr_t)p, v);
+	put((u64)(uintptr_t)p, v);
+	if (perturb_cmd && v == 0x80000000U && get(DVFS_BASE + 0x2000) == 1)
+		put(PTD_BASE + 0xf8 * 16, 0x60003001ULL);	/* another owner touches PS-REQ during the 2 ms */
+}
 void fake_writeq(u64 v, void *p)
 {
 	u64 pa = (u64)(uintptr_t)p;
@@ -105,6 +115,8 @@ void fake_writeq(u64 v, void *p)
 	put(PTD_BASE + (pa - PTD_BASE - 0x10000) / 8 * 16, v);
 	if (pa == PTD_BASE + 0x10000 + 0xf8 * 8 && ack_mode)
 		put(PTD_BASE + 0x100 * 16, v);
+	if (pa == PTD_BASE + 0x10000 + 0xf8 * 8 && perturb_psreq && (v & 0x400))
+		put(PTD_BASE + 0xf8 * 16, v | 1);	/* readback differs from what was written */
 }
 int fake_match(struct device_node *np, const char *prop, const char *name) { if (no_regs) return -22; return !strcmp(name, "dvfs") ? 1 : 2; }
 int fake_addr(struct device_node *np, int idx, struct resource *res)
@@ -113,7 +125,7 @@ int fake_addr(struct device_node *np, int idx, struct resource *res)
 	else { res->start = PTD_BASE; res->end = PTD_BASE + 0x1ffff; }
 	return 0;
 }
-void *fake_iomap(struct device_node *np, int idx) { return (void *)(uintptr_t)(idx == 1 ? DVFS_BASE : PTD_BASE); }
+void *fake_iomap(struct device_node *np, int idx) { maps++; return (void *)(uintptr_t)(idx == 1 ? DVFS_BASE : PTD_BASE); }
 
 static struct ane_device ane;
 static int fails;
@@ -121,7 +133,7 @@ static int fails;
 
 static void fresh(void)
 {
-	mem_n = 0; log_n = 0; log_buf[0] = 0; ack_mode = 1; no_regs = 0;
+	mem_n = 0; log_n = 0; log_buf[0] = 0; ack_mode = 1; no_regs = 0; perturb_cmd = perturb_psreq = 0; files = maps = create_err = 0;
 	memset(&ane, 0, sizeof(ane));
 	ane.dev = &dev0;
 	dev0.x = 0;
@@ -179,11 +191,46 @@ int main(void)
 	fresh(); memset(&ane, 0, sizeof(ane)); ane.dev = &dev0; no_regs = 1; ane_dvfs_init(&ane);
 	log_n = 0; ane_dvfs_up(&ane); ane_dvfs_down(&ane);
 	EXPECT(!ane.dvfs.dvfs && log_n == 0 && !strcmp(ane.dvfs.state, "not-configured"), "no DT windows: driver does nothing");
-	/* 7: other PS-REQ bits survive (read-modify-write) */
+	/* 7: PS-REQ with any other bit: the exact-word gate refuses, nothing written */
 	fresh(); put(PTD_BASE + 0xf8 * 16, 0x60003001ULL);
-	ane_dvfs_up(&ane); ane_dvfs_down(&ane);
-	EXPECT(strstr(log_buf, "W64 28e3d07c0 0000000060003401") && strstr(log_buf, "W64 28e3d07c0 0000000060003001"), "other PS-REQ bits kept");
-	/* 8: nothing but the allowed words and addresses, ever */
+	ane_dvfs_up(&ane);
+	EXPECT(log_n == 0 && !strcmp(ane.dvfs.state, "ps-req-unexpected"), "PS-REQ 0x60003001: nothing written");
+	/* 7b: DVFS[4] holds something that is not 0 or a level word */
+	fresh(); put(PTD_BASE + 0x10c * 16, 0xdeadULL);
+	ane_dvfs_up(&ane);
+	EXPECT(log_n == 0 && !strcmp(ane.dvfs.state, "level-word-unexpected"), "DVFS[4] unexpected: nothing written");
+	/* 7c: DVFS[4] holding a level word (a previous owner) is accepted */
+	fresh(); put(PTD_BASE + 0x10c * 16, 0x2000000000000002ULL);
+	ane_dvfs_up(&ane);
+	EXPECT(ane.dvfs.active, "a leftover level word is accepted");
+	/* 7d: PS-REQ changes during the 2 ms: unwind without touching PS-REQ */
+	fresh(); perturb_cmd = 1;
+	ane_dvfs_up(&ane);
+	EXPECT(!strcmp(log_buf, "W32 28586a000 00000001\nW32 285868a00 80000000\nW32 285868a00 80000000\nW32 28586a000 00000000\n") && !strcmp(ane.dvfs.state, "ps-req-changed"), "PS-REQ changed: undo DVFS_CMD and DVFS_ON only");
+	/* 7e: PS-REQ readback differs after the ACK */
+	fresh(); perturb_psreq = 1;
+	ane_dvfs_up(&ane);
+	EXPECT(!strcmp(ane.dvfs.state, "ps-req-readback-unexpected") && !ane.dvfs.active && !strstr(log_buf, "80000001"), "PS-REQ readback wrong: no level written, unwound");
+	/* 7f: three ACK timeouts disable the driver until reload */
+	fresh(); ack_mode = 0;
+	ane_dvfs_up(&ane); ane_dvfs_up(&ane); ane_dvfs_up(&ane);
+	log_n = 0; log_buf[0] = 0; ack_mode = 1;
+	ane_dvfs_up(&ane);
+	EXPECT(log_n == 0 && !strcmp(ane.dvfs.state, "disabled-after-ps-ack-timeouts") && !ane.dvfs.active, "after 3 timeouts nothing is written");
+	/* 7g: probe, defer (exit), re-probe: no stale sysfs file, no leaked mapping; create_file failure unmaps */
+	fresh();
+	EXPECT(files == 1 && maps == 2, "init: one sysfs file, two mappings");
+	ane_dvfs_exit(&ane);
+	EXPECT(files == 0 && maps == 0 && !ane.dvfs.dvfs, "exit removes the file and both mappings");
+	EXPECT(ane_dvfs_init(&ane) == 0 && files == 1 && maps == 2, "re-probe after exit works");
+	ane_dvfs_exit(&ane);
+	memset(&ane, 0, sizeof(ane)); ane.dev = &dev0; files = maps = 0; create_err = -17;
+	EXPECT(ane_dvfs_init(&ane) == -17 && files == 0 && maps == 0 && !ane.dvfs.dvfs, "create_file failure releases both mappings");
+	create_err = 0;
+	fresh(); ane_dvfs_up(&ane); ane_dvfs_exit(&ane);
+	EXPECT(strstr(log_buf, "W32 28586a000 00000000") && files == 0 && maps == 0, "exit while up releases the hardware first");
+	fresh(); ane_dvfs_up(&ane); ane_dvfs_down(&ane);
+		/* 8: nothing but the allowed words and addresses, ever */
 	{
 		char *p = log_buf;
 

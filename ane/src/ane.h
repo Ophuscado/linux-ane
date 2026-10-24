@@ -120,6 +120,7 @@ struct ane_device {
 		void __iomem *dvfs;
 		void __iomem *ptd;
 		bool active;
+		unsigned int ack_timeouts;
 		const char *state;
 	} dvfs;
 

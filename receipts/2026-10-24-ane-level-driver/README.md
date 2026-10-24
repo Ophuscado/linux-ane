@@ -38,14 +38,39 @@ although the program does not get faster (it is memory-bound above level 1). Lev
 ## The driver
 
 `ane_dvfs_up()` runs at the end of runtime resume, `ane_dvfs_down()` at the start of runtime suspend (after
-the busy veto). It does nothing unless the DT names the windows (`reg-names` "dvfs" and "ptd"), and it
-leaves level 0 (with a reason in sysfs `perf_state`) when the PMP firmware is not running, DVFS_ON is
-already set, PS-REQ is already set or PS-ACK does not follow within 50 ms (the sequence is then undone
-in the macOS order). The PS-REQ write is a read-modify-write of one bit. All MMIO is ioremap_np.
+the busy veto). It does nothing unless the DT names the windows (`reg-names` "dvfs" and "ptd"). The up
+sequence starts only on the hardware words the proving runs saw: PMP-STATUS 1, DVFS_ON 0, PS-REQ exactly
+0x60003000, the ANE level word 0 or a level word 0..5. PS-REQ is read again right before the write (the
+two 1 ms steps before it must not have changed it), and after the PS-ACK the PS-REQ readback must be exactly
+0x60003400 before the level word is written. Any other value leaves level 0, with the reason in sysfs
+`perf_state`; a missing PS-ACK within 50 ms undoes the sequence in the macOS order, and after three
+timeouts the driver stops trying until it is reloaded. Release re-reads PS-REQ before it clears the bit.
+All MMIO is ioremap_np. The probe error paths unwind in the order dvfs, boost, genpd, and a deferred probe
+leaves no mapping and no sysfs file.
 
 `ane/test/dvfs_model_test.py` compiles the real `ane_dvfs.c` against fake kernel headers and checks the
 exact write sequence up and down, the refusal paths (nothing written), the ACK-timeout unwind and the
 read-modify-write.
+
+## Device tree merge (checked offline)
+
+`dtc -@` compiles `packaging/dt/t6001-ane.dts`; `fdtoverlay` merges it into the stock `t6001-j316c.dtb`:
+
+```
+fdtget -t x merged.dtb /soc/ane@284000000 reg           -> 2 85c04000 0 24000 2 85868000 0 4000 2 8e3c0000 0 20000
+fdtget -t s merged.dtb /soc/ane@284000000 reg-names     -> engine dvfs ptd
+fdtget -t x merged.dtb /soc/ane@284000000 power-domains -> 112 11a 11b 11c 11d 11e
+fdtget -t x merged.dtb /soc/power-management@28e080000/power-controller@2e0 phandle -> 11e
+fdtget -t s merged.dtb /soc/power-management@28e080000/power-controller@2e0 label  -> pms_sram
+```
+
+The sixth power domain (0x11e) is the phandle of the pms_sram controller.
+
+## Tests
+
+`python3 ane/test/dvfs_model_test.py` (the real `ane_dvfs.c` against fake kernel headers: write sequences, every
+gate, ACK timeout and readback unwinds, the retry bound, init/exit balance of mappings and the sysfs file) and
+`python3 ane/test/probe_unwind_check.py` (the probe's error-path labels and gotos).
 
 ## Not done here
 
