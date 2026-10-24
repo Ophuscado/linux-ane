@@ -222,8 +222,11 @@ against the `bo_total_max_mb` cap (12 GiB by default):
   exchange (the driver stopped on a malloc-ring entry it did not know, the
   firmware's request to free a buffer), the device stayed quarantined and a
   second session could not open it until reboot. The driver now answers
-  that request (see the receipt of the program unload), and no device has
-  run that change yet. Do not set it to 1 on a machine you need;
+  that request (see the receipt of the program unload). A second run passed
+  three sessions and failed the fourth and fifth in the middle of a LOAD
+  because the table of firmware buffers kept freed entries; a FREE now
+  releases its entry, and no board has run that change yet. Do not set it
+  to 1 on a machine you need;
 - an io BO is parked in a pool when its last reference drops. Its IOVA
   stays mapped. The next `BO_INIT` of the same page-aligned size takes it,
   zeroes it and gives it to the new owner. After a quarantine, io BOs are

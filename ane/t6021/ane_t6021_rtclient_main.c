@@ -98,6 +98,7 @@
 
 #include "ane_t6021.h"
 #include "ane_t6021_boot.h"
+#include "ane_t6021_legtab.h"
 #include "ane_t6021_mring.h"
 #include "ane_t6021_pool.h"
 #include "ane_t6021_progtab.h"
@@ -209,12 +210,6 @@ MODULE_PARM_DESC(dyn_pg,
 #define ANE_LEGACY_ALLOCS 8192
 #define ANE_LEGACY_BYTES SZ_512M
 
-struct ane_legacy_buffer {
-	void *cpu;
-	dma_addr_t dma;
-	size_t size;
-};
-
 struct ane_rtclient {
 	struct device *dev;
 	void __iomem *engine;
@@ -237,7 +232,8 @@ struct ane_rtclient {
 	/* ChMan descriptor table validated against the 'IPC ' surface. */
 	bool chman_ok;
 	struct ane_legacy_buffer *legacy_buffers;
-	u32 legacy_allocated;
+	struct ane_legacy_buffer *legacy_last;	/* the buffer the last ane_rtclient_legacy_alloc handed out */
+	u32 legacy_allocated;		/* high-water mark of the table: slots below it may be free (cpu NULL) */
 	size_t legacy_bytes;
 	u32 legacy_malloc_cursor;
 	u32 legacy_cmd_cursor[ANE_T6021_CHMAN_COUNT];
@@ -478,12 +474,15 @@ static int ane_rtclient_legacy_exchange(struct ane_rtclient *ane,
 static int ane_rtclient_legacy_alloc(struct ane_rtclient *ane, u64 size)
 {
 	struct ane_legacy_buffer *buffer;
+	int slot;
 
 	if (!size || !IS_ALIGNED(size, SZ_16K) || size > SZ_2M ||
-	    ane->legacy_allocated == ANE_LEGACY_ALLOCS ||
 	    size > ANE_LEGACY_BYTES - ane->legacy_bytes)
 		return -E2BIG;
-	buffer = &ane->legacy_buffers[ane->legacy_allocated];
+	slot = ane_legtab_pick(ane->legacy_buffers, ane->legacy_allocated, ANE_LEGACY_ALLOCS);
+	if (slot < 0)
+		return -E2BIG;
+	buffer = &ane->legacy_buffers[slot];
 	buffer->cpu = dma_alloc_coherent(ane->dev, size, &buffer->dma,
 					 GFP_KERNEL);
 	if (!buffer->cpu)
@@ -497,7 +496,9 @@ static int ane_rtclient_legacy_alloc(struct ane_rtclient *ane, u64 size)
 	memset(buffer->cpu, 0, size);
 	buffer->size = size;
 	ane->legacy_bytes += size;
-	ane->legacy_allocated++;
+	if ((u32)slot == ane->legacy_allocated)
+		ane->legacy_allocated++;
+	ane->legacy_last = buffer;
 	return 0;
 }
 
@@ -552,6 +553,7 @@ static int ane_rtclient_malloc_service(struct ane_rtclient *ane, unsigned int *c
 	void __iomem *ipi = ane->engine + ANE_IPI_OFF;
 	u64 hdr = READ_ONCE(slot[0]), size, mode;
 	struct ane_legacy_buffer *buf;
+	int freed;
 
 	if (hdr & 1)
 		return 0;
@@ -562,19 +564,32 @@ static int ane_rtclient_malloc_service(struct ane_rtclient *ane, unsigned int *c
 	case ANE_T6021_MRING_MALLOC:
 		if (ane_rtclient_legacy_alloc(ane, size))
 			return -ENOMEM;
-		buf = &ane->legacy_buffers[ane->legacy_allocated - 1];
+		buf = ane->legacy_last;
 		WRITE_ONCE(slot[1], 0);
-		WRITE_ONCE(slot[2], ane->legacy_allocated);
+		WRITE_ONCE(slot[2], (u32)(buf - ane->legacy_buffers) + 1);
 		dma_wmb();
 		WRITE_ONCE(slot[0], buf->dma | 1);
 		break;
 	case ANE_T6021_MRING_FREE:
-		dev_info(ane->dev, "fw returned iova %#llx, answered\n", hdr);
 		WRITE_ONCE(slot[1], 0);
 		WRITE_ONCE(slot[2], 0);
 		dma_wmb();
 		WRITE_ONCE(slot[0], 1);
-		break;
+		dma_wmb();
+		writel(BIT(5), ipi);
+		/* The firmware unmapped it before it asked, so the buffer can go back to the kernel now that the answer is out. The command buffer is never matched. */
+		freed = ane_legtab_find(ane->legacy_buffers, ane->legacy_allocated, hdr, ane->cmd_buf);
+		if (freed >= 0) {
+			struct ane_legacy_buffer *fb = &ane->legacy_buffers[freed];
+
+			dma_free_coherent(ane->dev, fb->size, fb->cpu, fb->dma);
+			ane->legacy_bytes -= fb->size;
+			memset(fb, 0, sizeof(*fb));
+		}
+		dev_info(ane->dev, "fw returned iova %#llx, answered, %s (legacy table: %u slots high water, %zu bytes)\n", hdr,
+			 freed >= 0 ? "buffer released" : "no table entry", ane->legacy_allocated, ane->legacy_bytes);
+		*cursor = (*cursor + 1) % ane_t6021_chman_layout[5].size;
+		return 1;
 	case ANE_T6021_MRING_IDLE:
 	case ANE_T6021_MRING_ANSWERED:
 		return 0;
@@ -900,7 +915,7 @@ static const void *ane_rtclient_fw_cpu(struct ane_rtclient *ane, u64 iova,
 	for (i = 0; i < ane->legacy_allocated; i++) {
 		const struct ane_legacy_buffer *b = &ane->legacy_buffers[i];
 
-		if (iova >= b->dma && iova - b->dma + len <= b->size)
+		if (b->cpu && iova >= b->dma && iova - b->dma + len <= b->size)
 			return b->cpu + (iova - b->dma);
 	}
 	if (iova >= ane->fw->boot_ipc_iova &&
@@ -2649,7 +2664,7 @@ static int ane_rtclient_probe_inner(struct platform_device *pdev,
 			 * for fw MALLOC replies only. */
 			if (ane_rtclient_legacy_alloc(ane, SZ_16K) == 0)
 				ane->cmd_buf =
-					&ane->legacy_buffers[ane->legacy_allocated - 1];
+					ane->legacy_last;
 			else
 				cfg_err = -ENOMEM;
 		}
