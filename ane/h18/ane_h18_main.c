@@ -729,7 +729,7 @@ static int ane_h18_chan_get(struct ane_h18 *ane, const struct ane_h18_hs_buf *tb
 	memcpy(&ring, e + 0x50, 8);
 	dev_info(ane->dev, "ane_h18 hs chan %u name=%s type=%u bit=%u slots=%#llx ring=%#llx\n", i, name, type, bit, size, ring);
 	if (!name[0] || type > 2 || bit >= 32 || !size || size > ANE_H18_CH_MAX_SLOTS || ring < tb->iova || ring % ANE_H18_CH_SLOT ||
-	    ring + size * ANE_H18_CH_SLOT > tb->iova + tb->size)
+	    ring - tb->iova >= tb->size || size * ANE_H18_CH_SLOT > tb->size - (ring - tb->iova))
 		return -EPROTO;
 	r->base = (u64 *)((u8 *)tb->va + (ring - tb->iova));
 	r->iova = ring;
