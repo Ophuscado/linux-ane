@@ -107,6 +107,14 @@ static unsigned int hs_wait_ms = 1000;
 module_param(hs_wait_ms, uint, 0444);
 MODULE_PARM_DESC(hs_wait_ms, "Stage=boot with handshake=1: how long to wait for the firmware's table address, ms, 10 to 5000. Default 1000.");
 
+static bool hs_chan;
+module_param(hs_chan, bool, 0444);
+MODULE_PARM_DESC(hs_chan, "Stage=boot with handshake=1: after the firmware published its channel table, check the table, set the host-to-firmware ring slots to host owned, write READY to SCRATCH3 and wait for the firmware to clear it (the kext does this after it created its channels). Writes ring memory and SCRATCH3. Default off.");
+
+static bool hs_cmds;
+module_param(hs_cmds, bool, 0444);
+MODULE_PARM_DESC(hs_cmds, "Stage=boot with hs_chan=1: send PRINT_ENABLE (0) and CONFIG_GET on the IO ring, one 64 byte slot each, doorbell BIT(bit) at engine + 0x18a4000, and log the replies. Writes the doorbell. Default off.");
+
 static bool map_fw;
 module_param(map_fw, bool, 0444);
 MODULE_PARM_DESC(map_fw, "Stage=boot: before RUN, attach the ANE to its DART through the iommu API and map the two preloaded firmware segments at their IOVAs. Needs power-domains and iommus in the node. Default off.");
@@ -142,13 +150,14 @@ struct ane_h18 {
 	void __iomem *mbox;
 	void __iomem *dart;
 	void __iomem *scratch;
+	void __iomem *doorbell;
 	struct iommu_domain *domain;
 	bool dom_own;		/* the domain was allocated and attached here (map_fw without handshake); otherwise it is the default DMA domain */
 	struct ane_h18_hs_buf {
 		void *va;
 		dma_addr_t iova;
 		size_t size;
-	} hs_pool, hs_ipc, hs_heap;
+	} hs_pool, hs_ipc, hs_heap, hs_cmd;
 	bool kpsd;		/* the node has power-domains: the kernel's PSD driver owns the slots, this module only holds a runtime PM reference */
 	bool rpm_held;
 	u32 rtk_eps[8];		/* RTKit endpoints the firmware announced, one bit per endpoint number */
@@ -258,6 +267,7 @@ static void ane_h18_unmap(struct ane_h18 *ane)
 	if (ane->mbox) { iounmap(ane->mbox); ane->mbox = NULL; }
 	if (ane->dart) { iounmap(ane->dart); ane->dart = NULL; }
 	if (ane->scratch) { iounmap(ane->scratch); ane->scratch = NULL; }
+	if (ane->doorbell) { iounmap(ane->doorbell); ane->doorbell = NULL; }
 }
 
 static int ane_h18_map_psd(struct ane_h18 *ane, const int *idx)
@@ -646,10 +656,10 @@ static void ane_h18_scratch_write(struct ane_h18 *ane, unsigned int i, u32 v)
 
 static void ane_h18_hs_free(struct ane_h18 *ane)
 {
-	struct ane_h18_hs_buf *b[3] = { &ane->hs_heap, &ane->hs_ipc, &ane->hs_pool };
+	struct ane_h18_hs_buf *b[4] = { &ane->hs_cmd, &ane->hs_heap, &ane->hs_ipc, &ane->hs_pool };
 	unsigned int i;
 
-	for (i = 0; i < 3; i++)
+	for (i = 0; i < 4; i++)
 		if (b[i]->va) {
 			dma_free_coherent(ane->dev, b[i]->size, b[i]->va, b[i]->iova);
 			b[i]->va = NULL;
@@ -695,6 +705,166 @@ static const struct ane_h18_hs_buf *ane_h18_hs_find(const struct ane_h18 *ane, u
 }
 
 static int ane_h18_rtkit_step(struct ane_h18 *ane, u32 chan_off, const char *tag, unsigned int *sent);
+
+struct ane_h18_ring {
+	u64 *base;		/* the ring in the IPC surface, 64 byte slots, 8 u64 each */
+	u64 iova;
+	u32 slots, bit, type;
+	unsigned int cursor;
+};
+
+/* Look an entry of the published table up by name. The entry has to be sane: type 0 to 2, bit below 32, 1 to CH_MAX_SLOTS slots, a ring that lies inside the
+ * surface that holds the table, aligned to a slot. */
+static int ane_h18_chan_get(struct ane_h18 *ane, const struct ane_h18_hs_buf *tb, const u8 *tp, unsigned int i, struct ane_h18_ring *r, char *name)
+{
+	const u8 *e = tp + i * ANE_H18_CH_ENTRY;
+	u32 type, bit;
+	u64 size, ring;
+
+	memcpy(name, e, ANE_H18_CH_NAME_LEN);
+	name[ANE_H18_CH_NAME_LEN - 1] = 0;
+	memcpy(&type, e + 0x40, 4);
+	memcpy(&bit, e + 0x44, 4);
+	memcpy(&size, e + 0x48, 8);
+	memcpy(&ring, e + 0x50, 8);
+	dev_info(ane->dev, "ane_h18 hs chan %u name=%s type=%u bit=%u slots=%#llx ring=%#llx\n", i, name, type, bit, size, ring);
+	if (!name[0] || type > 2 || bit >= 32 || !size || size > ANE_H18_CH_MAX_SLOTS || ring < tb->iova || ring % ANE_H18_CH_SLOT ||
+	    ring + size * ANE_H18_CH_SLOT > tb->iova + tb->size)
+		return -EPROTO;
+	r->base = (u64 *)((u8 *)tb->va + (ring - tb->iova));
+	r->iova = ring;
+	r->slots = size;
+	r->bit = bit;
+	r->type = type;
+	r->cursor = 0;
+	return 0;
+}
+
+/* One command on the IO ring: the command block (id at +4, optional u32 argument at +8), slot header = its DMA address, doorbell BIT(bit), then wait for the
+ * firmware to give the slot back (header | 1) with a zero acknowledgement at +6. Returns the block in *blk for the reply. */
+static int ane_h18_cmd(struct ane_h18 *ane, struct ane_h18_ring *io, u16 op, u32 len, bool arg_set, u32 arg, u8 **blk)
+{
+	u64 *slot = io->base + io->cursor * 8, hdr, dma = ane->hs_cmd.iova;
+	u8 *cmd = ane->hs_cmd.va;
+	unsigned int waited;
+	u16 id, ack;
+
+	if (!(READ_ONCE(slot[0]) & 1)) {
+		dev_err(ane->dev, "ane_h18 cmd %#x: IO slot %u is not host owned (%#llx)\n", op, io->cursor, READ_ONCE(slot[0]));
+		return -EBUSY;
+	}
+	memset(cmd, 0, ANE_H18_CMD_BLOCK);
+	memcpy(cmd + 4, &op, 2);
+	if (arg_set)
+		memcpy(cmd + 8, &arg, 4);
+	WRITE_ONCE(slot[1], len);
+	WRITE_ONCE(slot[2], len);
+	dma_wmb();
+	WRITE_ONCE(slot[0], dma);
+	dma_wmb();
+	dev_crit(ane->dev, "ane_h18 write doorbell BIT(%u) pa=%#llx for command %#x slot %u block iova %#llx\n", io->bit, ane->soc->engine_pa + ANE_H18_DOORBELL_OFF, op,
+		 io->cursor, (u64)dma);
+	writel(BIT(io->bit), ane->doorbell);
+	for (waited = 0; waited < hs_wait_ms; waited++) {
+		hdr = READ_ONCE(slot[0]);
+		if (hdr & 1) {
+			dma_rmb();
+			memcpy(&id, cmd + 4, 2);
+			memcpy(&ack, cmd + 6, 2);
+			dev_info(ane->dev, "ane_h18 cmd %#x answered after %ums: header=%#llx words=%#llx,%#llx id=%#x ack=%#x\n", op, waited, hdr, READ_ONCE(slot[1]), READ_ONCE(slot[2]), id, ack);
+			io->cursor = (io->cursor + 1) % io->slots;
+			*blk = cmd;
+			return (hdr == (dma | 1) && READ_ONCE(slot[1]) == len && READ_ONCE(slot[2]) == 0 && id == op && !ack) ? 0 : -EPROTO;
+		}
+		usleep_range(500, 1000);
+	}
+	dev_err(ane->dev, "ane_h18 cmd %#x: no answer within %ums (header %#llx)\n", op, hs_wait_ms, READ_ONCE(slot[0]));
+	return -ETIMEDOUT;
+}
+
+/* The kext's step after it created its channels: the host owns every H2T slot, writes READY to SCRATCH3 and waits until the firmware clears it. With hs_cmds
+ * then PRINT_ENABLE and CONFIG_GET. Nothing is written before the whole table checked out. Returns 0 only when every requested step worked. */
+static int ane_h18_chan_step(struct ane_h18 *ane, const struct ane_h18_hs_buf *tb, u64 table)
+{
+	const u8 *tp = (u8 *)tb->va + (table - tb->iova);
+	struct ane_h18_ring io = { 0 }, rings[ANE_H18_CH_COUNT];
+	unsigned int i, k, waited;
+	bool have_io = false;
+	char name[ANE_H18_CH_NAME_LEN];
+	u32 v = 0, s3 = ~0u;
+	u8 *blk;
+	int ret;
+
+	if (tb->iova + tb->size - table < (u64)ANE_H18_CH_COUNT * ANE_H18_CH_ENTRY) {
+		dev_err(ane->dev, "ane_h18 chan: the table does not fit in its surface\n");
+		return -EPROTO;
+	}
+	for (i = 0; i < ANE_H18_CH_COUNT; i++) {
+		ret = ane_h18_chan_get(ane, tb, tp, i, &rings[i], name);
+		if (ret) {
+			dev_err(ane->dev, "ane_h18 chan: entry %u is not a ring of the table surface, nothing written\n", i);
+			return ret;
+		}
+		if (!strcmp(name, "IO") && rings[i].type == 0) {
+			io = rings[i];
+			have_io = true;
+		}
+	}
+	/* the rings must not overlap the table entries or each other: the ownership loop below writes into every H2T ring */
+	for (i = 0; i < ANE_H18_CH_COUNT; i++) {
+		u64 lo = rings[i].iova, hi = lo + (u64)rings[i].slots * ANE_H18_CH_SLOT;
+
+		if (lo < table + (u64)ANE_H18_CH_COUNT * ANE_H18_CH_ENTRY && hi > table) {
+			dev_err(ane->dev, "ane_h18 chan: ring %u overlaps the table, nothing written\n", i);
+			return -EPROTO;
+		}
+		for (k = 0; k < i; k++)
+			if (lo < rings[k].iova + (u64)rings[k].slots * ANE_H18_CH_SLOT && hi > rings[k].iova) {
+				dev_err(ane->dev, "ane_h18 chan: ring %u overlaps ring %u, nothing written\n", i, k);
+				return -EPROTO;
+			}
+	}
+	if (hs_cmds && (!have_io || !ane->doorbell)) {
+		dev_err(ane->dev, "ane_h18 chan: no IO ring of type 0 in the table, nothing written\n");
+		return -EPROTO;
+	}
+	for (i = 0; i < ANE_H18_CH_COUNT; i++) {
+		if (rings[i].type)
+			continue;
+		for (k = 0; k < rings[i].slots; k++) {
+			u8 *e = (u8 *)rings[i].base + k * ANE_H18_CH_SLOT;
+
+			memset(e, 0, 24);
+			e[0] = 1;
+		}
+	}
+	wmb();
+	ane_h18_scratch_write(ane, 3, ANE_H18_HS_READY);
+	for (waited = 0; waited < hs_wait_ms; waited++) {
+		usleep_range(1000, 1100);
+		s3 = readl(ane->scratch + ANE_H18_SCRATCH_OFF + 12);
+		if (!s3)
+			break;
+	}
+	dev_info(ane->dev, "ane_h18 chan: SCRATCH3 reads %#x after %ums\n", s3, waited);
+	if (s3)
+		return -EIO;
+	if (!hs_cmds)
+		return 0;
+	ret = ane_h18_hs_alloc(ane, &ane->hs_cmd, ANE_H18_CMD_BLOCK, "CMD");
+	if (ret)
+		return ret;
+	ret = ane_h18_cmd(ane, &io, ANE_H18_CSNE_PRINT_ENABLE, 12, true, 0, &blk);
+	if (ret)
+		return ret == -EPROTO || ret == -ETIMEDOUT || ret == -EBUSY ? -EIO : ret;
+	ret = ane_h18_cmd(ane, &io, ANE_H18_CSNE_CONFIG_GET, 16, false, 0, &blk);
+	if (ret)
+		return ret == -EPROTO || ret == -ETIMEDOUT || ret == -EBUSY ? -EIO : ret;
+	memcpy(&v, blk + 8, 4);
+	dev_info(ane->dev, "ane_h18 chan: CONFIG_GET reply u32 at +8 = %#x (the kext reads it as the tick rate)\n", v);
+	return 0;
+}
+
 
 /* The macOS handshake after READY, as decoded from the T8152 kext: surfaces IPC (max(page, SCRATCH1 + 1) bytes) and HEAP (SCRATCH3 bytes), the 0x174 byte
  * init block taken from a pool surface, then SCRATCH0 (low), SCRATCH1 (high), the wake word in SCRATCH7. Values the decode does not give (the config size,
@@ -810,6 +980,13 @@ static int ane_h18_handshake(struct ane_h18 *ane)
 			dev_info(ane->dev, "ane_h18 hs table +%#llx: %08x %08x %08x %08x\n", off, q[0], q[1], q[2], q[3]);
 		}
 		dev_info(ane->dev, "ane_h18 hs table: %u all-zero lines of 16 bytes skipped\n", skipped);
+	}
+	if (hs_chan) {
+		if (!tb) {
+			dev_err(ane->dev, "ane_h18 chan: the table is not in a surface allocated here\n");
+			return -EIO;
+		}
+		return ane_h18_chan_step(ane, tb, table);
 	}
 	return 0;
 }
@@ -996,6 +1173,10 @@ static int ane_h18_stage_boot(struct ane_h18 *ane)
 		ane_h18_result(ane, "boot", "REFUSED", "rtkit_start=1 needs rtkit_hello=1");
 		return -EINVAL;
 	}
+	if ((hs_chan && !handshake) || (hs_cmds && !hs_chan)) {
+		ane_h18_result(ane, "boot", "REFUSED", "hs_chan=1 needs handshake=1 and hs_cmds=1 needs hs_chan=1");
+		return -EINVAL;
+	}
 	if (handshake && (!map_fw || !rtkit_start || !rtkit_stop || !read_scratch || hs_wait_ms < 10 || hs_wait_ms > 5000 || !hs_cfg_size || hs_cfg_size > 0x10000000)) {
 		ane_h18_result(ane, "boot", "REFUSED", "handshake=1 needs map_fw=1, rtkit_start=1, rtkit_stop=1 or 2, read_scratch=1, hs_wait_ms 10 to 5000, hs_cfg_size 1 to 0x10000000");
 		return -EINVAL;
@@ -1159,7 +1340,7 @@ static int ane_h18_stage_boot(struct ane_h18 *ane)
 		return -EIO;
 	}
 	if (handshake && hs_ret) {
-		ane_h18_result(ane, "boot", "FAIL", hs_ret == -ETIMEDOUT ? "handshake-no-table-address" : "handshake-not-done");
+		ane_h18_result(ane, "boot", "FAIL", hs_ret == -ETIMEDOUT ? "handshake-no-table-address" : (hs_ret == -EIO || hs_ret == -EPROTO) ? "handshake-channel-step-failed" : "handshake-not-done");
 		return hs_ret;
 	}
 	ane_h18_result(ane, "boot", "PASS", handshake ? "core-handshook-and-stopped" : running_seen ? "core-ran-and-stopped" : "core-never-reported-running");
@@ -1226,6 +1407,15 @@ static int ane_h18_probe(struct platform_device *pdev)
 		ane->scratch = ioremap(ane->soc->scratch_pa, ane->soc->scratch_size);
 		if (!ane->scratch) {
 			dev_err(&pdev->dev, "ane_h18 ioremap of the SCRATCH page failed\n");
+			ret = -ENXIO;
+			goto out;
+		}
+	}
+	if (hs_chan && stage_idx == ANE_H18_STAGE_BOOT) {
+		/* Mapping only; the doorbell is written only for a command, after the channel step. */
+		ane->doorbell = ioremap(ane->soc->engine_pa + ANE_H18_DOORBELL_OFF, 0x1000);
+		if (!ane->doorbell) {
+			dev_err(&pdev->dev, "ane_h18 ioremap of the doorbell page failed\n");
 			ret = -ENXIO;
 			goto out;
 		}

@@ -41,6 +41,8 @@ struct iommu_domain sim_default_dom = { __IOMMU_DOMAIN_DMA_API };
 int sim_default_dom_none;
 int sim_hs_mode;	/* 0 the firmware answers the wake word, 1 it never answers */
 int sim_hs_block_ok, sim_hs_wakes;
+int sim_db_writes, sim_hs_table, sim_s3_mode, sim_cmd_mode, sim_cmds_seen, sim_table_bad;
+u32 sim_cmd_ops[8];
 u32 sim_credits_now = 1;
 int sim_rpm_enabled, sim_rpm_gets, sim_rpm_puts, sim_rpm_get_fail;
 struct sim_iocall sim_iocalls[64];
@@ -75,13 +77,92 @@ void sim_hs_react(void)
 			  sim_dma[0].size == 0x40000 && sim_dma[1].size == 0x10000 && sim_dma[2].size == 0xf00000;
 	if (sim_hs_mode == 2)
 		sim_scr[7] = ANE_H18_HS_READY;	/* READY again, but no table address: the block address stays in SCRATCH0 and SCRATCH1 */
-	if (sim_hs_mode == 0) {
+	if (sim_hs_mode == 0 && sim_hs_table) {
+		/* a table like the board's: eight 0x100 byte entries at the start of the IPC surface, the M6 ring offsets */
+		static const struct { const char *n; u32 type, bit; u64 slots, off; } ch[8] = {
+			{ "TERMINAL", 2, 0, 0x200, 0x800 }, { "IO", 0, 1, 0x10, 0x8800 }, { "DEBUG", 0, 2, 8, 0x8c00 }, { "BUF_H2T", 0, 3, 0x40, 0x8e00 },
+			{ "BUF_T2H", 1, 4, 0x40, 0x9e00 }, { "SHAREDMALLOC", 1, 5, 8, 0xae00 }, { "IO_T2H", 1, 6, 0x40, 0xb000 }, { "DATA_CHAIN_H2T", 0, 7, 0x10, 0xc000 },
+		};
+		u8 *t = sim_dma[1].va;
+		int c;
+
+		memset(t, 0, 8 * 0x100);
+		for (c = 0; c < 8; c++) {
+			u64 ring = sim_dma[1].iova + ch[c].off + (sim_table_bad == c + 1 ? 0x1000000 : 0);
+
+			if (c == 2 && sim_table_bad == 100)
+				ring = sim_dma[1].iova + 0x80;	/* inside the table entries */
+			if (c == 2 && sim_table_bad == 101)
+				ring = sim_dma[1].iova + 0x8800;	/* the IO ring */
+
+			strcpy((char *)t + c * 0x100, ch[c].n);
+			memcpy(t + c * 0x100 + 0x40, &ch[c].type, 4);
+			memcpy(t + c * 0x100 + 0x44, &ch[c].bit, 4);
+			memcpy(t + c * 0x100 + 0x48, &ch[c].slots, 8);
+			memcpy(t + c * 0x100 + 0x50, &ring, 8);
+		}
+		sim_scr[0] = (u32)sim_dma[1].iova;
+		sim_scr[1] = (u32)(sim_dma[1].iova >> 32);
+		sim_scr[7] = ANE_H18_HS_READY;
+	} else if (sim_hs_mode == 0) {
 		u32 mark[4] = { 0x11111111, 0x22222222, 0x33333333, 0x44444444 };
 
 		memcpy((u8 *)sim_dma[1].va + 0x100, mark, sizeof(mark));
 		sim_scr[0] = (u32)(sim_dma[1].iova + 0x100);
 		sim_scr[1] = (u32)((sim_dma[1].iova + 0x100) >> 32);
 		sim_scr[7] = ANE_H18_HS_READY;
+	}
+}
+
+
+/* SCRATCH3 = READY from the host: the modelled firmware clears it (mode 0) or never does (mode 1). */
+void sim_s3_react(u32 v)
+{
+	if (v == ANE_H18_HS_READY && sim_s3_mode == 0)
+		sim_scr[3] = 0;
+}
+
+/* A doorbell write with a command on the IO ring (ring at IPC + 0x8800, 0x10 slots): the firmware takes the block named by a slot header with bit 0 clear,
+ * answers it in mode 0 (CONFIG_GET gets 0x16e3600 at +8), gives it a failing acknowledgement in mode 2, and never answers in mode 1. */
+void sim_db_react(u32 v)
+{
+	u64 *ring;
+	int k, d;
+
+	if (v != BIT(1) || sim_n_dma < 4)
+		return;
+	ring = (u64 *)((u8 *)sim_dma[1].va + 0x8800);
+	for (k = 0; k < 0x10; k++) {
+		u64 hdr = ring[k * 8];
+		u8 *blk = NULL;
+		u16 op;
+
+		if (hdr & 1)
+			continue;
+		for (d = 0; d < sim_n_dma; d++)
+			if (sim_dma[d].iova == hdr)
+				blk = sim_dma[d].va;
+		if (!blk)
+			return;
+		memcpy(&op, blk + 4, 2);
+		if (sim_cmds_seen < 8)
+			sim_cmd_ops[sim_cmds_seen] = op;
+		sim_cmds_seen++;
+		if (sim_cmd_mode == 1)
+			return;
+		if (sim_cmd_mode == 2) {
+			u16 bad = 2;
+
+			memcpy(blk + 6, &bad, 2);
+		}
+		if (op == ANE_H18_CSNE_CONFIG_GET) {
+			u32 rate = 0x16e3600;
+
+			memcpy(blk + 8, &rate, 4);
+		}
+		ring[k * 8 + 2] = 0;
+		ring[k * 8] = hdr | 1;
+		return;
 	}
 }
 
@@ -178,6 +259,8 @@ static void reset_all(void)
 	hs_cfg_size = 0x380000;
 	hs_wait_ms = 50;
 	sim_scr_model = sim_n_dma = sim_dma_fail = sim_default_dom_none = sim_hs_mode = sim_hs_block_ok = sim_hs_wakes = 0;
+	hs_chan = hs_cmds = false;
+	sim_db_writes = sim_hs_table = sim_s3_mode = sim_cmd_mode = sim_cmds_seen = sim_table_bad = 0;
 	memset(sim_dma, 0, sizeof(sim_dma));
 	map_fw = false;
 	sim_rpm_enabled = sim_rpm_gets = sim_rpm_puts = sim_rpm_get_fail = 0;
@@ -911,6 +994,68 @@ static void pos_boot(void)
 				chk(ret != 0 && result("boot", "FAIL", "handshake-not-done") && nsc == 0 && sim_n_dma == 0 && nst == 1, "HS9 handshake=1: SCRATCH7 not yet READY: no allocation, no SCRATCH write, clean stop, FAIL");
 			if (pass == 6 || pass == 7)
 				chk(ret != 0 && result("boot", "FAIL", "handshake-not-done") && nsc == 0 && sim_n_dma == 0 && nst == 1, pass == 6 ? "HS7 handshake=1: a HEAP request above the limit is refused before any allocation" : "HS7 handshake=1: an IPC request above the limit is refused before any allocation");
+		}
+	}
+	/* channel step: the table check, the H2T ownership, SCRATCH3, then the two commands */
+	{
+		static const u32 scr0[8] = { 8, 0xc440, 0x100, 0xf00000, 0, 0x100090, 0, ANE_H18_HS_READY };
+		int pass, k, w3 = -1, db = -1, nsc3, nh2t, ok;
+		u8 *ipc;
+
+		for (pass = 0; pass < 10; pass++) {
+			kboot_setup();
+			alias_mbox = true;
+			rtkit_hello = true;
+			rtkit_start = true;
+			rtkit_stop = 1;
+			read_scratch = true;
+			handshake = true;
+			hs_chan = pass != 5;
+			hs_cmds = pass >= 1 && pass != 5;
+			if (pass == 5) hs_cmds = true;
+			sim_start_chan = 536;
+			sim_start_hello = 3;
+			sim_scr_model = 1;
+			sim_hs_table = 1;
+			memcpy(sim_scr, scr0, sizeof(scr0));
+			if (pass == 2) sim_s3_mode = 1;
+			if (pass == 3) sim_cmd_mode = 1;
+			if (pass == 4) sim_cmd_mode = 2;
+			if (pass == 6) sim_table_bad = 2;
+			if (pass == 7) sim_table_bad = 4;
+			if (pass == 8) sim_table_bad = 100;
+			if (pass == 9) sim_table_bad = 101;
+			ret = probe_now();
+			ipc = sim_n_dma > 1 ? sim_dma[1].va : NULL;
+			nsc3 = 0;
+			for (w3 = -1, db = -1, k = 0; k < sim_n_events; k++) {
+				if (sim_events[k].write == 1 && sim_events[k].pa == SIM_SCRATCH_PA + 0x30) { nsc3++; w3 = k; }
+				if (sim_events[k].write == 1 && sim_events[k].pa == SIM_DB_PA && db < 0) db = k;
+			}
+			(void)ipc;
+			nh2t = log_count("hs chan ");
+			ok = result("boot", "PASS", "core-handshook-and-stopped");
+			if (pass == 0) {
+				chk(ret == 0 && ok && nsc3 == 1 && sim_db_writes == 0 && nh2t == 8, "CH1 hs_chan=1: table of 8 rings checked, SCRATCH3 written once, firmware cleared it, no doorbell");
+				chk(log_count("SCRATCH3 reads 0 after") == 1 && sim_n_dma == 3 && log_count("write doorbell") == 0, "CH1 hs_chan=1: no command surface allocated, no doorbell write");
+			}
+			if (pass == 1) {
+				chk(ret == 0 && ok && nsc3 == 1 && sim_db_writes == 2 && sim_cmds_seen == 2 && sim_cmd_ops[0] == 4 && sim_cmd_ops[1] == 3, "CH2 hs_cmds=1: PRINT_ENABLE then CONFIG_GET on the IO ring, two doorbell writes");
+				chk(log_count("CONFIG_GET reply u32 at +8 = 0x16e3600") == 1 && log_count("ack=0\n") == 2 && w3 > 0 && db > w3, "CH2 hs_cmds=1: the reply is read, both acknowledged with 0, the doorbell comes after SCRATCH3");
+				chk(sim_n_dma == 4, "CH2 hs_cmds=1: one command block surface (0x4000) besides the three of the handshake");
+			}
+			if (pass == 2)
+				chk(ret == -EIO && result("boot", "FAIL", "handshake-channel-step-failed") && nsc3 == 1 && sim_db_writes == 0 && sim_cmds_seen == 0 && log_count("rtkit shutdown:") == 1, "CH3 SCRATCH3 never cleared: FAIL, no command, the stop still runs");
+			if (pass == 3)
+				chk(ret == -EIO && result("boot", "FAIL", "handshake-channel-step-failed") && sim_cmds_seen == 1 && sim_db_writes == 1 && log_count("rtkit shutdown:") == 1, "CH4 no answer to PRINT_ENABLE: FAIL after one command, the stop still runs");
+			if (pass == 4)
+				chk(ret == -EIO && result("boot", "FAIL", "handshake-channel-step-failed") && sim_cmds_seen == 1, "CH5 a failing acknowledgement (+6 = 2) is a FAIL, CONFIG_GET is not sent");
+			if (pass == 5)
+				chk(ret == -EINVAL && result("boot", "REFUSED", "hs_chan=1 needs handshake=1 and hs_cmds=1 needs hs_chan=1") && writes() == 0, "CH6 hs_cmds=1 without hs_chan=1 is refused before any write");
+			if (pass == 8 || pass == 9)
+				chk(ret == -EPROTO && result("boot", "FAIL", "handshake-channel-step-failed") && nsc3 == 0 && sim_db_writes == 0 && sim_cmds_seen == 0 && log_count("overlaps") == 1, pass == 8 ? "CH8 a ring that overlaps the table entries: FAIL, nothing written" : "CH8 a ring that overlaps another ring: FAIL, nothing written");
+			if (pass == 6 || pass == 7)
+				chk(ret == -EPROTO && result("boot", "FAIL", "handshake-channel-step-failed") && nsc3 == 0 && sim_db_writes == 0 && sim_cmds_seen == 0, pass == 6 ? "CH7 a ring outside the surface: FAIL, nothing written (no SCRATCH3, no ring slot, no doorbell)" : "CH7 another ring outside the surface: FAIL, nothing written");
 		}
 	}
 	/* without rtkit_hello the messages are only logged */
