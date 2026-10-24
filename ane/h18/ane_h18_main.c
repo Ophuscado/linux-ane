@@ -99,9 +99,9 @@ static bool handshake;
 module_param(handshake, bool, 0444);
 MODULE_PARM_DESC(handshake, "Stage=boot with map_fw=1, read_scratch=1, rtkit_start=1 and rtkit_stop=1 or 2: after AP power ON is acknowledged, allocate the surfaces the macOS kext allocates, publish a 0x174 byte init block in SCRATCH0 and SCRATCH1, write the wake word to SCRATCH7 and wait for the firmware's channel table address. The firmware segments are then mapped into the default DMA domain of the ANE instead of an own domain. Default off.");
 
-static unsigned int hs_cfg_size = 0x500000;
+static unsigned int hs_cfg_size = 0x380000;
 module_param(hs_cfg_size, uint, 0444);
-MODULE_PARM_DESC(hs_cfg_size, "Stage=boot with handshake=1: the config size stored at init block +0x10 (+0x18 is 0x10000000 minus it). 0x500000 is the T6021 value; the M6 value is not known. Default 0x500000.");
+MODULE_PARM_DESC(hs_cfg_size, "Stage=boot with handshake=1: the config size stored at init block +0x10 (+0x18 is 0x10000000 minus it). 0x380000 is the value the M6 kext sets for ane-type 0x310 (T6021 uses 0x500000). Default 0x380000.");
 
 static unsigned int hs_wait_ms = 1000;
 module_param(hs_wait_ms, uint, 0444);

@@ -175,7 +175,7 @@ static void reset_all(void)
 	sim_credit_mode = 0;
 	sim_credits_now = 1;
 	handshake = false;
-	hs_cfg_size = 0x500000;
+	hs_cfg_size = 0x380000;
 	hs_wait_ms = 50;
 	sim_scr_model = sim_n_dma = sim_dma_fail = sim_default_dom_none = sim_hs_mode = sim_hs_block_ok = sim_hs_wakes = 0;
 	memset(sim_dma, 0, sizeof(sim_dma));

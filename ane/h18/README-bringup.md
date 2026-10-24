@@ -55,8 +55,8 @@ else in the ASC, IORVBAR or mailbox windows.
     writes the block address to SCRATCH0 (low) and SCRATCH1 (high), and then writes the wake word 0xf7fbdff9 to SCRATCH7. It waits up to `hs_wait_ms` for a new
     address in SCRATCH1:SCRATCH0 together with 0x08042006 in SCRATCH7, and dumps the first 0x200 bytes at that address when one of its own surfaces holds it.
     The firmware shows 0x08042006 before the wake, so the answer is judged by the new address. With this option the two firmware segments are mapped into the
-    default DMA domain of the ANE (no own domain is attached), because the surfaces come from the DMA API. The values the decode does not give are
-    guesses: the config size at block +0x10 is the T6021 value 0x500000 (`hs_cfg_size`), and the pool qword and the template word are zero. SCRATCH6 is not
+    default DMA domain of the ANE (no own domain is attached), because the surfaces come from the DMA API. The config size at block +0x10 is 0x380000, the value the M6 kext sets (`hs_cfg_size`; T6021 uses 0x500000). Two words the decode
+    does not give are zero: the pool qword and the template word. SCRATCH6 is not
     written (the kext writes 1 there before RUN, the firmware showed 0). A hang, a reset or a DART fault is possible, and what the firmware does with the
     surfaces is not known. The surfaces are freed only after the core stopped. Nothing here has run on the board.
   - `rtkit_hello=1` (needs `alias_mbox=1`): answer the firmware's RTKit management HELLO with version 12 and its endpoint map, nothing else. The
