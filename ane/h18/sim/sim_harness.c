@@ -123,8 +123,9 @@ static void reset_all(void)
 	read_dart = false;
 	alias_mbox = false;
 	rtkit_hello = false;
+	read_scratch = false;
 	rtkit_start = false;
-	rtkit_stop = false;
+	rtkit_stop = 0;
 	sim_n_tx_msgs = sim_idle_sent = sim_stop_needs_idle = sim_no_shutdown_reply = 0;
 	sim_iop_ack_state = 0x20;
 	map_fw = false;
@@ -695,27 +696,89 @@ static void pos_boot(void)
 		alias_mbox = true;
 		rtkit_hello = true;
 		rtkit_start = true;
-		rtkit_stop = true;
+		rtkit_stop = 1;
+		sim_start_chan = 536;
+		sim_start_hello = 3;
+		sim_stop_needs_idle = 1;
+		ret = probe_now();
+		chk(ret == 0 && result("boot", "PASS", "core-ran-and-stopped") && sim_n_tx_msgs == 8 && sim_tx_msgs[6] == 0xb0000000000010ULL && sim_tx_msgs[7] == 0x60000000000001ULL,
+		    "R4 boot rtkit_stop: AP power QUIESCED then IOP power SLEEP follow the boot messages and the core stops after the IOP acknowledgement");
+		chk(log_count("rtkit shutdown: ap_acked=1 iop_acked=1 iop_idle=0") == 1, "R4 boot rtkit_stop: both acknowledgements seen");
+		/* rtkit_stop=2: OFF then OFF, the pair the board stopped with */
+		boot_setup();
+		alias_mbox = true;
+		rtkit_hello = true;
+		rtkit_start = true;
+		rtkit_stop = 2;
 		sim_start_chan = 536;
 		sim_start_hello = 3;
 		sim_stop_needs_idle = 1;
 		ret = probe_now();
 		chk(ret == 0 && result("boot", "PASS", "core-ran-and-stopped") && sim_n_tx_msgs == 8 && sim_tx_msgs[6] == 0xb0000000000000ULL && sim_tx_msgs[7] == 0x60000000000000ULL,
-		    "R4 boot rtkit_stop: AP power OFF then IOP power OFF follow the boot messages and the core stops after the idle message");
-		chk(log_count("rtkit shutdown: ap_off_acked=1 iop_off_acked=1 iop_idle=1") == 1, "R4 boot rtkit_stop: both acknowledgements and the idle message seen");
+		    "R6 boot rtkit_stop=2: AP power OFF then IOP power OFF, the core stops after the IOP acknowledgement");
+		/* a firmware that ignores the shutdown while the core still accepts the RUN clear: the stage must not report PASS */
+		boot_setup();
+		alias_mbox = true;
+		rtkit_hello = true;
+		rtkit_start = true;
+		rtkit_stop = 1;
+		sim_start_chan = 536;
+		sim_start_hello = 3;
+		sim_no_shutdown_reply = 1;
+		ret = probe_now();
+		chk(ret != 0 && result("boot", "FAIL", "rtkit-shutdown-incomplete") && log_count("verdict=PASS") == 0, "R8 boot rtkit_stop: an unanswered shutdown is FAIL rtkit-shutdown-incomplete even when the core stopped");
+		/* rtkit_stop=3 is refused */
+		boot_setup();
+		alias_mbox = true;
+		rtkit_hello = true;
+		rtkit_start = true;
+		rtkit_stop = 3;
+		ret = probe_now();
+		chk(ret == -EINVAL && !writes(), "R7 boot rtkit_stop=3 is refused before any write");
 		/* a firmware that never answers the shutdown: no PASS, the slots stay, the core is reported as not stopped */
 		boot_setup();
 		alias_mbox = true;
 		rtkit_hello = true;
 		rtkit_start = true;
-		rtkit_stop = true;
+		rtkit_stop = 1;
 		sim_start_chan = 536;
 		sim_start_hello = 3;
 		sim_stop_needs_idle = 1;
 		sim_no_shutdown_reply = 1;
 		ret = probe_now();
-		chk(ret != 0 && result("boot", "FAIL", "core-not-stopped") && log_count("iop_idle=0") == 1 && sim_n_tx_msgs == 7, "R5 boot rtkit_stop: no shutdown answer gives FAIL core-not-stopped, AP OFF sent once, no IOP OFF");
+		chk(ret != 0 && result("boot", "FAIL", "core-not-stopped") && log_count("ap_acked=0 iop_acked=0") == 1 && sim_n_tx_msgs == 7, "R5 boot rtkit_stop: no shutdown answer gives FAIL core-not-stopped, AP QUIESCED sent once, no IOP SLEEP");
 	}
+	/* read_scratch: three reads of eight words, read only, with both slots on; none without the option */
+	boot_setup();
+	alias_mbox = true;
+	rtkit_hello = true;
+	rtkit_start = true;
+	read_scratch = true;
+	sim_start_chan = 536;
+	sim_start_hello = 3;
+	ret = probe_now();
+	chk(ret == 0 && events_in(SIM_SCRATCH_PA, SIM_SCRATCH_SIZE, 0) == 3 * ANE_H18_SCRATCH_N && events_in(SIM_SCRATCH_PA, SIM_SCRATCH_SIZE, 1) == 0 && sim_faults == 0,
+	    "S1 boot read_scratch: three phases of eight SCRATCH reads, no write, zero faults");
+	chk(log_count("CRIT: ane_h18 read SCRATCH0_pre pa=0x4198a0024") == 1 && log_count("CRIT: ane_h18 read SCRATCH7_apon pa=0x4198a0040") == 1 && log_count("CRIT: ane_h18 read SCRATCH0_end pa=0x4198a0024") == 1,
+	    "S1 boot read_scratch: the addresses engine + 0x18a0024 to +0x18a0040 are logged before each read, in the phases pre, apon and end");
+	{
+		int k, first_scratch = -1, run = -1;
+
+		for (k = 0; k < sim_n_events; k++) {
+			if (first_scratch < 0 && sim_in(sim_events[k].pa, SIM_SCRATCH_PA, SIM_SCRATCH_SIZE))
+				first_scratch = k;
+			if (sim_events[k].write == 1 && sim_events[k].pa == sim_asc_pa + 0x44 && sim_events[k].val == 0x10)
+				run = k;
+		}
+		chk(first_scratch > 0 && first_scratch < run, "S1 boot read_scratch: the first SCRATCH read comes before the RUN write");
+	}
+	boot_setup();
+	alias_mbox = true;
+	rtkit_hello = true;
+	sim_start_chan = 536;
+	sim_start_hello = 3;
+	ret = probe_now();
+	chk(ret == 0 && events_in(SIM_SCRATCH_PA, SIM_SCRATCH_SIZE, 0) == 0, "S2 boot: no SCRATCH access without read_scratch");
 	/* without rtkit_hello the messages are only logged */
 	boot_setup();
 	alias_mbox = true;
@@ -828,9 +891,9 @@ static int neg_boot(void)
 	boot_setup();
 	alias_mbox = true;
 	rtkit_hello = true;
-	rtkit_stop = true;
+	rtkit_stop = 1;
 	ret = probe_now();
-	if (ret != -EINVAL || writes() || !result("boot", "REFUSED", "rtkit_stop=1 needs rtkit_start=1")) { printf("    rtkit_stop without rtkit_start\n"); bad = 1; }
+	if (ret != -EINVAL || writes() || !result("boot", "REFUSED", "rtkit_stop=1 or 2 needs rtkit_start=1")) { printf("    rtkit_stop without rtkit_start\n"); bad = 1; }
 	/* rtkit_hello without alias_mbox is refused before any write */
 	boot_setup();
 	rtkit_hello = true;

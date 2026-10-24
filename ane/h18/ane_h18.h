@@ -14,6 +14,9 @@
  *   PSD slots on (stage power) and that CPU_CONTROL reads 0 before the core runs (read_ctrl).
  * - PSD slot window layout and request protocol: drivers/pmdomain/apple/pmgr-psd.c of the same kernel tree,
  *   proven on this board for slot 71 (ATC0 USB).
+ * - RTKit management protocol and power state values (drivers/soc/apple/rtkit.c) and the T8152 counted FIFO of a Postoffice channel (mailbox.c):
+ *   linux-aurora commit dc7b5b9c539b85bdf2557f2a0eb44223a4219de9. Gen3 DART layout: drivers/iommu/apple-dart.c of the kernel tree this Image is
+ *   built from, which no public commit carries yet; its sha256 is 2904d16b83d0ae065586e16157cc5b54e7233c174c51dcda1c70c2b02a637621.
  * INFERENCE, not measured: that ANE slots 30 and 31 accept state 0 (run) and what the ASC wrapper reads
  * once they are on. The ANE needs more than the PSD slots (clock-ids 329, 328 and 375 are not modeled).
  */
@@ -54,6 +57,10 @@
 /* The alias bank: the same Postoffice window at +0x10000, channel 2 * msgbox-mailbox-num. For this ANE the ADT has msgbox-using-postoffice and no
  * msgbox-using-alias, which the AppleASCWrapV8 constructor turns into base + 0x10000 and channel 2 * num (0x316010c00 for ANE0). */
 #define ANE_H18_PO_ALIAS_OFF	0x10000
+/* The eight SCRATCH words of the engine block (macOS handshake registers): engine + 0x18a0024 to +0x18a0040 for ane-type 0x310 (h18g), the table the
+ * AppleH16ANEInterface kext stores for this SoC. Read only here, in the page at scratch_pa. */
+#define ANE_H18_SCRATCH_OFF	0x24
+#define ANE_H18_SCRATCH_N	8
 /* ANE DART (dart,gen3, instance 0): read only liveness words, see ane_h18_read_dart_words(). */
 #define ANE_H18_DART_NREAD	12
 /* Postoffice channel layout used for the RTKit exchange, as drivers/soc/apple/mailbox.c has it for the T8152 counted FIFO: RX (the outbox, firmware to host)
@@ -71,10 +78,12 @@
 #define ANE_H18_RTK_EPMAP	8	/* the reply has the same type */
 #define ANE_H18_RTK_AP_PWR	0xb	/* SET_AP_PWR_STATE */
 #define ANE_H18_RTK_PWR_ON	0x20
-#define ANE_H18_RTK_PWR_OFF	0x00
+#define ANE_H18_RTK_PWR_OFF	0x00	/* rtkit_stop=2: OFF on both sides, cannot be restarted (apple_rtkit_poweroff) */
+#define ANE_H18_RTK_PWR_QUIESCED	0x10	/* the AP state of apple_rtkit_shutdown */
+#define ANE_H18_RTK_PWR_SLEEP	0x01	/* the IOP state of apple_rtkit_shutdown: sleeping, can be restarted (OFF cannot) */
 #define ANE_H18_RTK_IOP_IDLE	0xc
 #define ANE_H18_RTK_SET_IOP_PWR	6
-#define ANE_H18_RTK_STOP_WAIT_MS	600	/* how long the shutdown handshake waits for the IOP idle message */
+#define ANE_H18_RTK_STOP_WAIT_MS	600	/* how long the shutdown handshake waits for the IOP acknowledgement */
 #define ANE_H18_RTK_APP_EP	0x20	/* endpoints from here are application endpoints, started only once the coprocessor runs */
 #define ANE_H18_RTK_VERSION	12	/* the version macOS and Linux answer with on this firmware family */
 
@@ -98,6 +107,8 @@ struct ane_h18_soc {
 	u32 mbox_size;
 	u64 engine_pa;
 	u32 engine_size;
+	u64 scratch_pa;		/* the page of the engine block that holds SCRATCH0 to 7 */
+	u32 scratch_size;
 	u64 dart_pa;		/* ANE DART instance 0 (ADT /arm-io/dart-ane reg[0]) */
 	u32 dart_size;
 	u32 mbox_num;		/* ADT msgbox-mailbox-num */
