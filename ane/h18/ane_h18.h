@@ -61,13 +61,15 @@
  * AppleH16ANEInterface kext stores for this SoC. Read only here, in the page at scratch_pa. */
 #define ANE_H18_SCRATCH_OFF	0x24
 #define ANE_H18_SCRATCH_N	8
-/* SCRATCH handshake of the macOS kext (ANE_Init, T8152 decode in the lab notebook): after READY the host publishes the address of a 0x174 byte init block
+/* SCRATCH handshake of the macOS kext (AppleH16ANEInterface of kernelcache 26A434, mac18g, sha256 09746d1f442153956ba00b385f49bc245460c1ebea92cae7e9e0e4f240745b85:
+ * ANE_Init at 0x9365538, block fill 0x9366818 to 0x9366a88, handshake 0x9366b98 to 0x9366c60; the decode is a private lab note): after READY the host publishes the address of a 0x174 byte init block
  * in SCRATCH0 (low) and SCRATCH1 (high), writes the wake word to SCRATCH7, and the firmware answers READY again with the address of its channel table in
  * SCRATCH1:SCRATCH0. The firmware already shows READY before the wake (board read), so the answer is judged by the table address, not by SCRATCH7. */
 #define ANE_H18_HS_WAKE		0xf7fbdff9u
 #define ANE_H18_HS_READY	0x08042006u
 #define ANE_H18_HS_REQ_LIMIT	0x21	/* SCRATCH0 at or above this: the kext does not go on */
 #define ANE_H18_HS_BLOCK_SIZE	0x174
+#define ANE_H18_HS_POOL_SIZE	0x40000	/* the pool surface the block is taken from, and the qword at block +0x60: the T6021 values (ane_t6021_boot.c, confirmed there) */
 #define ANE_H18_HS_IPC_MAX	0x100000	/* refuse a firmware request above these before allocating */
 #define ANE_H18_HS_HEAP_MAX	0x4000000
 /* ANE DART (dart,gen3, instance 0): read only liveness words, see ane_h18_read_dart_words(). */

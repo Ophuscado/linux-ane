@@ -71,8 +71,8 @@ void sim_hs_react(void)
 #define F4(off) (memcpy(&f, b + (off), 4), f & 0xffffffffu)
 	f = 0;
 	sim_hs_block_ok = F8(0x00) == ane_t8152_soc.fw_seg[0].iova && F8(0x08) == sim_dma[1].iova && F8(0x10) == hs_cfg_size && F8(0x18) == 0x10000000ULL - hs_cfg_size &&
-			  F8(0x20) == (sim_n_dma > 2 ? sim_dma[2].iova : 0) && F8(0x28) == 0xf00000 && F8(0x50) == 0xc441 && F8(0x58) == pub && F4(0x68) == 0x40 && F4(0x12c) == 4 &&
-			  sim_dma[1].size == 0x10000 && sim_dma[2].size == 0xf00000;
+			  F8(0x20) == (sim_n_dma > 2 ? sim_dma[2].iova : 0) && F8(0x28) == 0xf00000 && F8(0x50) == 0xc441 && F8(0x58) == pub && F8(0x60) == 0x40000 && F4(0x68) == 0x40 && F4(0x12c) == 4 &&
+			  sim_dma[0].size == 0x40000 && sim_dma[1].size == 0x10000 && sim_dma[2].size == 0xf00000;
 	if (sim_hs_mode == 2)
 		sim_scr[7] = ANE_H18_HS_READY;	/* READY again, but no table address: the block address stays in SCRATCH0 and SCRATCH1 */
 	if (sim_hs_mode == 0) {
@@ -852,7 +852,7 @@ static void pos_boot(void)
 		int pass, k, w0 = -1, w1 = -1, w7 = -1, run = -1, shut = -1, live;
 		int nsc, nst;
 
-		for (pass = 0; pass < 9; pass++) {
+		for (pass = 0; pass < 10; pass++) {
 			kboot_setup();
 			alias_mbox = true;
 			rtkit_hello = true;
@@ -871,6 +871,7 @@ static void pos_boot(void)
 			if (pass == 6) sim_scr[3] = 0x10000000;
 			if (pass == 7) sim_scr[1] = 0xffffffff;
 			if (pass == 8) sim_hs_mode = 2;
+			if (pass == 9) sim_scr[7] = 0;
 			ret = probe_now();
 			nsc = events_in(SIM_SCRATCH_PA, SIM_SCRATCH_SIZE, 1);
 			for (live = 0, k = 0; k < sim_n_dma; k++)
@@ -906,6 +907,8 @@ static void pos_boot(void)
 				chk(ret != 0 && result("boot", "FAIL", "fw-map-failed") && nsc == 0 && sim_n_dma == 0 && events_in(sim_asc_pa + 0x44, 4, 1) == 0, "HS6 handshake=1 without a default DMA domain: FAIL before RUN");
 			if (pass == 8)
 				chk(ret == -ETIMEDOUT && result("boot", "FAIL", "handshake-no-table-address") && nsc == 3 && live == 0, "HS8 handshake=1: READY again without a new table address is not an answer");
+			if (pass == 9)
+				chk(ret != 0 && result("boot", "FAIL", "handshake-not-done") && nsc == 0 && sim_n_dma == 0 && nst == 1, "HS9 handshake=1: SCRATCH7 not yet READY: no allocation, no SCRATCH write, clean stop, FAIL");
 			if (pass == 6 || pass == 7)
 				chk(ret != 0 && result("boot", "FAIL", "handshake-not-done") && nsc == 0 && sim_n_dma == 0 && nst == 1, pass == 6 ? "HS7 handshake=1: a HEAP request above the limit is refused before any allocation" : "HS7 handshake=1: an IPC request above the limit is refused before any allocation");
 		}

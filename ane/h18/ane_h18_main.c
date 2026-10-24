@@ -698,7 +698,7 @@ static int ane_h18_rtkit_step(struct ane_h18 *ane, u32 chan_off, const char *tag
 
 /* The macOS handshake after READY, as decoded from the T8152 kext: surfaces IPC (max(page, SCRATCH1 + 1) bytes) and HEAP (SCRATCH3 bytes), the 0x174 byte
  * init block taken from a pool surface, then SCRATCH0 (low), SCRATCH1 (high), the wake word in SCRATCH7. Values the decode does not give (the config size,
- * the pool qword, the template word) are zero or the T6021 value, logged with the block. Returns 0 only when the firmware published a table address.
+ * the template word) are zero or the T6021 value, logged with the block. Returns 0 only when the firmware published a table address.
  * Needs the core running with AP power ON acknowledged. */
 static int ane_h18_handshake(struct ane_h18 *ane)
 {
@@ -719,6 +719,10 @@ static int ane_h18_handshake(struct ane_h18 *ane)
 		if (ret)
 			return ret;
 	}
+	if (w[7] != ANE_H18_HS_READY) {
+		dev_err(ane->dev, "ane_h18 handshake: SCRATCH7=%#x, not the READY value %#x yet, the requests in SCRATCH1 and SCRATCH3 are not valid\n", w[7], ANE_H18_HS_READY);
+		return -EAGAIN;
+	}
 	if (w[0] >= ANE_H18_HS_REQ_LIMIT) {
 		dev_err(ane->dev, "ane_h18 handshake: SCRATCH0=%#x is not below %#x, not going on\n", w[0], ANE_H18_HS_REQ_LIMIT);
 		return -EOPNOTSUPP;
@@ -735,7 +739,7 @@ static int ane_h18_handshake(struct ane_h18 *ane)
 		dev_err(ane->dev, "ane_h18 handshake: no 42 bit DMA mask: %d\n", ret);
 		return ret;
 	}
-	ret = ane_h18_hs_alloc(ane, &ane->hs_pool, ALIGN(ANE_H18_HS_BLOCK_SIZE, PAGE_SIZE), "POOL");
+	ret = ane_h18_hs_alloc(ane, &ane->hs_pool, ANE_H18_HS_POOL_SIZE, "POOL");
 	if (!ret)
 		ret = ane_h18_hs_alloc(ane, &ane->hs_ipc, ipc_size, "IPC");
 	if (!ret && heap_size)
@@ -755,7 +759,7 @@ static int ane_h18_handshake(struct ane_h18 *ane)
 	ane_h18_hs_put(ane, blk, 0x30, 4, 0);				/* previous firmware length, first boot */
 	ane_h18_hs_put(ane, blk, 0x50, 8, (u64)w[1] + 1);		/* ordinal */
 	ane_h18_hs_put(ane, blk, 0x58, 8, ane->hs_pool.iova);
-	ane_h18_hs_put(ane, blk, 0x60, 8, 0);				/* first qword of the pool object: not known */
+	ane_h18_hs_put(ane, blk, 0x60, 8, ANE_H18_HS_POOL_SIZE);	/* first qword of the pool object, as T6021 */
 	ane_h18_hs_put(ane, blk, 0x68, 4, 0x40);
 	ane_h18_hs_put(ane, blk, 0x6c + 0xc0, 4, 4);			/* template word +0xc0, the template is otherwise zero */
 	pub = ane->hs_pool.iova;
