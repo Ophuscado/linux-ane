@@ -47,6 +47,10 @@
  *   6 rtkit  : confirm_run=1 and confirm_rtkit=1 required. Stage 5 plus an RTKit management session on the ASC
  *              mailbox: the first stage that writes the mailbox send registers. See ane_h15_rtk_* below.
  *
+ *   7 chan   : confirm_run, confirm_rtkit and confirm_chan required. Stage 6 plus the macOS handshake after AP power ON:
+ *              the firmware surfaces, SCRATCH0/1/7, the channel table, ring ownership, SCRATCH3 READY, optionally the
+ *              first commands. See ane_h15_chan_run().
+ *
  * No MODULE_DEVICE_TABLE: nothing autoloads. probe() returns
  * -EPERM unless `optin=<soc>` matches. Insmod line:
  *   insmod ane_h15.ko optin=t8122 stage=status
@@ -59,6 +63,7 @@
 #include <linux/bitfield.h>
 #include <linux/bits.h>
 #include <linux/cred.h>
+#include <linux/dma-mapping.h>
 #include <linux/delay.h>
 #include <linux/device.h>
 #include <linux/err.h>
@@ -94,7 +99,7 @@ MODULE_PARM_DESC(optin,
 static char *stage = "status";
 module_param(stage, charp, 0444);
 MODULE_PARM_DESC(stage,
-		 "0/1/2/3/4/5/6 or name (dt/status/wrapper/boot/dart/run/rtkit). 1/status (default): power up and log ps ACTUAL. 0/dt: parse the DT only. 2/wrapper: REFUSED on H15 without confirm_read=1. 3/boot: refused without fw_path=. 4/dart: read-only DART liveness, needs confirm_read=1. 5/run: refused without confirm_run=1 and without a live DART stream; starts the core once behind a preflight. 6/rtkit: stage 5 plus an RTKit session over the ASC mailbox, needs confirm_rtkit=1 as well.");
+		 "0/1/2/3/4/5/6/7 or name (dt/status/wrapper/boot/dart/run/rtkit/chan). 1/status (default): power up and log ps ACTUAL. 0/dt: parse the DT only. 2/wrapper: REFUSED on H15 without confirm_read=1. 3/boot: refused without fw_path=. 4/dart: read-only DART liveness, needs confirm_read=1. 5/run: refused without confirm_run=1 and without a live DART stream; starts the core once behind a preflight. 6/rtkit: stage 5 plus an RTKit session over the ASC mailbox, needs confirm_rtkit=1 as well. 7/chan: stage 6 plus the SCRATCH handshake and the channel step, needs confirm_chan=1 as well.");
 
 static unsigned int ps_wait_ms = 500;
 module_param(ps_wait_ms, uint, 0444);
@@ -141,6 +146,21 @@ module_param(rtkit_stop, uint, 0444);
 MODULE_PARM_DESC(rtkit_stop,
 		 "stage=rtkit: shutdown before RUN is cleared. 1 (default): AP QUIESCED then IOP SLEEP, restartable (apple_rtkit_shutdown). 2: OFF then OFF, the core cannot be restarted until a reboot (apple_rtkit_poweroff).");
 
+static bool confirm_chan;
+module_param(confirm_chan, bool, 0444);
+MODULE_PARM_DESC(confirm_chan,
+		 "stage=chan only: required. Stage 7 is stage 6 plus the macOS SCRATCH handshake and the channel step: it WRITES SCRATCH0, SCRATCH1, SCRATCH7 and SCRATCH3 of the engine block, writes ring memory the firmware reads and (chan_cmds=1) the doorbell. Nobody has run it on an H15 part.");
+
+static bool chan_cmds;
+module_param(chan_cmds, bool, 0444);
+MODULE_PARM_DESC(chan_cmds,
+		 "stage=chan: after the channel step send PRINT_ENABLE and CONFIG_GET on the IO ring (writes the doorbell at engine + 0x1844000). Default off.");
+
+static unsigned int hs_wait_ms = 1000;
+module_param(hs_wait_ms, uint, 0444);
+MODULE_PARM_DESC(hs_wait_ms,
+		 "stage=chan: how long each handshake wait lasts (the table address, SCRATCH3, a command answer), 10 to 5000 ms. Default 1000.");
+
 static bool confirm_run;
 module_param(confirm_run, bool, 0444);
 MODULE_PARM_DESC(confirm_run,
@@ -166,6 +186,12 @@ static const char * const ane_h15_ps_names[] = {
 	"ANE_SYS", "ANE_MPM", "ANE_CPU", "ANE_TD", "ANE_BASE"
 };
 
+struct ane_h15_hs_buf {
+	void *va;
+	dma_addr_t iova;
+	size_t size;
+};
+
 struct ane_h15 {
 	struct device *dev;
 	const struct ane_h15_soc *soc;
@@ -177,6 +203,9 @@ struct ane_h15 {
 	struct iommu_domain *domain;	/* map_fw: the DART domain, NULL when none */
 	u64 map_pa[2], map_iova[2], map_size[2];
 	unsigned int map_n;	/* segments mapped so far */
+	bool dom_own;		/* the domain was attached by this module (stage 7 maps into the default DMA domain instead) */
+	bool chan;		/* stage 7 */
+	struct ane_h15_hs_buf hs_pool, hs_ipc, hs_heap, hs_cmd;
 	/* The ANE node carries several power-domains (sys, mpm, cpu, td,
 	 * base). The kernel's automatic attach handles only a single
 	 * domain, so for more than one we attach each by id and link it
@@ -269,6 +298,7 @@ static int ane_h15_stage_idx(const char *name, unsigned int *out)
 	if (!strcmp(name, "dart") || !strcmp(name, "4")) { *out = 4; return 0; }
 	if (!strcmp(name, "run") || !strcmp(name, "5")) { *out = 5; return 0; }
 	if (!strcmp(name, "rtkit") || !strcmp(name, "6")) { *out = 6; return 0; }
+	if (!strcmp(name, "chan") || !strcmp(name, "7")) { *out = 7; return 0; }
 	return -EINVAL;
 }
 
@@ -813,9 +843,12 @@ static void ane_h15_unmap_firmware(struct ane_h15 *ane)
 	for (i = 0; i < ane->map_n; i++)
 		iommu_unmap(ane->domain, ane->map_iova[i], ane->map_size[i]);
 	ane->map_n = 0;
-	iommu_detach_device(ane->domain, ane->dev);
-	iommu_domain_free(ane->domain);
+	if (ane->dom_own) {
+		iommu_detach_device(ane->domain, ane->dev);
+		iommu_domain_free(ane->domain);
+	}
 	ane->domain = NULL;
+	ane->dom_own = false;
 }
 
 static int ane_h15_map_firmware(struct ane_h15 *ane)
@@ -824,18 +857,29 @@ static int ane_h15_map_firmware(struct ane_h15 *ane)
 	unsigned int i;
 	int ret;
 
-	dom = iommu_paging_domain_alloc(ane->dev);
-	if (IS_ERR(dom)) {
-		dev_err(ane->dev, "ane_h15 map_fw: no iommu domain: %ld\n", PTR_ERR(dom));
-		return PTR_ERR(dom);
+	if (ane->chan) {
+		/* The DMA API (the handshake surfaces) allocates in the default domain, so the segments go into that one and nothing is attached. */
+		dom = iommu_get_domain_for_dev(ane->dev);
+		if (!dom || !(dom->type & __IOMMU_DOMAIN_DMA_API)) {
+			dev_err(ane->dev, "ane_h15 map_fw: the ANE has no default DMA domain\n");
+			return -ENODEV;
+		}
+		dev_crit(ane->dev, "ane_h15 map the firmware into the default DMA domain of the ANE (no attach)\n");
+	} else {
+		dom = iommu_paging_domain_alloc(ane->dev);
+		if (IS_ERR(dom)) {
+			dev_err(ane->dev, "ane_h15 map_fw: no iommu domain: %ld\n", PTR_ERR(dom));
+			return PTR_ERR(dom);
+		}
+		dev_crit(ane->dev, "ane_h15 attach the ANE to a new DART domain (the DART driver programs the DART now)\n");
+		ret = iommu_attach_device(dom, ane->dev);
+		if (ret) {
+			dev_err(ane->dev, "ane_h15 map_fw: attach failed: %d\n", ret);
+			iommu_domain_free(dom);
+			return ret;
+		}
 	}
-	dev_crit(ane->dev, "ane_h15 attach the ANE to a new DART domain (the DART driver programs the DART now)\n");
-	ret = iommu_attach_device(dom, ane->dev);
-	if (ret) {
-		dev_err(ane->dev, "ane_h15 map_fw: attach failed: %d\n", ret);
-		iommu_domain_free(dom);
-		return ret;
-	}
+	ane->dom_own = !ane->chan;
 	ane->domain = dom;
 	for (i = 0; i < 2; i++) {
 		dev_crit(ane->dev, "ane_h15 iommu_map iova=%#llx pa=%#llx size=%#llx %s\n", ane->map_iova[i], ane->map_pa[i],
@@ -985,6 +1029,8 @@ struct ane_h15_rtk {
 	u32 eps[8];
 	u32 ap_state, iop_state;
 	unsigned int sent, rx;
+	int hs_ret;
+	bool hs_done;
 };
 
 static int ane_h15_rtk_send(struct ane_h15 *ane, struct ane_h15_rtk *k, u64 m0)
@@ -1119,6 +1165,383 @@ static int ane_h15_rtk_poll_once(struct ane_h15 *ane, struct ane_h15_rtk *k)
 	return ret;
 }
 
+/* ---- stage 7: the macOS SCRATCH handshake and the channel step ----
+ *
+ * The M6 module (ane/h18, PRs 195, 196, 205) found the wall this stage is for: the firmware ran RTKit, but the
+ * restartable stop got no acknowledgement and the core did not stop until the channels existed. The macOS kext, after AP
+ * power ON, allocates surfaces, publishes a 0x174 byte init block in SCRATCH0/1, writes a wake word to SCRATCH7, reads the
+ * firmware's channel table back, makes the host the owner of every host-to-firmware ring slot, writes READY to SCRATCH3
+ * and waits for the firmware to clear it. This stage does that, and with chan_cmds=1 sends PRINT_ENABLE and CONFIG_GET.
+ *
+ * Register offsets: the T6030 case (ane-type 0xc0, "AppleT6030ANEHAL", h15g) of AppleH16ANEInterface's SoC config,
+ * kernelcache 26A434 mac18g: SCRATCH0..7 = engine + 0x1840050 .. + 0x184006c, doorbell = engine + 0x1844000 (the constant
+ * its doorBellRing() writes (1 << bit) to), config size 0x380000 (the h15g case stores it). Decoded, never read or
+ * written on an H15 part. The block layout and the table layout are the M6/T6021 ones (the same kext code). The M6
+ * numbers are different (SCRATCH at engine + 0x18a0024, doorbell 0x18a4000): do not mix them up.
+ *
+ * Writes of this stage beyond stage 6: SCRATCH0, 1, 7 and 3 only (anything else refused), DMA memory it allocated,
+ * and the doorbell only for a command (chan_cmds=1). Nothing is written before the whole table checked out.
+ */
+#define ANE_H15_SCRATCH_OFF	0x1840050u
+#define ANE_H15_SCRATCH_N	8
+#define ANE_H15_DOORBELL_OFF	0x1844000u
+#define ANE_H15_HS_WAKE		0xf7fbdff9u
+#define ANE_H15_HS_READY	0x08042006u
+#define ANE_H15_HS_REQ_LIMIT	0x21
+#define ANE_H15_HS_POOL_SIZE	0x40000
+#define ANE_H15_HS_IPC_MAX	0x100000
+#define ANE_H15_HS_HEAP_MAX	0x4000000
+#define ANE_H15_HS_CFG_SIZE	0x380000
+#define ANE_H15_CH_COUNT	8
+#define ANE_H15_CH_ENTRY	0x100
+#define ANE_H15_CH_NAME_LEN	0x40
+#define ANE_H15_CH_SLOT		0x40
+#define ANE_H15_CH_MAX_SLOTS	0x400
+#define ANE_H15_CMD_BLOCK	0x4000
+#define ANE_H15_CSNE_CONFIG_GET	0x03
+#define ANE_H15_CSNE_PRINT_ENABLE 0x04
+
+struct ane_h15_ring {
+	u64 *base;
+	u64 iova;
+	u32 slots, bit, type;
+	unsigned int cursor;
+};
+
+static int ane_h15_scr_rd(struct ane_h15 *ane, unsigned int i, u32 *v)
+{
+	u32 off = ANE_H15_SCRATCH_OFF + 4 * i;
+
+	if (i >= ANE_H15_SCRATCH_N || (u64)off + 4 > ane->soc->engine_size)
+		return -EPERM;
+	dev_crit(ane->dev, "ane_h15 read SCRATCH%u pa=%#llx\n", i, ane->soc->engine_pa + off);
+	*v = readl_relaxed(ane->engine + off);
+	return 0;
+}
+
+/* a polled read: the address was logged by the first read of this word */
+static u32 ane_h15_scr_peek(struct ane_h15 *ane, unsigned int i)
+{
+	return readl_relaxed(ane->engine + ANE_H15_SCRATCH_OFF + 4 * i);
+}
+
+static int ane_h15_scr_wr(struct ane_h15 *ane, unsigned int i, u32 v)
+{
+	u32 off = ANE_H15_SCRATCH_OFF + 4 * i;
+
+	if ((i != 0 && i != 1 && i != 3 && i != 7) || (u64)off + 4 > ane->soc->engine_size)
+		return -EPERM;
+	dev_crit(ane->dev, "ane_h15 write SCRATCH%u=%#x pa=%#llx\n", i, v, ane->soc->engine_pa + off);
+	writel(v, ane->engine + off);
+	return 0;
+}
+
+static void ane_h15_hs_free(struct ane_h15 *ane)
+{
+	struct ane_h15_hs_buf *b[4] = { &ane->hs_cmd, &ane->hs_heap, &ane->hs_ipc, &ane->hs_pool };
+	unsigned int i;
+
+	for (i = 0; i < 4; i++)
+		if (b[i]->va) {
+			dma_free_coherent(ane->dev, b[i]->size, b[i]->va, b[i]->iova);
+			b[i]->va = NULL;
+		}
+}
+
+/* One zeroed surface from the DMA API, in the default domain the firmware segments are mapped in. It must not overlap a firmware segment. */
+static int ane_h15_hs_alloc(struct ane_h15 *ane, struct ane_h15_hs_buf *b, size_t size, const char *name)
+{
+	unsigned int i;
+
+	b->va = dma_alloc_coherent(ane->dev, size, &b->iova, GFP_KERNEL);
+	if (!b->va) {
+		dev_err(ane->dev, "ane_h15 handshake: allocation of %s (%#zx bytes) failed\n", name, size);
+		return -ENOMEM;
+	}
+	b->size = size;
+	dev_info(ane->dev, "ane_h15 hs surface %s size=%#zx iova=%#llx\n", name, size, (u64)b->iova);
+	for (i = 0; i < 2; i++)
+		if (b->iova < ane->map_iova[i] + ane->map_size[i] && b->iova + size > ane->map_iova[i]) {
+			dev_err(ane->dev, "ane_h15 handshake: %s overlaps firmware segment %u\n", name, i);
+			return -EBUSY;
+		}
+	return 0;
+}
+
+static void ane_h15_hs_put(struct ane_h15 *ane, u8 *blk, unsigned int off, unsigned int width, u64 v)
+{
+	dev_info(ane->dev, "ane_h15 hs block +%#x (%u bytes) = %#llx\n", off, width, v);
+	memcpy(blk + off, &v, width);	/* little endian host */
+}
+
+static const struct ane_h15_hs_buf *ane_h15_hs_find(const struct ane_h15 *ane, u64 a)
+{
+	const struct ane_h15_hs_buf *b[3] = { &ane->hs_pool, &ane->hs_ipc, &ane->hs_heap };
+	unsigned int i;
+
+	for (i = 0; i < 3; i++)
+		if (b[i]->va && a >= b[i]->iova && a < b[i]->iova + b[i]->size)
+			return b[i];
+	return NULL;
+}
+
+/* An entry of the published table: name[0x40], type u32 +0x40 (0 host to firmware, 1 firmware to host, 2 terminal), bit u32 +0x44, slots u64 +0x48,
+ * ring u64 +0x50. It has to be sane: a name, type 0 to 2, bit below 32, 1 to CH_MAX_SLOTS slots, a ring inside the surface that holds the table,
+ * aligned to a slot. */
+static int ane_h15_chan_get(struct ane_h15 *ane, const struct ane_h15_hs_buf *tb, const u8 *tp, unsigned int i, struct ane_h15_ring *r, char *name)
+{
+	const u8 *e = tp + i * ANE_H15_CH_ENTRY;
+	u32 type, bit;
+	u64 size, ring;
+
+	memcpy(name, e, ANE_H15_CH_NAME_LEN);
+	name[ANE_H15_CH_NAME_LEN - 1] = 0;
+	memcpy(&type, e + 0x40, 4);
+	memcpy(&bit, e + 0x44, 4);
+	memcpy(&size, e + 0x48, 8);
+	memcpy(&ring, e + 0x50, 8);
+	dev_info(ane->dev, "ane_h15 hs chan %u name=%s type=%u bit=%u slots=%#llx ring=%#llx\n", i, name, type, bit, size, ring);
+	if (!name[0] || type > 2 || bit >= 32 || !size || size > ANE_H15_CH_MAX_SLOTS || ring < tb->iova || ring % ANE_H15_CH_SLOT ||
+	    ring - tb->iova >= tb->size || size > (tb->size - (ring - tb->iova)) / ANE_H15_CH_SLOT)
+		return -EPROTO;
+	r->base = (u64 *)((u8 *)tb->va + (ring - tb->iova));
+	r->iova = ring;
+	r->slots = size;
+	r->bit = bit;
+	r->type = type;
+	r->cursor = 0;
+	return 0;
+}
+
+/* One command on the IO ring: the command block (id at +4, optional u32 argument at +8), slot header = its DMA address, doorbell BIT(bit), then wait for
+ * the firmware to give the slot back (header | 1) with a zero acknowledgement at +6. */
+static int ane_h15_cmd(struct ane_h15 *ane, struct ane_h15_ring *io, u16 op, u32 len, bool arg_set, u32 arg, u8 **blk)
+{
+	u64 *slot = io->base + io->cursor * 8, hdr, dma = ane->hs_cmd.iova;
+	u8 *cmd = ane->hs_cmd.va;
+	unsigned int waited;
+	u16 id, ack;
+
+	if (!chan_cmds || (u64)ANE_H15_DOORBELL_OFF + 4 > ane->soc->engine_size)
+		return -EPERM;
+	if (!(READ_ONCE(slot[0]) & 1)) {
+		dev_err(ane->dev, "ane_h15 cmd %#x: IO slot %u is not host owned (%#llx)\n", op, io->cursor, READ_ONCE(slot[0]));
+		return -EBUSY;
+	}
+	memset(cmd, 0, ANE_H15_CMD_BLOCK);
+	memcpy(cmd + 4, &op, 2);
+	if (arg_set)
+		memcpy(cmd + 8, &arg, 4);
+	WRITE_ONCE(slot[1], len);
+	WRITE_ONCE(slot[2], len);
+	dma_wmb();
+	WRITE_ONCE(slot[0], dma);
+	dma_wmb();
+	dev_crit(ane->dev, "ane_h15 write doorbell BIT(%u) pa=%#llx for command %#x slot %u block iova %#llx\n", io->bit,
+		 ane->soc->engine_pa + ANE_H15_DOORBELL_OFF, op, io->cursor, (u64)dma);
+	writel(BIT(io->bit), ane->engine + ANE_H15_DOORBELL_OFF);
+	for (waited = 0; waited < hs_wait_ms; waited++) {
+		hdr = READ_ONCE(slot[0]);
+		if (hdr & 1) {
+			dma_rmb();
+			memcpy(&id, cmd + 4, 2);
+			memcpy(&ack, cmd + 6, 2);
+			dev_info(ane->dev, "ane_h15 cmd %#x answered after %ums: header=%#llx words=%#llx,%#llx id=%#x ack=%#x\n", op, waited, hdr,
+				 READ_ONCE(slot[1]), READ_ONCE(slot[2]), id, ack);
+			io->cursor = (io->cursor + 1) % io->slots;
+			*blk = cmd;
+			return (hdr == (dma | 1) && READ_ONCE(slot[1]) == len && READ_ONCE(slot[2]) == 0 && id == op && !ack) ? 0 : -EPROTO;
+		}
+		usleep_range(500, 1000);
+	}
+	dev_err(ane->dev, "ane_h15 cmd %#x: no answer within %ums (header %#llx)\n", op, hs_wait_ms, READ_ONCE(slot[0]));
+	return -ETIMEDOUT;
+}
+
+/* The kext's step after it created its channels: the host owns every H2T slot, writes READY to SCRATCH3 and waits until the firmware clears it. With
+ * chan_cmds then PRINT_ENABLE and CONFIG_GET. Nothing is written before the whole table checked out. Returns 0 only when every requested step worked. */
+static int ane_h15_chan_step(struct ane_h15 *ane, const struct ane_h15_hs_buf *tb, u64 table)
+{
+	const u8 *tp = (u8 *)tb->va + (table - tb->iova);
+	struct ane_h15_ring io = { 0 }, rings[ANE_H15_CH_COUNT];
+	unsigned int i, j, waited;
+	bool have_io = false;
+	char name[ANE_H15_CH_NAME_LEN];
+	u32 v = 0, s3 = ~0u;
+	u8 *blk;
+	int ret;
+
+	if (tb->iova + tb->size - table < (u64)ANE_H15_CH_COUNT * ANE_H15_CH_ENTRY) {
+		dev_err(ane->dev, "ane_h15 chan: the table does not fit in its surface\n");
+		return -EPROTO;
+	}
+	for (i = 0; i < ANE_H15_CH_COUNT; i++) {
+		ret = ane_h15_chan_get(ane, tb, tp, i, &rings[i], name);
+		if (ret) {
+			dev_err(ane->dev, "ane_h15 chan: entry %u is not a ring of the table surface, nothing written\n", i);
+			return ret;
+		}
+		if (!strcmp(name, "IO") && rings[i].type == 0) {
+			io = rings[i];
+			have_io = true;
+		}
+	}
+	/* the rings must not overlap the table entries or each other: the ownership loop below writes into every H2T ring */
+	for (i = 0; i < ANE_H15_CH_COUNT; i++) {
+		u64 lo = rings[i].iova, hi = lo + (u64)rings[i].slots * ANE_H15_CH_SLOT;
+
+		if (lo < table + (u64)ANE_H15_CH_COUNT * ANE_H15_CH_ENTRY && hi > table) {
+			dev_err(ane->dev, "ane_h15 chan: ring %u overlaps the table, nothing written\n", i);
+			return -EPROTO;
+		}
+		for (j = 0; j < i; j++)
+			if (lo < rings[j].iova + (u64)rings[j].slots * ANE_H15_CH_SLOT && hi > rings[j].iova) {
+				dev_err(ane->dev, "ane_h15 chan: ring %u overlaps ring %u, nothing written\n", i, j);
+				return -EPROTO;
+			}
+	}
+	if (chan_cmds && !have_io) {
+		dev_err(ane->dev, "ane_h15 chan: no IO ring of type 0 in the table, nothing written\n");
+		return -EPROTO;
+	}
+	for (i = 0; i < ANE_H15_CH_COUNT; i++) {
+		if (rings[i].type)
+			continue;
+		for (j = 0; j < rings[i].slots; j++) {
+			u8 *e = (u8 *)rings[i].base + j * ANE_H15_CH_SLOT;
+
+			memset(e, 0, 24);
+			e[0] = 1;
+		}
+	}
+	wmb();
+	ret = ane_h15_scr_wr(ane, 3, ANE_H15_HS_READY);
+	if (ret)
+		return ret;
+	for (waited = 0; waited < hs_wait_ms; waited++) {
+		usleep_range(1000, 1100);
+		s3 = ane_h15_scr_peek(ane, 3);
+		if (!s3)
+			break;
+	}
+	dev_info(ane->dev, "ane_h15 chan: SCRATCH3 reads %#x after %ums\n", s3, waited);
+	if (s3)
+		return -EIO;
+	if (!chan_cmds)
+		return 0;
+	ret = ane_h15_hs_alloc(ane, &ane->hs_cmd, ANE_H15_CMD_BLOCK, "CMD");
+	if (ret)
+		return ret;
+	ret = ane_h15_cmd(ane, &io, ANE_H15_CSNE_PRINT_ENABLE, 12, true, 0, &blk);
+	if (ret)
+		return ret == -EPROTO || ret == -ETIMEDOUT || ret == -EBUSY ? -EIO : ret;
+	ret = ane_h15_cmd(ane, &io, ANE_H15_CSNE_CONFIG_GET, 16, false, 0, &blk);
+	if (ret)
+		return ret == -EPROTO || ret == -ETIMEDOUT || ret == -EBUSY ? -EIO : ret;
+	memcpy(&v, blk + 8, 4);
+	dev_info(ane->dev, "ane_h15 chan: CONFIG_GET reply u32 at +8 = %#x (the kext reads it as the tick rate)\n", v);
+	return 0;
+}
+
+/* The macOS handshake after READY: surfaces IPC (max(page, SCRATCH1 + 1) bytes) and HEAP (SCRATCH3 bytes), the 0x174 byte init block taken from a pool
+ * surface, then SCRATCH0 (low), SCRATCH1 (high), the wake word in SCRATCH7. Needs the core running with AP power ON acknowledged. Returns 0 only when the
+ * firmware published a table address and the channel step worked. */
+static int ane_h15_chan_run(struct ane_h15 *ane, struct ane_h15_rtk *k)
+{
+	u32 w[ANE_H15_SCRATCH_N], cur[3], last[3] = { 0xffffffffu, 0xffffffffu, 0xffffffffu };
+	unsigned int i, waited;
+	const struct ane_h15_hs_buf *tb;
+	u64 ipc_size, heap_size, pub, table = 0;
+	bool answered = false;
+	u8 *blk;
+	int ret;
+
+	for (i = 0; i < ANE_H15_SCRATCH_N; i++) {
+		ret = ane_h15_scr_rd(ane, i, &w[i]);
+		if (ret)
+			return ret;
+		dev_info(ane->dev, "ane_h15 hs SCRATCH%u=%#x\n", i, w[i]);
+	}
+	if (w[7] != ANE_H15_HS_READY) {
+		dev_err(ane->dev, "ane_h15 handshake: SCRATCH7=%#x, not the READY value %#x yet, the requests in SCRATCH1 and SCRATCH3 are not valid\n", w[7], ANE_H15_HS_READY);
+		return -EAGAIN;
+	}
+	if (w[0] >= ANE_H15_HS_REQ_LIMIT) {
+		dev_err(ane->dev, "ane_h15 handshake: SCRATCH0=%#x is not below %#x, not going on\n", w[0], ANE_H15_HS_REQ_LIMIT);
+		return -EOPNOTSUPP;
+	}
+	ipc_size = ALIGN((u64)w[1] + 1 > PAGE_SIZE ? (u64)w[1] + 1 : PAGE_SIZE, PAGE_SIZE);
+	heap_size = w[3] ? ALIGN(w[3] > PAGE_SIZE ? (u64)w[3] : PAGE_SIZE, PAGE_SIZE) : 0;
+	if (ipc_size > ANE_H15_HS_IPC_MAX || heap_size > ANE_H15_HS_HEAP_MAX) {
+		dev_err(ane->dev, "ane_h15 handshake: firmware asks for IPC %#llx and HEAP %#llx bytes, above the limits %#x and %#x\n", ipc_size, heap_size,
+			ANE_H15_HS_IPC_MAX, ANE_H15_HS_HEAP_MAX);
+		return -E2BIG;
+	}
+	ret = dma_set_mask_and_coherent(ane->dev, DMA_BIT_MASK(42));
+	if (ret) {
+		dev_err(ane->dev, "ane_h15 handshake: no 42 bit DMA mask: %d\n", ret);
+		return ret;
+	}
+	ret = ane_h15_hs_alloc(ane, &ane->hs_pool, ANE_H15_HS_POOL_SIZE, "POOL");
+	if (!ret)
+		ret = ane_h15_hs_alloc(ane, &ane->hs_ipc, ipc_size, "IPC");
+	if (!ret && heap_size)
+		ret = ane_h15_hs_alloc(ane, &ane->hs_heap, heap_size, "HEAP");
+	if (ret)
+		return ret;			/* freed after the core stopped */
+	blk = ane->hs_pool.va;
+	/* The block layout of ane_t6021_boot.h, which the T8152 kext shares and so does this one (decode of ANE_Init). Everything not listed stays zero. */
+	ane_h15_hs_put(ane, blk, 0x00, 8, ane->map_iova[0]);		/* firmware surface */
+	ane_h15_hs_put(ane, blk, 0x08, 8, ane->hs_ipc.iova);
+	ane_h15_hs_put(ane, blk, 0x10, 8, ANE_H15_HS_CFG_SIZE);
+	ane_h15_hs_put(ane, blk, 0x18, 8, 0x10000000ULL - ANE_H15_HS_CFG_SIZE);
+	ane_h15_hs_put(ane, blk, 0x20, 8, heap_size ? ane->hs_heap.iova : 0);
+	ane_h15_hs_put(ane, blk, 0x28, 8, w[3]);
+	ane_h15_hs_put(ane, blk, 0x30, 4, 0);				/* previous firmware length, first boot */
+	ane_h15_hs_put(ane, blk, 0x50, 8, (u64)w[1] + 1);		/* ordinal */
+	ane_h15_hs_put(ane, blk, 0x58, 8, ane->hs_pool.iova);
+	ane_h15_hs_put(ane, blk, 0x60, 8, ANE_H15_HS_POOL_SIZE);	/* first qword of the pool object, as T6021 */
+	ane_h15_hs_put(ane, blk, 0x68, 4, 0x40);
+	ane_h15_hs_put(ane, blk, 0x6c + 0xc0, 4, 4);			/* template word +0xc0, the template is otherwise zero */
+	pub = ane->hs_pool.iova;
+	dev_info(ane->dev, "ane_h15 handshake: init block at iova %#llx (IPC %#llx bytes, HEAP %#llx bytes)\n", pub, ipc_size, heap_size);
+	wmb();
+	ret = ane_h15_scr_wr(ane, 0, (u32)pub);
+	if (!ret)
+		ret = ane_h15_scr_wr(ane, 1, (u32)(pub >> 32));
+	if (!ret)
+		ret = ane_h15_scr_wr(ane, 7, ANE_H15_HS_WAKE);
+	if (ret)
+		return ret;
+	for (waited = 0; waited < hs_wait_ms; waited++) {
+		usleep_range(1000, 1100);
+		cur[0] = ane_h15_scr_peek(ane, 0);
+		cur[1] = ane_h15_scr_peek(ane, 1);
+		cur[2] = ane_h15_scr_peek(ane, 7);
+		if (cur[0] != last[0] || cur[1] != last[1] || cur[2] != last[2]) {
+			dev_info(ane->dev, "ane_h15 handshake t+%ums SCRATCH0=%#x SCRATCH1=%#x SCRATCH7=%#x\n", waited + 1, cur[0], cur[1], cur[2]);
+			memcpy(last, cur, sizeof(last));
+		}
+		ane_h15_rtk_poll_once(ane, k);			/* log whatever the firmware sends now */
+		table = ((u64)cur[1] << 32) | cur[0];
+		if (table != pub && cur[2] == ANE_H15_HS_READY) {
+			answered = true;
+			break;
+		}
+	}
+	if (!answered) {
+		dev_err(ane->dev, "ane_h15 handshake: no table address within %ums\n", hs_wait_ms);
+		return -ETIMEDOUT;
+	}
+	tb = ane_h15_hs_find(ane, table);
+	if (!tb) {
+		dev_err(ane->dev, "ane_h15 handshake: the table address %#llx is outside the surfaces allocated here\n", table);
+		return -EIO;
+	}
+	dev_info(ane->dev, "ane_h15 handshake: table address %#llx is in a surface of %#zx bytes at %#llx\n", table, tb->size, (u64)tb->iova);
+	return ane_h15_chan_step(ane, tb, table);
+}
+
 /* Start phase until AP power ON is acknowledged and the application endpoints are started (plus 100 ms to log what
  * follows), then the shutdown phase. The caller clears RUN afterwards. */
 static void ane_h15_rtk_session(struct ane_h15 *ane, struct ane_h15_rtk *k)
@@ -1134,6 +1557,11 @@ static void ane_h15_rtk_session(struct ane_h15 *ane, struct ane_h15_rtk *k)
 	}
 	dev_info(ane->dev, "ane_h15 rtkit session: hello=%d epmap_last=%d ap_on=%d app_started=%d sent=%u after %ums\n",
 		 k->hello, k->epmap_last, k->ap_on, k->app_started, k->sent, waited);
+	if (k->ap_on && ane->chan) {
+		k->hs_ret = ane_h15_chan_run(ane, k);
+		k->hs_done = true;
+		dev_info(ane->dev, "ane_h15 handshake result %d\n", k->hs_ret);
+	}
 	if (!k->ap_on)
 		return;			/* no session to shut down */
 	k->shutdown = true;
@@ -1169,11 +1597,19 @@ static int ane_h15_run_common(struct ane_h15 *ane, unsigned int stg)
 		ane_h15_result(ane, stg, "REFUSED", "run_wait_ms 10 to 2000");
 		return -EINVAL;
 	}
-	if (stg == 6 && !confirm_rtkit) {
+	if (stg >= 6 && !confirm_rtkit) {
 		ane_h15_result(ane, stg, "REFUSED", "confirm_rtkit=1 required");
 		return -EPERM;
 	}
-	if (stg == 6 && (rtkit_wait_ms < 100 || rtkit_wait_ms > 10000 || rtkit_stop < 1 || rtkit_stop > 2)) {
+	if (stg == 7 && !confirm_chan) {
+		ane_h15_result(ane, stg, "REFUSED", "confirm_chan=1 required");
+		return -EPERM;
+	}
+	if (stg == 7 && (!map_fw || hs_wait_ms < 10 || hs_wait_ms > 5000)) {
+		ane_h15_result(ane, stg, "REFUSED", "stage 7 needs map_fw=1 and hs_wait_ms 10 to 5000");
+		return -EINVAL;
+	}
+	if (stg >= 6 && (rtkit_wait_ms < 100 || rtkit_wait_ms > 10000 || rtkit_stop < 1 || rtkit_stop > 2)) {
 		ane_h15_result(ane, stg, "REFUSED", "rtkit_wait_ms 100 to 10000, rtkit_stop 1 or 2");
 		return -EINVAL;
 	}
@@ -1181,6 +1617,7 @@ static int ane_h15_run_common(struct ane_h15 *ane, unsigned int stg)
 		ane_h15_result(ane, stg, "REFUSED", "no measured RVBAR for this SoC row: run stage 2 and report it");
 		return -ENODEV;
 	}
+	ane->chan = stg == 7;
 	if (map_fw) {
 		if (!device_iommu_mapped(ane->dev)) {
 			dev_err(ane->dev, "ane_h15 map_fw: the node has no iommus (no DART client): use the DART overlay\n");
@@ -1274,7 +1711,7 @@ static int ane_h15_run_common(struct ane_h15 *ane, unsigned int stg)
 		ane_h15_result(ane, stg, "FAIL", "write-refused");
 		return ret;
 	}
-	if (stg == 6) {
+	if (stg >= 6) {
 		ane_h15_rtk_session(ane, &rtk);
 		ret = ane_h15_read_word(ane, "CPU_STATUS", s->cpu_status, &st);
 		if (!ret && !(st & ANE_H15_ST_STOPPED))
@@ -1335,8 +1772,9 @@ static int ane_h15_run_common(struct ane_h15 *ane, unsigned int stg)
 	}
 	ane->fw_started = false;
 	ane->fw_touched = false;
+	ane_h15_hs_free(ane);		/* only after the core stopped: a running core may still write into these surfaces */
 	ane_h15_unmap_firmware(ane);
-	if (stg == 6) {
+	if (stg >= 6) {
 		if (!rtk.hello) {
 			ane_h15_result(ane, stg, "FAIL", "rtkit-no-hello");
 			return -ETIMEDOUT;
@@ -1349,7 +1787,11 @@ static int ane_h15_run_common(struct ane_h15 *ane, unsigned int stg)
 			ane_h15_result(ane, stg, "FAIL", "rtkit-shutdown-incomplete");
 			return -EIO;
 		}
-		ane_h15_result(ane, stg, "PASS", "rtkit-session-and-shutdown");
+		if (stg == 7 && rtk.hs_ret) {
+			ane_h15_result(ane, stg, "FAIL", rtk.hs_ret == -ETIMEDOUT ? "handshake-no-table-address" : rtk.hs_ret == -EAGAIN ? "handshake-not-ready" : "handshake-not-done");
+			return rtk.hs_ret;
+		}
+		ane_h15_result(ane, stg, "PASS", stg == 7 ? "rtkit-channels-and-shutdown" : "rtkit-session-and-shutdown");
 		return 0;
 	}
 	ane_h15_result(ane, stg, "PASS", started_seen ? "core-started-and-stopped" : "core-never-left-stopped");
@@ -1364,6 +1806,11 @@ static int ane_h15_stage_run(struct ane_h15 *ane)
 static int ane_h15_stage_rtkit(struct ane_h15 *ane)
 {
 	return ane_h15_run_common(ane, 6);
+}
+
+static int ane_h15_stage_chan(struct ane_h15 *ane)
+{
+	return ane_h15_run_common(ane, 7);
 }
 
 /* ---- driver ---- */
@@ -1467,6 +1914,7 @@ static int ane_h15_probe(struct platform_device *pdev)
 	else if (stage_idx == 4)  ret = ane_h15_stage_dart(ane);
 	else if (stage_idx == 5)  ret = ane_h15_stage_run(ane);
 	else if (stage_idx == 6)  ret = ane_h15_stage_rtkit(ane);
+	else if (stage_idx == 7)  ret = ane_h15_stage_chan(ane);
 	else                      ret = ane_h15_stage_boot(ane);
 
 	/* A started core that did not stop keeps its power claim (and its windows, see remove()). */
@@ -1518,5 +1966,5 @@ static struct platform_driver ane_h15_driver = {
 module_platform_driver(ane_h15_driver);
 
 MODULE_AUTHOR("Joshua Warren");
-MODULE_DESCRIPTION("OPT-IN EXPERIMENTAL Apple H15-family ANE bring-up module (dt/status/wrapper/boot/dart/run/rtkit; no inference)");
+MODULE_DESCRIPTION("OPT-IN EXPERIMENTAL Apple H15-family ANE bring-up module (dt/status/wrapper/boot/dart/run/rtkit/chan; no inference)");
 MODULE_LICENSE("Dual MIT/GPL");
