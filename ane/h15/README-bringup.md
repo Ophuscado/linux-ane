@@ -98,6 +98,22 @@ template is `ane/h16/`.
   domains and mappings, logs `reboot required`, `remove()` refuses and the module is pinned
   with `__module_get` (an `rmmod` would otherwise free the code under a running core).
 
+- `stage=6` or `stage=rtkit`: stage 5 (all of its gates, `map_fw`, `fw_seg`) plus an RTKit management
+  session over the ASC mailbox, behind `confirm_run=1` AND `confirm_rtkit=1`. It is the first stage that
+  writes the mailbox: the two send registers (A2I_SEND0 at wrapper + 0x8800, then A2I_SEND1 at + 0x8808, 64-bit;
+  the apple-mailbox v4 layout the other T6030 ASCs use, INFERRED for the ANE, never written on an H15 part), at most 16
+  messages, never while A2I_CTRL reads FULL, only management-endpoint messages. After RUN it answers the firmware's
+  HELLO (version 12; refused if the firmware's range excludes it) and endpoint map, starts the system endpoints it
+  announced, answers the IOP power ON acknowledgement with AP power ON, starts the application endpoints once that is
+  acknowledged, then shuts the session down before it clears RUN: `rtkit_stop=1` (default) AP QUIESCED then IOP SLEEP,
+  restartable; `rtkit_stop=2` OFF then OFF, the core cannot be restarted until a reboot. It answers no buffer request
+  (the crash log request stays unanswered) and no message of another endpoint. `rtkit_wait_ms` (100 to 10000, default
+  2000) bounds the start phase. Verdicts: `PASS rtkit-session-and-shutdown`; `FAIL rtkit-no-hello` (the firmware
+  said nothing: the mailbox layout or the transport may be wrong, nothing was answered), `rtkit-session-incomplete`,
+  `rtkit-shutdown-incomplete` (the core is still stopped by clearing RUN), or `core-not-stopped` (reboot). The M6
+  runs this session on its Postoffice (ane/h18); the H15 transport is the unknown. **Run it only after a stage 5 result
+  with a mailbox message in it.**
+
 ## Build (host cross build)
 
     make -C ane/h15 KERNELDIR=<kernel tree> ARCH=arm64 \

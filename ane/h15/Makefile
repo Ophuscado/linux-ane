@@ -214,6 +214,34 @@ sim-mutation-map-nostoppedcheck:
 sim-mutation-map-noiommus:
 	$(call pd_mutant,map-noiommus,s/if (!device_iommu_mapped(ane->dev)) {/if (0 \/* NEG: iommus not required *\/) {/,NEG: iommus not required,neg-map)
 
+# Stage 6 (confirm_rtkit=1): the RTKit session over the wrapper mailbox. neg-rtkit = refusals, odd firmware, stuck core.
+sim-negative-rtkit: sim/sim_h15
+	./sim/sim_h15 neg-rtkit
+
+# stage 6 runs without confirm_rtkit=1
+sim-mutation-rtk-noconfirm:
+	$(call pd_mutant,rtk-noconfirm,s/if (stg == 6 \&\& !confirm_rtkit) {/if (0 \/* NEG: confirm_rtkit ignored *\/) {/,NEG: confirm_rtkit ignored,neg-rtkit)
+
+# HELLO is answered whatever versions the firmware offers
+sim-mutation-rtk-nover:
+	$(call pd_mutant,rtk-nover,s/if (minv > ANE_H15_RTK_VERSION || maxv < ANE_H15_RTK_VERSION) {/if (0 \/* NEG: version check skipped *\/) {/,NEG: version check skipped,neg-rtkit)
+
+# no cap on the management messages sent
+sim-mutation-rtk-nocap:
+	$(call pd_mutant,rtk-nocap,s/if (k->sent >= ANE_H15_RTK_MAXSEND) {/if (0 \/* NEG: send cap removed *\/) {/,NEG: send cap removed,neg-rtkit)
+
+# the send registers are written while A2I reads FULL
+sim-mutation-rtk-nofull:
+	$(call pd_mutant,rtk-nofull,s/if (a2i \& ANE_H15_MBOX_FULL) {/if (0 \/* NEG: FULL ignored *\/) {/,NEG: FULL ignored,neg-rtkit)
+
+# the shutdown handshake is skipped
+sim-mutation-rtk-noshutdown:
+	$(call pd_mutant,rtk-noshutdown,s/if (!k->ap_on)/if (1 \/* NEG: shutdown skipped *\/)/,NEG: shutdown skipped,pos)
+
+# messages of other endpoints are treated as management messages (the crash log request gets answered)
+sim-mutation-rtk-anyep:
+	$(call pd_mutant,rtk-anyep,s/if (m1 \& 0xff)/if (0 \/* NEG: any endpoint answered *\/)/,NEG: any endpoint answered,pos)
+
 sim-negative-nopsguard:
 	rm -rf /tmp/ane_h15-nopsguard && mkdir -p /tmp/ane_h15-nopsguard
 	cp -r sim /tmp/ane_h15-nopsguard/sim
@@ -280,5 +308,6 @@ clean:
 	sim-negative-dart sim-mutation-run-nodartgate sim-mutation-dart-nottbr \
 	sim-mutation-dart-noconfirm sim-mutation-run-nopin sim-negative-map sim-mutation-map-noundo \
 	sim-mutation-map-noramcheck sim-mutation-map-textrw sim-mutation-map-nooverlap \
-	sim-mutation-map-noiommus sim-mutation-map-nostoppedcheck clean
+	sim-mutation-map-noiommus sim-mutation-map-nostoppedcheck sim-negative-rtkit sim-mutation-rtk-noconfirm sim-mutation-rtk-nover \
+	sim-mutation-rtk-nocap sim-mutation-rtk-nofull sim-mutation-rtk-noshutdown sim-mutation-rtk-anyep clean
 endif
