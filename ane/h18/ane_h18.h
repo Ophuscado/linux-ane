@@ -54,6 +54,10 @@
 /* The alias bank: the same Postoffice window at +0x10000, channel 2 * msgbox-mailbox-num. For this ANE the ADT has msgbox-using-postoffice and no
  * msgbox-using-alias, which the AppleASCWrapV8 constructor turns into base + 0x10000 and channel 2 * num (0x316010c00 for ANE0). */
 #define ANE_H18_PO_ALIAS_OFF	0x10000
+/* The eight SCRATCH words of the engine block (macOS handshake registers): engine + 0x18a0024 to +0x18a0040 for ane-type 0x310 (h18g), the table the
+ * AppleH16ANEInterface kext stores for this SoC. Read only here, in the page at scratch_pa. */
+#define ANE_H18_SCRATCH_OFF	0x24
+#define ANE_H18_SCRATCH_N	8
 /* ANE DART (dart,gen3, instance 0): read only liveness words, see ane_h18_read_dart_words(). */
 #define ANE_H18_DART_NREAD	12
 /* Postoffice channel layout used for the RTKit exchange, as drivers/soc/apple/mailbox.c has it for the T8152 counted FIFO: RX (the outbox, firmware to host)
@@ -100,6 +104,8 @@ struct ane_h18_soc {
 	u32 mbox_size;
 	u64 engine_pa;
 	u32 engine_size;
+	u64 scratch_pa;		/* the page of the engine block that holds SCRATCH0 to 7 */
+	u32 scratch_size;
 	u64 dart_pa;		/* ANE DART instance 0 (ADT /arm-io/dart-ane reg[0]) */
 	u32 dart_size;
 	u32 mbox_num;		/* ADT msgbox-mailbox-num */

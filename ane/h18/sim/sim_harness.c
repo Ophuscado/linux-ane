@@ -123,6 +123,7 @@ static void reset_all(void)
 	read_dart = false;
 	alias_mbox = false;
 	rtkit_hello = false;
+	read_scratch = false;
 	rtkit_start = false;
 	rtkit_stop = 0;
 	sim_n_tx_msgs = sim_idle_sent = sim_stop_needs_idle = sim_no_shutdown_reply = 0;
@@ -747,6 +748,37 @@ static void pos_boot(void)
 		ret = probe_now();
 		chk(ret != 0 && result("boot", "FAIL", "core-not-stopped") && log_count("ap_acked=0 iop_acked=0") == 1 && sim_n_tx_msgs == 7, "R5 boot rtkit_stop: no shutdown answer gives FAIL core-not-stopped, AP QUIESCED sent once, no IOP SLEEP");
 	}
+	/* read_scratch: three reads of eight words, read only, with both slots on; none without the option */
+	boot_setup();
+	alias_mbox = true;
+	rtkit_hello = true;
+	rtkit_start = true;
+	read_scratch = true;
+	sim_start_chan = 536;
+	sim_start_hello = 3;
+	ret = probe_now();
+	chk(ret == 0 && events_in(SIM_SCRATCH_PA, SIM_SCRATCH_SIZE, 0) == 3 * ANE_H18_SCRATCH_N && events_in(SIM_SCRATCH_PA, SIM_SCRATCH_SIZE, 1) == 0 && sim_faults == 0,
+	    "S1 boot read_scratch: three phases of eight SCRATCH reads, no write, zero faults");
+	chk(log_count("CRIT: ane_h18 read SCRATCH0_pre pa=0x4198a0024") == 1 && log_count("CRIT: ane_h18 read SCRATCH7_apon pa=0x4198a0040") == 1 && log_count("CRIT: ane_h18 read SCRATCH0_end pa=0x4198a0024") == 1,
+	    "S1 boot read_scratch: the addresses engine + 0x18a0024 to +0x18a0040 are logged before each read, in the phases pre, apon and end");
+	{
+		int k, first_scratch = -1, run = -1;
+
+		for (k = 0; k < sim_n_events; k++) {
+			if (first_scratch < 0 && sim_in(sim_events[k].pa, SIM_SCRATCH_PA, SIM_SCRATCH_SIZE))
+				first_scratch = k;
+			if (sim_events[k].write == 1 && sim_events[k].pa == sim_asc_pa + 0x44 && sim_events[k].val == 0x10)
+				run = k;
+		}
+		chk(first_scratch > 0 && first_scratch < run, "S1 boot read_scratch: the first SCRATCH read comes before the RUN write");
+	}
+	boot_setup();
+	alias_mbox = true;
+	rtkit_hello = true;
+	sim_start_chan = 536;
+	sim_start_hello = 3;
+	ret = probe_now();
+	chk(ret == 0 && events_in(SIM_SCRATCH_PA, SIM_SCRATCH_SIZE, 0) == 0, "S2 boot: no SCRATCH access without read_scratch");
 	/* without rtkit_hello the messages are only logged */
 	boot_setup();
 	alias_mbox = true;
