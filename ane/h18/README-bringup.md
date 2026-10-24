@@ -67,6 +67,9 @@ else in the ASC, IORVBAR or mailbox windows.
     (id at +4, argument at +8), the doorbell is BIT(bit of the IO entry) written to engine + 0x18a4000, and the answer is the slot header with bit 0 set and a zero
     acknowledgement at +6. The doorbell address comes from the decode of the M6 kext and has never been written on this board. CONFIG_GET returns the tick rate at +8.
     START is not sent, because the firmware may ask for memory on the shared-memory ring and this module does not answer that ring.
+  - `hs_start=1` (needs `hs_cmds=1`): the kext's order of commands, PRINT_ENABLE, START, CONFIG_GET and RESOURCE_INFO_GET. START has no payload. RESOURCE_INFO_GET is
+    a 100 byte command, and its reply is logged in 16 byte lines (the kext copies 16 bytes from +0x20 and +0x50). START starts the firmware's services and can bring
+    more memory requests, which the polling answers. On the M6 the first two commands, PRINT_ENABLE and CONFIG_GET, were answered and CONFIG_GET returned 0x16e3600.
   - After the channel step the module polls the doorbell side every millisecond while it waits. That is 100 ms after SCRATCH3 and the whole wait of each command.
     It answers the firmware's requests on the SHAREDMALLOC ring. A MALLOC gets a DMA buffer of up to 2 MiB (at most 16 buffers and 64 MiB) and an ordinal. A FREE
     gets the answer the firmware waits for with no timeout. Each answer rings the ring's doorbell bit. A pending IPI value is written to the ack register at

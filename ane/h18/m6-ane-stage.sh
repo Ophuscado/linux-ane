@@ -3,7 +3,7 @@
 # m6-ane-stage.sh: run ONE ane_h18 stage on the M6 (T8152), as root, and collect the log.
 #   m6-ane-stage.sh <1|2|3> <boot-id prefix> [GO [state [slots [mbox [ctrl]]]]]
 #   m6-ane-stage.sh 4 <boot-id prefix> GO [state [slots [wait_ms [dart [hello [scratch]]]]]]
-#   m6-ane-stage.sh 5 <boot-id prefix> GO [state [slots [wait_ms [dart [hello [scratch [handshake [chan]]]]]]]]
+#   m6-ane-stage.sh 5 <boot-id prefix> GO [state [slots [wait_ms [dart [hello [scratch [handshake [chan]]]]]]]]   (chan 0 to 3)
 # Step 1 = stage dt (no MMIO), step 2 = stage psd (read-only PSD slots 30 and 31), step 3 = stage power with
 # confirm_power=1 (requests PSD state <state> on the first <slots> slots, default 1 = slot 30 only, then reads CPU_STATUS,
 # ASC_STATUS and IORVBAR; mbox=1 also reads the Postoffice status words of three candidate channels, ctrl=1 also reads CPU_CONTROL).
@@ -21,7 +21,8 @@
 # handshake=1 (step 5 only, with scratch=1 and hello 3 or 4) runs the SCRATCH handshake once AP power ON is acknowledged: it allocates the IPC and HEAP
 # surfaces and the init block, writes SCRATCH0, SCRATCH1 and the wake word, and waits for the firmware's table address. It WRITES the SCRATCH words.
 # chan=1 (needs handshake=1) then checks the table, hands the host-to-firmware rings to the host, writes READY to SCRATCH3 and waits for the firmware to clear it.
-# chan=2 also sends PRINT_ENABLE and CONFIG_GET on the IO ring (it WRITES ring slots and the doorbell page). Both write; a hang or reset is possible.
+# chan=2 also sends PRINT_ENABLE and CONFIG_GET on the IO ring (it WRITES ring slots and the doorbell page). chan=3 sends START and RESOURCE_INFO_GET as well.
+# All of them write; a hang or reset is possible.
 # The state defaults to 1: the AppleT8152PMGR kext decode in the lab receipts reads "on" as request 1 (or 2) for these slots,
 # and names 1 as the first experiment. 0 is the value proven for the ATC USB slot 71 and GPU slot 3, 2 is the GPU ASC value.
 # Step 3 needs the literal third argument GO (the operator's go-ahead) and a step 2 PASS on this boot. It may run again on
@@ -43,7 +44,7 @@ fi
 
 WORK=${WORK:-/var/tmp/m6-ane}
 KO=${KO:-$WORK/ane_h18.ko}
-KO_SHA256=${KO_SHA256:-93b17fb3665c8155d6ad00835a5981fb48fc181c0d9ffcad958a2d1957d7bcd7}
+KO_SHA256=${KO_SHA256:-ea36b1a89c5a0bf0e2472d8fabe79e70a2ff9200dec8a4f3977575020691d29c}
 WANT_UNAME=${WANT_UNAME:-7.1.12-aurora-m6usb-ARCH}
 UNAME_R=${UNAME_R:-$(uname -r)}
 BOOT_ID_FILE=${BOOT_ID_FILE:-/proc/sys/kernel/random/boot_id}
@@ -78,7 +79,7 @@ if [ "$step" = 4 ]; then
   [ "$wait_ms" -ge 10 ] && [ "$wait_ms" -le 2000 ] || die "wait_ms must be 10 to 2000"
   case "$scratch" in 0|1) ;; *) die "scratch must be 0 or 1" ;; esac
   case "$handshake" in 0|1) ;; *) die "handshake must be 0 or 1" ;; esac
-  case "$chan" in 0|1|2) ;; *) die "chan must be 0, 1 or 2" ;; esac
+  case "$chan" in 0|1|2|3) ;; *) die "chan must be 0 to 3" ;; esac
   [ "$chan" = 0 ] || [ "$handshake" = 1 ] || die "chan=1 or 2 needs handshake=1"
   if [ "$handshake" = 1 ]; then
     [ "$fw" = 1 ] && [ "$scratch" = 1 ] && { [ "$hello" = 3 ] || [ "$hello" = 4 ]; } || die "handshake=1 needs step 5, scratch=1 and hello 3 or 4"
@@ -136,7 +137,8 @@ case "$step" in
      [ "$scratch" = 1 ] && args="$args read_scratch=1"
      [ "$handshake" = 1 ] && args="$args handshake=1"
      [ "$chan" -ge 1 ] && args="$args hs_chan=1"
-     [ "$chan" = 2 ] && args="$args hs_cmds=1"
+     [ "$chan" -ge 2 ] && args="$args hs_cmds=1"
+     [ "$chan" = 3 ] && args="$args hs_start=1"
      [ "$hello" = 0 ] || args="$args rtkit_hello=1"
      [ "$hello" -ge 2 ] && args="$args rtkit_start=1"
      [ "$hello" = 3 ] && args="$args rtkit_stop=1"

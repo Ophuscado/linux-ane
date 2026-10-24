@@ -115,6 +115,10 @@ static bool hs_cmds;
 module_param(hs_cmds, bool, 0444);
 MODULE_PARM_DESC(hs_cmds, "Stage=boot with hs_chan=1: send PRINT_ENABLE (0) and CONFIG_GET on the IO ring, one 64 byte slot each, doorbell BIT(bit) at engine + 0x18a4000, and log the replies. Writes the doorbell. Default off.");
 
+static bool hs_start;
+module_param(hs_start, bool, 0444);
+MODULE_PARM_DESC(hs_start, "Stage=boot with hs_cmds=1: send the commands in the kext's order, PRINT_ENABLE, START, CONFIG_GET, RESOURCE_INFO_GET, and log the RESOURCE_INFO_GET reply. START starts the firmware's services and can bring more memory requests. Default off: PRINT_ENABLE and CONFIG_GET only.");
+
 static bool map_fw;
 module_param(map_fw, bool, 0444);
 MODULE_PARM_DESC(map_fw, "Stage=boot: before RUN, attach the ANE to its DART through the iommu API and map the two preloaded firmware segments at their IOVAs. Needs power-domains and iommus in the node. Default off.");
@@ -1096,18 +1100,40 @@ static int ane_h18_chan_step(struct ane_h18 *ane, const struct ane_h18_hs_buf *t
 	ane->hs_cmd.size = ANE_H18_CMD_BLOCK;
 	ane->hs_cmd_in_pool = true;
 	dev_info(ane->dev, "ane_h18 hs surface CMD inside POOL at +%#x iova=%#llx size=%#x\n", ANE_H18_CMD_POOL_OFF, (u64)ane->hs_cmd.iova, ANE_H18_CMD_BLOCK);
-	ret = ane_h18_cmd(ane, &io, ANE_H18_CSNE_PRINT_ENABLE, 12, true, 0, &blk);
-	if (ret) {
-		ane_h18_chan_snapshot(ane, "after the failed PRINT_ENABLE");
-		return ret == -EPROTO || ret == -ETIMEDOUT || ret == -EBUSY ? -EIO : ret;
+	{
+		/* the kext's order: PRINT_ENABLE, START, CONFIG_GET, RESOURCE_INFO_GET (the last two commands only with hs_start) */
+		static const struct { u16 op; u32 len; bool arg; const char *name; bool start_only; } seq[] = {
+			{ ANE_H18_CSNE_PRINT_ENABLE, 12, true, "PRINT_ENABLE", false },
+			{ ANE_H18_CSNE_START, 12, false, "START", true },
+			{ ANE_H18_CSNE_CONFIG_GET, 16, false, "CONFIG_GET", false },
+			{ ANE_H18_CSNE_RESOURCE_INFO_GET, 100, false, "RESOURCE_INFO_GET", true },
+		};
+
+		for (i = 0; i < ARRAY_SIZE(seq); i++) {
+			char when[48];
+
+			if (seq[i].start_only && !hs_start)
+				continue;
+			ret = ane_h18_cmd(ane, &io, seq[i].op, seq[i].len, seq[i].arg, 0, &blk);
+			if (ret) {
+				snprintf(when, sizeof(when), "after the failed %s", seq[i].name);
+				ane_h18_chan_snapshot(ane, when);
+				return ret == -EPROTO || ret == -ETIMEDOUT || ret == -EBUSY ? -EIO : ret;
+			}
+			if (seq[i].op == ANE_H18_CSNE_CONFIG_GET) {
+				memcpy(&v, blk + 8, 4);
+				dev_info(ane->dev, "ane_h18 chan: CONFIG_GET reply u32 at +8 = %#x (the kext reads it as the tick rate)\n", v);
+			}
+			if (seq[i].op == ANE_H18_CSNE_RESOURCE_INFO_GET) {
+				for (k = 0; k < seq[i].len; k += 16) {
+					u32 q[4] = { 0 };
+
+					memcpy(q, blk + k, seq[i].len - k < 16 ? seq[i].len - k : 16);
+					dev_info(ane->dev, "ane_h18 chan: RESOURCE_INFO_GET reply +%#x: %08x %08x %08x %08x\n", k, q[0], q[1], q[2], q[3]);
+				}
+			}
+		}
 	}
-	ret = ane_h18_cmd(ane, &io, ANE_H18_CSNE_CONFIG_GET, 16, false, 0, &blk);
-	if (ret) {
-		ane_h18_chan_snapshot(ane, "after the failed CONFIG_GET");
-		return ret == -EPROTO || ret == -ETIMEDOUT || ret == -EBUSY ? -EIO : ret;
-	}
-	memcpy(&v, blk + 8, 4);
-	dev_info(ane->dev, "ane_h18 chan: CONFIG_GET reply u32 at +8 = %#x (the kext reads it as the tick rate)\n", v);
 	{
 		u64 digest = 0;
 		u32 last_pend = 0;
@@ -1430,8 +1456,8 @@ static int ane_h18_stage_boot(struct ane_h18 *ane)
 		ane_h18_result(ane, "boot", "REFUSED", "rtkit_start=1 needs rtkit_hello=1");
 		return -EINVAL;
 	}
-	if ((hs_chan && !handshake) || (hs_cmds && !hs_chan)) {
-		ane_h18_result(ane, "boot", "REFUSED", "hs_chan=1 needs handshake=1 and hs_cmds=1 needs hs_chan=1");
+	if ((hs_chan && !handshake) || (hs_cmds && !hs_chan) || (hs_start && !hs_cmds)) {
+		ane_h18_result(ane, "boot", "REFUSED", "hs_chan=1 needs handshake=1, hs_cmds=1 needs hs_chan=1 and hs_start=1 needs hs_cmds=1");
 		return -EINVAL;
 	}
 	if (handshake && (!map_fw || !rtkit_start || !rtkit_stop || !read_scratch || hs_wait_ms < 10 || hs_wait_ms > 5000 || !hs_cfg_size || hs_cfg_size > 0x10000000)) {
