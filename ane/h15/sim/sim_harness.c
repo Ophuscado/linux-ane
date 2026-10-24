@@ -217,6 +217,7 @@ static void reset_all(void)
 	confirm_boot = false;
 	confirm_read = false;
 	confirm_run = false;
+	run_unmapped = false;
 	run_wait_ms = 300;
 	sim_write_hook = NULL;
 	sim_read_hook = NULL;
@@ -1201,6 +1202,20 @@ static u32 dm_read(u64 pa, u32 v)
 	return v;
 }
 
+/* ANE DART model: window 0 reads as a t8110 DART (PARAMS3 0x1c200301, 16 streams); stream 3 has TCR translate,
+ * a valid TTBR and its ENABLE bit. Windows 1..3 read 0, so their version differs and they are not scanned. */
+#define DART_P3 0x1c200301u
+static void dart_set(const struct ane_h15_soc *s, bool live)
+{
+	u32 b = s->dart_off;
+
+	eng_set(s, b + 0x08, DART_P3);
+	eng_set(s, b + 0x0c, 0x00080010);
+	eng_set(s, b + 0xc00, live ? 1u << 3 : 0);
+	eng_set(s, b + 0x1000 + 4 * 3, live ? 0x1 : 0);
+	eng_set(s, b + 0x1400 + 4 * 3, live ? 0x00abc001 : 0);
+}
+
 static void run_setup(const struct ane_h15_soc *s, const char *compat, u32 ctrl)
 {
 	stage2_setup(s, compat, -1);
@@ -1215,6 +1230,7 @@ static void run_setup(const struct ane_h15_soc *s, const char *compat, u32 ctrl)
 	eng_set(s, s->mbox + 0x838, 0x1234);
 	eng_set(s, s->mbox + 0x834, 0x11);	/* upper halves: a 32-bit read would lose them */
 	eng_set(s, s->mbox + 0x83c, 0x22);
+	dart_set(s, true);
 	dm_soc = s;
 	dm_stuck = dm_nostart = false;
 	dm_msgs_left = 0;
@@ -1249,9 +1265,9 @@ static int run_refused_clean(const struct ane_h15_soc *s, int ret, const char *w
 	char verdict[32], reason[128], name[128];
 	int before = fails;
 
-	snprintf(name, sizeof(name), "%s: probe fails, RESULT stage=4 %s", tag, want_verdict);
+	snprintf(name, sizeof(name), "%s: probe fails, RESULT stage=5 %s", tag, want_verdict);
 	chk(ret != 0 && parse_result(&rstage, verdict, sizeof(verdict), reason, sizeof(reason)) &&
-	    rstage == 4 && !strcmp(verdict, want_verdict) && strstr(reason, want_reason_part), name);
+	    rstage == 5 && !strcmp(verdict, want_verdict) && strstr(reason, want_reason_part), name);
 	snprintf(name, sizeof(name), "%s: zero bus writes, zero faults, no RECV read", tag);
 	chk(events_in(0, ~0ULL, 1) == 0 && sim_bus_faults == 0 &&
 	    eng_events_at(s, s->mbox + 0x830) == 0 && eng_events_at(s, s->mbox + 0x838) == 0, name);
@@ -1273,10 +1289,10 @@ static void pos_run_case(const char *tag, u32 ctrl, int msgs_left, bool nostart,
 	dm_msgs_left = msgs_left;
 	dm_nostart = nostart;
 	ret = probe_now();
-	snprintf(name, sizeof(name), "%s: probe returns 0, RESULT stage=4 PASS %s", tag,
+	snprintf(name, sizeof(name), "%s: probe returns 0, RESULT stage=5 PASS %s", tag,
 		 nostart ? "core-never-left-stopped" : "core-started-and-stopped");
 	chk(ret == 0 && parse_result(&rstage, verdict, sizeof(verdict), reason, sizeof(reason)) &&
-	    rstage == 4 && !strcmp(verdict, "PASS") &&
+	    rstage == 5 && !strcmp(verdict, "PASS") &&
 	    !strcmp(reason, nostart ? "core-never-left-stopped" : "core-started-and-stopped"), name);
 	n = run_writes(s, w, 8, &first);
 	ok = n == n_want_w;
@@ -1419,8 +1435,8 @@ static int neg_run(void)
 	dm_stuck = true;
 	ret = probe_now();
 	chk(ret == 0 && parse_result(&rstage, verdict, sizeof(verdict), reason, sizeof(reason)) &&
-	    rstage == 4 && !strcmp(verdict, "FAIL") && !strcmp(reason, "core-not-stopped"),
-	    "N13 stuck core: RESULT stage=4 FAIL core-not-stopped, probe returns 0");
+	    rstage == 5 && !strcmp(verdict, "FAIL") && !strcmp(reason, "core-not-stopped"),
+	    "N13 stuck core: RESULT stage=5 FAIL core-not-stopped, probe returns 0");
 	chk(run_writes(s, w, 8, &first) == 2 && w[0] == 0x10 && w[1] == 0x0,
 	    "N13 stuck core: exactly one RUN and one clear-RUN write, no retry storm");
 	chk(log_count("reboot required") >= 1 && log_count("do NOT unload") >= 1,
@@ -1431,6 +1447,161 @@ static int neg_run(void)
 	ane_h15_remove(&pdev);
 	chk(sim_n_iounmap == before && sim_pm_put == 0 && log_count("remove with the firmware released") == 1,
 	    "N13 stuck core: remove() refuses");
+	return fails;
+}
+
+/* ---- stage 4 (confirm_read=1): the read-only DART liveness scan ---- */
+static void dart_setup(const struct ane_h15_soc *s, const char *compat, bool live)
+{
+	stage2_setup(s, compat, -1);
+	stage = "dart";
+	confirm_read = true;
+	dart_set(s, live);
+}
+
+/* every engine event is a read inside the first DART window span, nothing is written anywhere */
+static bool dart_only_reads(const struct ane_h15_soc *s)
+{
+	int i;
+
+	if (events_in(0, ~0ULL, 1) || sim_bus_faults)
+		return false;
+	for (i = 0; i < sim_n_events && i < SIM_MAX_EVENTS; i++) {
+		u64 pa = sim_events[i].pa;
+
+		if (pa >= s->engine_pa && pa < s->engine_pa + s->engine_size &&
+		    (pa < s->engine_pa + s->dart_off || pa >= s->engine_pa + s->dart_off + 0x24000))
+			return false;
+	}
+	return true;
+}
+
+static void pos_dart(void)
+{
+	static const struct { const struct ane_h15_soc *soc; const char *compat; } rows[] = {
+		{ &ane_t8122_soc, "apple,t8122-ane" },
+		{ &ane_t6030_soc, "apple,t6030-ane" },
+		{ &ane_t6031_soc, "apple,t6031-ane" },
+	};
+	unsigned int rstage;
+	char verdict[32], reason[128], name[128], tag[32];
+	size_t r;
+	int ret;
+
+	for (r = 0; r < ARRAY_SIZE(rows); r++) {
+		const struct ane_h15_soc *s = rows[r].soc;
+
+		snprintf(tag, sizeof(tag), "D1 %s", s->name);
+		dart_setup(s, rows[r].compat, true);
+		ret = probe_now();
+		snprintf(name, sizeof(name), "%s: RESULT stage=4 PASS dart-live-stream-found", tag);
+		chk(ret == 0 && parse_result(&rstage, verdict, sizeof(verdict), reason, sizeof(reason)) &&
+		    rstage == 4 && !strcmp(verdict, "PASS") && !strcmp(reason, "dart-live-stream-found"), name);
+		snprintf(name, sizeof(name), "%s: stream 3 and the summary logged, other windows not scanned", tag);
+		chk(log_count("ane_h15 dart inst=0 sid=3 tcr=0x1 ttbr=0xabc001 enabled=1") == 1 &&
+		    log_count("live_streams=1 locked_windows=0") == 1 &&
+		    log_count("version differs from inst 0: not scanned") == 3, name);
+		snprintf(name, sizeof(name), "%s: reads only, all inside the DART windows, none at CPU_CONTROL", tag);
+		chk(dart_only_reads(s) && eng_events_at(s, s->cpu_control) == 0, name);
+		snprintf(name, sizeof(name), "%s: groups logged before they are read", tag);
+		chk(log_count("ane_h15 read DART inst=0 PARAMS3") == 1 &&
+		    log_count("ane_h15 read DART inst=0 TCR[0..]") == 1, name);
+		snprintf(name, sizeof(name), "%s: power claim released, windows unmapped on remove", tag);
+		ane_h15_remove(&pdev);
+		chk(sim_pm_get == 1 && sim_pm_put == 1 && sim_n_iomap == 2 && sim_n_iounmap == 2, name);
+	}
+	/* nothing enabled: the M6 situation, a PASS that says so */
+	dart_setup(&ane_t6030_soc, "apple,t6030-ane", false);
+	ret = probe_now();
+	chk(ret == 0 && parse_result(&rstage, verdict, sizeof(verdict), reason, sizeof(reason)) &&
+	    rstage == 4 && !strcmp(verdict, "PASS") && !strcmp(reason, "dart-no-stream-enabled") &&
+	    log_count("live_streams=0") == 1 && dart_only_reads(&ane_t6030_soc),
+	    "D2 no enabled stream: PASS dart-no-stream-enabled, reads only");
+	ane_h15_remove(&pdev);
+	/* the lock bit is reported */
+	dart_setup(&ane_t6030_soc, "apple,t6030-ane", true);
+	eng_set(&ane_t6030_soc, ane_t6030_soc.dart_off + 0x208, 1);
+	ret = probe_now();
+	chk(ret == 0 && log_count("locked_windows=1") == 1, "D3 PROTECT_LOCK bit 0 is counted");
+	ane_h15_remove(&pdev);
+	/* enabled stream whose TTBR is not valid, TCR without translate, enable bit missing: not live */
+	{
+		static const struct { const char *tag; u32 off; u32 val; } nl[] = {
+			{ "D4 TTBR not valid", 0x1400 + 12, 0x00abc000 },
+			{ "D4 TCR translate clear", 0x1000 + 12, 0x2 },
+			{ "D4 ENABLE bit clear", 0xc00, 0 },
+		};
+		size_t i;
+
+		for (i = 0; i < ARRAY_SIZE(nl); i++) {
+			dart_setup(&ane_t6030_soc, "apple,t6030-ane", true);
+			eng_set(&ane_t6030_soc, ane_t6030_soc.dart_off + nl[i].off, nl[i].val);
+			ret = probe_now();
+			snprintf(name, sizeof(name), "%s: not counted as live", nl[i].tag);
+			chk(ret == 0 && log_count("live_streams=0") == 1, name);
+			ane_h15_remove(&pdev);
+		}
+	}
+}
+
+static int neg_dart(void)
+{
+	const struct ane_h15_soc *s = &ane_t6030_soc;
+	unsigned int rstage;
+	char verdict[32], reason[128];
+	int ret;
+
+	/* no confirm_read: nothing touched */
+	dart_setup(s, "apple,t6030-ane", true);
+	confirm_read = false;
+	ret = probe_now();
+	chk(ret != 0 && parse_result(&rstage, verdict, sizeof(verdict), reason, sizeof(reason)) &&
+	    rstage == 4 && !strcmp(verdict, "REFUSED") && sim_n_events == 0,
+	    "ND1 no confirm_read: REFUSED, zero bus events");
+	/* t6034: the ADT has no DART window for it */
+	dart_setup(&ane_t6034_soc, "apple,t6034-ane", false);
+	ret = probe_now();
+	chk(ret != 0 && parse_result(&rstage, verdict, sizeof(verdict), reason, sizeof(reason)) &&
+	    rstage == 4 && !strcmp(verdict, "REFUSED") && strstr(reason, "no ADT DART window") &&
+	    sim_n_events == 0, "ND2 t6034: REFUSED, zero bus events");
+	/* stuck pmgr word: no engine access at all */
+	dart_setup(s, "apple,t6030-ane", true);
+	set_ps_words(s, 1);
+	ret = probe_now();
+	chk(ret != 0 && parse_result(&rstage, verdict, sizeof(verdict), reason, sizeof(reason)) &&
+	    rstage == 4 && !strcmp(verdict, "FAIL") && !strcmp(reason, "pmgr-actual-stuck") &&
+	    events_in(s->engine_pa, s->engine_size, 0) == 0, "ND3 pmgr stuck: FAIL, zero engine events");
+	/* shifted reg[0]: refused before any bus access */
+	dart_setup(s, "apple,t6030-ane", true);
+	node.reg_pa[0] += 0x1000;
+	ret = probe_now();
+	chk(ret != 0 && strstr(sim_log, "window mismatch") && sim_n_events == 0,
+	    "ND4 reg[0] shifted: refused, zero bus events");
+	/* window 0 does not read as a DART: stop after one read */
+	dart_setup(s, "apple,t6030-ane", true);
+	eng_set(s, s->dart_off + 0x08, 0);
+	ret = probe_now();
+	chk(ret != 0 && parse_result(&rstage, verdict, sizeof(verdict), reason, sizeof(reason)) &&
+	    rstage == 4 && !strcmp(verdict, "FAIL") && events_in(s->engine_pa, s->engine_size, 0) == 1,
+	    "ND5 PARAMS3 zero: FAIL after exactly one DART read");
+	/* run (stage 5) with no live stream refuses without writing; run_unmapped=1 overrides */
+	run_setup(s, "apple,t6030-ane", 0);
+	dart_set(s, false);
+	ret = probe_now();
+	run_refused_clean(s, ret, "FAIL", "no-dart-stream-enabled", "ND6 run, no live DART stream");
+	chk(events_in(s->engine_pa + s->cpu_control, 4, 0) == 0, "ND6 run, no live DART stream: CPU_CONTROL never read");
+	run_setup(s, "apple,t6030-ane", 0);
+	dart_set(s, false);
+	run_unmapped = true;
+	ret = probe_now();
+	chk(ret == 0 && parse_result(&rstage, verdict, sizeof(verdict), reason, sizeof(reason)) &&
+	    rstage == 5 && !strcmp(verdict, "PASS"), "ND7 run_unmapped=1 runs without a live stream");
+	ane_h15_remove(&pdev);
+	/* run with an unreadable DART: refuses before the preflight */
+	run_setup(s, "apple,t6030-ane", 0);
+	eng_set(s, s->dart_off + 0x08, 0);
+	ret = probe_now();
+	run_refused_clean(s, ret, "FAIL", "dart-read-refused-or-not-a-dart", "ND8 run, window 0 is not a DART");
 	return fails;
 }
 
@@ -1448,6 +1619,7 @@ int main(int argc, char **argv)
 		pos_multi_pd();
 		pos_stage2();
 		pos_run();
+		pos_dart();
 		printf("%s\n", fails ? "SIM-TEST: FAILED"
 				     : "SIM-TEST: all positive controls PASS");
 	} else if (!strcmp(mode, "neg-ps-stuck")) {
@@ -1490,12 +1662,15 @@ int main(int argc, char **argv)
 	} else if (!strcmp(mode, "neg-pd-eacces-alone")) {
 		printf("sim-h15 negative control: -EACCES with zero or one domain\n");
 		fails = neg_pd_eacces_alone();
+	} else if (!strcmp(mode, "neg-dart")) {
+		printf("sim-h15 negative control: stage 4 DART scan refusals and the run stage DART gate\n");
+		fails = neg_dart();
 	} else if (!strcmp(mode, "neg-run")) {
 		printf("sim-h15 negative control: stage 4 refusals and the stuck core\n");
 		fails = neg_run();
 	} else {
 		fprintf(stderr,
-			"usage: sim_h15 [pos|neg-run|neg-ps-stuck|neg-wrong-stage|neg-truncated-dt|neg-rpm-fail|neg-pd-attach-fail|neg-pd-link-fail|neg-pd-rpm-err|neg-pd-eacces-alone|neg-read-ps-stuck|neg-read-window|neg-read-forbidden]\n");
+			"usage: sim_h15 [pos|neg-run|neg-dart|neg-ps-stuck|neg-wrong-stage|neg-truncated-dt|neg-rpm-fail|neg-pd-attach-fail|neg-pd-link-fail|neg-pd-rpm-err|neg-pd-eacces-alone|neg-read-ps-stuck|neg-read-window|neg-read-forbidden]\n");
 		return 2;
 	}
 	return fails ? 1 : 0;

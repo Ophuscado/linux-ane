@@ -52,14 +52,28 @@ template is `ane/h16/`.
   preload + map + CPU-release path that the T6021 W-series uses
   is the only mechanically proven route, and a volunteer
   recording it is what fills the missing rows in the b0 table.
-- `stage=4` or `stage=run`: refused without `confirm_run=1`, with
+- `stage=4` or `stage=dart` (read only, `confirm_read=1` required): reads
+  the ANE DART, never writes. After the stage 1 ACTUAL=0xf gate it reads
+  PARAMS3 of the four 0x4000 windows the ADT lists (engine + 0x1800000,
+  +0x1810000, +0x1820000, +0x1804000), and for every window whose version
+  equals window 0's it reads PARAMS4, PROTECT, PROTECT_LOCK, the ENABLE_STREAMS
+  words and TCR (plus TTBR where TCR is set) of streams 0 to 63. It logs
+  each non-zero stream and `live_streams=N locked_windows=N`. `PASS
+  reason=dart-live-stream-found` means iBoot left a stream enabled, with
+  translation on and a valid TTBR. `PASS reason=dart-no-stream-enabled`
+  means nothing is enabled: a started core could not fetch its firmware. It
+  does not show whether the mapping covers the firmware, whether the core would
+  run, or anything about the mailbox. The same read has not been done on the
+  M6 (T8152); there the DART state at handoff is unmeasured.
+- `stage=5` or `stage=run`: refused without `confirm_run=1`, with
   `run_wait_ms` outside 10 to 2000 (default 300), and on any SoC row whose
   `rvbar_expect` is 0 (only t6030 has a measured RVBAR, from stage 2 on a
   16-inch M3 Pro: `0x0000010000000001`). It is the only stage that writes.
   After the stage 1 ACTUAL=0xf gate it reads CPU_STATUS, CPU_CONTROL, RVBAR
   and both mailbox CTRL words and writes only if the core is stopped (STOPPED
   set, RUNNING clear), RUN is clear, RVBAR equals `rvbar_expect` and both
-  mailbox words read EMPTY. Then it sets CPU_CONTROL bit 4 (the macOS
+  mailbox words read EMPTY, and the stage 4 scan finds a live DART stream
+  (`run_unmapped=1` overrides this and expects silence). Then it sets CPU_CONTROL bit 4 (the macOS
   `_runCPU(true)` read-OR-write), watches CPU_STATUS and `MBOX_I2A_CTRL` every
   10 ms for `run_wait_ms`, pops at most four I2A messages (one 64-bit read per receive register) and logs
   the raw words (it sends nothing, never answers a HELLO), and stops the core the macOS
@@ -201,9 +215,17 @@ the dmesg back.
    prints one line per unfilled row of the `ane_h15_facts` table
    (`ane_h15 hole=H… …`), then
    `verdict=REFUSED reason=unfilled-facts`. Send the dmesg.
-5. **stage=4** (`stage=4 confirm_run=1`, T6030 only today). Run it only after
-   stages 0, 1 and 2 passed on the same boot and the maintainers have said
-   GO on the issue. Expected, in dmesg: the pmgr lines, six `ane_h15 read`
+5. **stage=4** (`stage=4 confirm_read=1`, T6030, T8122 and T6031 rows).
+   Read only. Expect a few `ane_h15 read DART` group lines, one
+   `ane_h15 dart inst=… params3=…` line per window, a `streams=` line, one line
+   per non-zero stream, `ane_h15 dart summary live_streams=… locked_windows=…`
+   and `verdict=PASS reason=dart-live-stream-found` or
+   `dart-no-stream-enabled`. Both are results. Send the whole `dmesg | grep
+   ane_h15`. Do not run stage 5 on the strength of this alone: it needs a mapping we
+   have not built (stage 6) unless this stage reports a live stream.
+6. **stage=5** (`stage=5 confirm_run=1`, T6030 only today). Run it only after
+   stages 0, 1, 2 and 4 passed on the same boot, stage 4 reported a live stream
+   (or the maintainers said GO on the issue for another reason). Expected, in dmesg: the pmgr lines, six `ane_h15 read`
    lines (CPU_STATUS, CPU_CONTROL, RVBAR_LO, RVBAR_HI, the two mailbox CTRL
    words), `ane_h15 write CPU_CONTROL=0x10 (RUN)`, a few `t+10ms
    cpu_status=…` lines, optionally `ane_h15 msg0 raw0=… raw1=…`, then
@@ -213,7 +235,7 @@ the dmesg back.
    module can be removed. `verdict=FAIL reason=core-not-stopped` means
    reboot. `verdict=FAIL reason=preflight-not-as-iboot-left-it` means
    nothing was written. Send the whole `dmesg | grep ane_h15`.
-6. Remove the opt-in key and reboot before any other experiment.
+7. Remove the opt-in key and reboot before any other experiment.
 
 ## Stop rules
 
@@ -248,9 +270,15 @@ Substitute `t6030` or `t6031` (or `t6034` with a t6031-style
 overlay). The other stages refuse; the runbook protocol above
 explains the refused verbiage.
 
-The run stage (writes CPU_CONTROL; T6030 only, after the maintainers' GO):
+The read-only DART scan:
 
-    insmod ane/h15/ane_h15.ko optin=t6030 stage=4 confirm_run=1
+    insmod ane/h15/ane_h15.ko optin=t6030 stage=4 confirm_read=1
+    dmesg | grep ane_h15
+
+The run stage (writes CPU_CONTROL; T6030 only, refuses without a live DART
+stream, only after the maintainers' GO):
+
+    insmod ane/h15/ane_h15.ko optin=t6030 stage=5 confirm_run=1
     dmesg | grep ane_h15
 
 ## Not verified (honest limits)
@@ -264,7 +292,7 @@ The run stage (writes CPU_CONTROL; T6030 only, after the maintainers' GO):
   version as "unknown"); the module's stage=3 plan to map the
   preload at the ADT remap IOVAs is the same mechanical path
   the T6021 W-series proved, but on M3 it has not run.
-- Stage 4 reads CPU_CONTROL and writes it (bits 4 and 5 only). Nobody has run
+- Stage 5 reads CPU_CONTROL and writes it (bits 4 and 5 only). Nobody has run
   that on an H15 part. The M6 (T8152) result it is modelled on: the same RUN
   write cleared the STOPPED bit and left the core with no message, with the
   DART unprogrammed. A started H15 core may do the same. A "core-started-and-

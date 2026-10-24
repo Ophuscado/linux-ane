@@ -166,6 +166,22 @@ sim-mutation-run-nostopcheck:
 sim-mutation-run-pop32:
 	$(call pd_mutant,run-pop32,s/\*v = readq_relaxed(ane->engine + off);/*v = readl_relaxed(ane->engine + off); \/* NEG: 32-bit pop *\//,NEG: 32-bit pop,pos)
 
+# Stage 4 (confirm_read=1): the read-only DART scan; neg-dart also holds the run stage's DART gate.
+sim-negative-dart: sim/sim_h15
+	./sim/sim_h15 neg-dart
+
+# stage 5 starts the core although no DART stream is enabled (the M6 silence)
+sim-mutation-run-nodartgate:
+	$(call pd_mutant,run-nodartgate,s/if (!live \&\& !run_unmapped) {/if (0 \/* NEG: DART gate skipped *\/) {/,NEG: DART gate skipped,neg-dart)
+
+# a stream counts as live without a valid TTBR
+sim-mutation-dart-nottbr:
+	$(call pd_mutant,dart-nottbr,s/(tcr \& 1) \&\& (ttbr \& 1) \&\& on/(tcr \& 1) \&\& on \/* NEG: ttbr valid ignored *\//,NEG: ttbr valid ignored,pos)
+
+# stage 4 reads the DART without confirm_read=1
+sim-mutation-dart-noconfirm:
+	$(call pd_mutant,dart-noconfirm,/^static int ane_h15_stage_dart/$(COMMA)/^}/ s/if (!confirm_read) {/if (0 \/* NEG: confirm_read ignored in dart *\/) {/,NEG: confirm_read ignored in dart,neg-dart)
+
 sim-negative-nopsguard:
 	rm -rf /tmp/ane_h15-nopsguard && mkdir -p /tmp/ane_h15-nopsguard
 	cp -r sim /tmp/ane_h15-nopsguard/sim
@@ -228,5 +244,7 @@ clean:
 	sim-mutation-read-noconfirm sim-mutation-nofillrefusal \
 	sim-negative-run sim-mutation-run-noconfirm sim-mutation-run-norvbar \
 	sim-mutation-run-nomboxcheck sim-mutation-run-noclear \
-	sim-mutation-run-nostopcheck sim-mutation-run-pop32 clean
+	sim-mutation-run-nostopcheck sim-mutation-run-pop32 \
+	sim-negative-dart sim-mutation-run-nodartgate sim-mutation-dart-nottbr \
+	sim-mutation-dart-noconfirm clean
 endif

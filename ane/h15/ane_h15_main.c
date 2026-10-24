@@ -31,13 +31,17 @@
  *              SCRATCH wake word H5) and refuses. Even with every row
  *              filled this build has no boot path: no engine write,
  *              no CPU release, ever.
- *   4 run    : confirm_run=1 required. The only stage that writes: it starts
+ *   4 dart   : confirm_read=1 required. Read only: the four ANE DART windows (engine+0x1800000..),
+ *              version, lock state, and per stream TCR, TTBR and the enable bits. Says whether iBoot left a
+ *              stream enabled and mapped. See the comment above ane_h15_stage_dart().
+ *   5 run    : confirm_run=1 required. The only stage that writes: it starts
  *              the ASC core once (CPU_CONTROL RUN) behind a read-only
  *              preflight (core stopped, RUN clear, RVBAR exactly the value a
  *              stage 2 run measured on this SoC, mailbox words EMPTY), watches
  *              CPU_STATUS and pops at most four mailbox messages (raw words,
  *              no reply), then stops the core again. Refused on any SoC row
- *              without a measured rvbar_expect (today only t6030). See the
+ *              without a measured rvbar_expect (today only t6030), and without a live DART
+ *              stream from the same scan stage 4 does (run_unmapped=1 overrides). See the
  *              comment above ane_h15_stage_run().
  *
  * No MODULE_DEVICE_TABLE: nothing autoloads. probe() returns
@@ -87,7 +91,7 @@ MODULE_PARM_DESC(optin,
 static char *stage = "status";
 module_param(stage, charp, 0444);
 MODULE_PARM_DESC(stage,
-		 "0/1/2/3/4 or name (dt/status/wrapper/boot/run). 1/status (default): power up and log ps ACTUAL. 0/dt: parse the DT only. 2/wrapper: REFUSED on H15 without confirm_read=1. 3/boot: refused without fw_path=. 4/run: refused without confirm_run=1; starts the core once behind a preflight.");
+		 "0/1/2/3/4/5 or name (dt/status/wrapper/boot/dart/run). 1/status (default): power up and log ps ACTUAL. 0/dt: parse the DT only. 2/wrapper: REFUSED on H15 without confirm_read=1. 3/boot: refused without fw_path=. 4/dart: read-only DART liveness, needs confirm_read=1. 5/run: refused without confirm_run=1 and without a live DART stream; starts the core once behind a preflight.");
 
 static unsigned int ps_wait_ms = 500;
 module_param(ps_wait_ms, uint, 0444);
@@ -103,6 +107,11 @@ static bool confirm_read;
 module_param(confirm_read, bool, 0444);
 MODULE_PARM_DESC(confirm_read,
 		 "Stage=wrapper only. Off by default; stage=wrapper refuses without it. With it, stage=wrapper reads CPU_STATUS, RVBAR and the two mailbox CTRL words behind the pmgr ACTUAL=0xf gate. Reads only, nothing is written.");
+
+static bool run_unmapped;
+module_param(run_unmapped, bool, 0444);
+MODULE_PARM_DESC(run_unmapped,
+		 "stage=run only: start the core even though stage=dart found no enabled DART stream (the core cannot fetch its firmware then; expect silence)");
 
 static bool confirm_run;
 module_param(confirm_run, bool, 0444);
@@ -226,7 +235,8 @@ static int ane_h15_stage_idx(const char *name, unsigned int *out)
 	if (!strcmp(name, "status") || !strcmp(name, "1")) { *out = 1; return 0; }
 	if (!strcmp(name, "wrapper") || !strcmp(name, "2")) { *out = 2; return 0; }
 	if (!strcmp(name, "boot") || !strcmp(name, "3")) { *out = 3; return 0; }
-	if (!strcmp(name, "run") || !strcmp(name, "4")) { *out = 4; return 0; }
+	if (!strcmp(name, "dart") || !strcmp(name, "4")) { *out = 4; return 0; }
+	if (!strcmp(name, "run") || !strcmp(name, "5")) { *out = 5; return 0; }
 	return -EINVAL;
 }
 
@@ -538,13 +548,180 @@ static int ane_h15_stage_boot(struct ane_h15 *ane)
 	}
 	/* Every fact row is filled: the gate would open for a build
 	 * that implements the boot path. This one does not; there is
-	 * no CPU release and no engine write in THIS stage (stage 4 is the only one that writes).
+	 * no CPU release and no engine write in THIS stage (stage 5 is the only one that writes).
 	 */
 	ane_h15_result(ane, 3, "REFUSED", "facts-filled-boot-path-not-built");
 	return -ENOSYS;
 }
 
-/* ---- stage 4: start the ASC core once, watch, stop it again ----
+/* ---- stage 4: is any ANE DART stream enabled? read only ----
+ *
+ * Sources: ane/h15/run-stage-sources.md (apple-dart.c t8110 at omarchy-linux 94fb2334, data/ane-soc/t6030.json).
+ *
+ * The M6 (T8152) lesson (w7H run, boot 235c8ff4; w7C offline RE of the Gen3 DART, 2026-10-23): RUN alone gave
+ * a core that left STOPPED and posted nothing, with the ANE DART never read or written by Linux (its iBoot
+ * state is NOT measured: w7C U1, w7H "not tested"). macOS maps TEXT and DATA through the ANE DART before it
+ * releases the core. This stage reads, and only reads, what the DART says, so a tester's first boot answers
+ * it instead of a core start.
+ *
+ * T6030 differs from the M6 here: its ANE DART is `dart,t8110` (ADT S1, data/ane-soc/t6030.json), the register
+ * file drivers/iommu/apple-dart.c already drives (PARAMS3 +0x08, PARAMS4 +0x0c, PROTECT +0x200, PROTECT_LOCK
+ * +0x208, ENABLE_STREAMS +0xc00, TCR +0x1000+4*sid, TTBR +0x1400+4*sid, one TTBR per stream). The ADT lists four
+ * 0x4000 windows; which of them is the main block is not stated (the M6 has a DAPF block among its five). So
+ * only a window whose PARAMS3 version equals window 0's is scanned; the others are logged and left alone.
+ *
+ * Reads: PARAMS3 of each window, then for each scanned window PARAMS4, PROTECT, PROTECT_LOCK, ENABLE_STREAMS
+ * word 0 and 1, TCR for streams 0..63 and TTBR where TCR is non-zero. All inside engine+0x1800000..+0x1824000, below the
+ * T6021 fatal range, behind the same ACTUAL=0xf gate, each group logged before it is read. A stream is "live"
+ * when TCR translate is set, TTBR is valid and its ENABLE bit is set. The stage writes nothing.
+ */
+#define ANE_H15_DART_WIN	0x4000u
+#define ANE_H15_DART_PARAMS3	0x08u
+#define ANE_H15_DART_PARAMS4	0x0cu
+#define ANE_H15_DART_PROTECT	0x200u
+#define ANE_H15_DART_LOCK	0x208u
+#define ANE_H15_DART_ENABLE	0xc00u
+#define ANE_H15_DART_TCR	0x1000u
+#define ANE_H15_DART_TTBR	0x1400u
+#define ANE_H15_DART_SIDS	64u
+
+static const u32 ane_h15_dart_rel[4] = { 0, 0x10000, 0x20000, 0x4000 };
+
+static bool ane_h15_dart_off_ok(u32 off)
+{
+	return off == ANE_H15_DART_PARAMS3 || off == ANE_H15_DART_PARAMS4 ||
+	       off == ANE_H15_DART_PROTECT || off == ANE_H15_DART_LOCK ||
+	       off == ANE_H15_DART_ENABLE || off == ANE_H15_DART_ENABLE + 4 ||
+	       (off >= ANE_H15_DART_TCR && off < ANE_H15_DART_TCR + 4 * ANE_H15_DART_SIDS && !(off & 3)) ||
+	       (off >= ANE_H15_DART_TTBR && off < ANE_H15_DART_TTBR + 4 * ANE_H15_DART_SIDS && !(off & 3));
+}
+
+static int ane_h15_dart_rd(struct ane_h15 *ane, unsigned int inst, u32 off, u32 *v)
+{
+	const struct ane_h15_soc *s = ane->soc;
+	u32 woff;
+
+	if (!s->dart_off || inst > 3 || !ane_h15_dart_off_ok(off))
+		return -EPERM;
+	woff = s->dart_off + ane_h15_dart_rel[inst] + off;
+	if ((u64)woff + 4 > s->engine_size || woff + 4 > ANE_H15_FATAL_LO)
+		return -EPERM;
+	*v = readl_relaxed(ane->engine + woff);
+	return 0;
+}
+
+static void ane_h15_dart_note(struct ane_h15 *ane, unsigned int inst, const char *what)
+{
+	const struct ane_h15_soc *s = ane->soc;
+
+	dev_crit(ane->dev, "ane_h15 read DART inst=%u %s pa=%#llx\n", inst, what,
+		 s->engine_pa + s->dart_off + ane_h15_dart_rel[inst]);
+}
+
+/* *live = number of live streams over the scanned windows; *locked = windows reporting PROTECT_LOCK bit 0. */
+static int ane_h15_dart_scan(struct ane_h15 *ane, unsigned int *live, unsigned int *locked)
+{
+	u32 p3[4] = { 0 }, p4, prot, lock, en[2], tcr, ttbr;
+	unsigned int inst, sid, nsid;
+	int ret;
+
+	*live = *locked = 0;
+	for (inst = 0; inst < 4; inst++) {
+		ane_h15_dart_note(ane, inst, "PARAMS3");
+		ret = ane_h15_dart_rd(ane, inst, ANE_H15_DART_PARAMS3, &p3[inst]);
+		if (ret)
+			return ret;
+		dev_info(ane->dev, "ane_h15 dart inst=%u params3=%#x\n", inst, p3[inst]);
+		if (inst == 0 && (!p3[0] || p3[0] == 0xffffffffu || !(p3[0] & 0xff00))) {
+			dev_err(ane->dev, "ane_h15 dart inst=0 PARAMS3 %#x is not a DART version word\n", p3[0]);
+			return -ENODEV;
+		}
+		if ((p3[inst] & 0xffff) != (p3[0] & 0xffff)) {
+			dev_info(ane->dev, "ane_h15 dart inst=%u version differs from inst 0: not scanned\n", inst);
+			continue;
+		}
+		ane_h15_dart_note(ane, inst, "PARAMS4 PROTECT PROTECT_LOCK ENABLE_STREAMS[0..1]");
+		ret = ane_h15_dart_rd(ane, inst, ANE_H15_DART_PARAMS4, &p4);
+		if (!ret)
+			ret = ane_h15_dart_rd(ane, inst, ANE_H15_DART_PROTECT, &prot);
+		if (!ret)
+			ret = ane_h15_dart_rd(ane, inst, ANE_H15_DART_LOCK, &lock);
+		if (!ret)
+			ret = ane_h15_dart_rd(ane, inst, ANE_H15_DART_ENABLE, &en[0]);
+		if (!ret)
+			ret = ane_h15_dart_rd(ane, inst, ANE_H15_DART_ENABLE + 4, &en[1]);
+		if (ret)
+			return ret;
+		nsid = FIELD_GET(GENMASK(8, 0), p4);
+		if (nsid > ANE_H15_DART_SIDS)
+			nsid = ANE_H15_DART_SIDS;
+		dev_info(ane->dev, "ane_h15 dart inst=%u params4=%#x streams=%u protect=%#x lock=%#x enable0=%#x enable1=%#x\n",
+			 inst, p4, nsid, prot, lock, en[0], en[1]);
+		if (lock & 1)
+			(*locked)++;
+		ane_h15_dart_note(ane, inst, "TCR[0..] and TTBR[] where TCR is set");
+		for (sid = 0; sid < nsid; sid++) {
+			bool on;
+
+			ret = ane_h15_dart_rd(ane, inst, ANE_H15_DART_TCR + 4 * sid, &tcr);
+			if (ret)
+				return ret;
+			ttbr = 0;
+			if (tcr) {
+				ret = ane_h15_dart_rd(ane, inst, ANE_H15_DART_TTBR + 4 * sid, &ttbr);
+				if (ret)
+					return ret;
+			}
+			on = (en[sid / 32] >> (sid % 32)) & 1;
+			if (tcr || ttbr || on)
+				dev_info(ane->dev, "ane_h15 dart inst=%u sid=%u tcr=%#x ttbr=%#x enabled=%u\n",
+					 inst, sid, tcr, ttbr, on);
+			if ((tcr & 1) && (ttbr & 1) && on)
+				(*live)++;
+		}
+	}
+	return 0;
+}
+
+static int ane_h15_stage_dart(struct ane_h15 *ane)
+{
+	const struct ane_h15_soc *s = ane->soc;
+	unsigned int live = 0, locked = 0;
+	int ret;
+
+	if (!confirm_read) {
+		ane_h15_result(ane, 4, "REFUSED", "confirm_read=1 required");
+		return -EPERM;
+	}
+	if (!s->dart_off) {
+		ane_h15_result(ane, 4, "REFUSED", "no ADT DART window for this SoC row");
+		return -ENODEV;
+	}
+	if (!ane_h15_window_ok(ane, 0, "engine", s->engine_pa, s->engine_size) ||
+	    !ane_h15_window_ok(ane, 1, "pmgr", s->pmgr_pa, s->pmgr_size)) {
+		ane_h15_result(ane, 4, "FAIL", "window-mismatch");
+		return -EINVAL;
+	}
+	ret = ane_h15_ps_wait(ane);
+	if (ret) {
+		ane_h15_result(ane, 4, "FAIL", "pmgr-actual-stuck");
+		return ret;
+	}
+	ret = ane_h15_dart_scan(ane, &live, &locked);
+	if (ret) {
+		ane_h15_result(ane, 4, "FAIL", "dart-read-refused-or-not-a-dart");
+		return ret;
+	}
+	dev_info(ane->dev, "ane_h15 dart summary live_streams=%u locked_windows=%u\n", live, locked);
+	ane_h15_result(ane, 4, "PASS", live ? "dart-live-stream-found" : "dart-no-stream-enabled");
+	return 0;
+}
+
+/* ---- stage 5: start the ASC core once, watch, stop it again ----
+ *
+ * Sources, commit-pinned, with H15 observations told apart from cross-generation inference:
+ * ane/h15/run-stage-sources.md (m1n1 asc.py 97820568, macOS _runCPU decode sha d383f674, ane_t6021.h
+ * 16cfa8720b80677dbcdf8fd1d04077a8b72768bf, omarchy-linux mailbox.c 57f8f6de, w7H M6 boot 235c8ff4).
  *
  * Why this is the next step. The T6030 stage 2 run (PR 175, J516S) read RVBAR 0x0000010000000001 and CPU_STATUS
  * 0x0030002a: iBoot already preloaded the firmware and wrote the entry address, and the core is stopped (m1n1
@@ -556,7 +733,8 @@ static int ane_h15_stage_boot(struct ane_h15 *ane)
  * What it does, in order (every access address is logged BEFORE it):
  *   1. refuses without confirm_run=1, with run_wait_ms outside 10..2000, and on a SoC row without a measured
  *      rvbar_expect (nothing is touched);
- *   2. checks both live reg windows against the SoC row, waits for the five pmgr words to read ACTUAL=0xf;
+ *   2. checks both live reg windows against the SoC row, waits for the five pmgr words to read ACTUAL=0xf,
+ *      then runs the stage 4 DART scan and refuses if no stream is live (run_unmapped=1 overrides);
  *   3. preflight, read only: CPU_STATUS (STOPPED set, RUNNING clear), CPU_CONTROL (RUN clear), RVBAR (exactly
  *      rvbar_expect) and both mailbox CTRL words (EMPTY, bit 17, set: nothing stale). Anything else refuses;
  *   4. CPU_CONTROL |= RUN (bit 4), the macOS AppleASCWrapV8::_runCPU(true) sequence (read, OR 0x10, write);
@@ -619,31 +797,42 @@ static int ane_h15_stage_run(struct ane_h15 *ane)
 	const struct ane_h15_soc *s = ane->soc;
 	u32 st = 0, ctrl = 0, rv_lo = 0, rv_hi = 0, a2i = 0, i2a = 0, last = 0xffffffffu;
 	u64 m0, m1;
-	unsigned int waited, i, msgs = 0, started_seen = 0, posted = 0;
+	unsigned int waited, i, msgs = 0, started_seen = 0, posted = 0, live = 0, locked = 0;
 	bool stopped = false;
 	int ret;
 
 	if (!confirm_run) {
-		ane_h15_result(ane, 4, "REFUSED", "confirm_run=1 required");
+		ane_h15_result(ane, 5, "REFUSED", "confirm_run=1 required");
 		return -EPERM;
 	}
 	if (run_wait_ms < 10 || run_wait_ms > 2000) {
-		ane_h15_result(ane, 4, "REFUSED", "run_wait_ms 10 to 2000");
+		ane_h15_result(ane, 5, "REFUSED", "run_wait_ms 10 to 2000");
 		return -EINVAL;
 	}
 	if (!s->rvbar_expect) {
-		ane_h15_result(ane, 4, "REFUSED", "no measured RVBAR for this SoC row: run stage 2 and report it");
+		ane_h15_result(ane, 5, "REFUSED", "no measured RVBAR for this SoC row: run stage 2 and report it");
 		return -ENODEV;
 	}
 	if (!ane_h15_window_ok(ane, 0, "engine", s->engine_pa, s->engine_size) ||
 	    !ane_h15_window_ok(ane, 1, "pmgr", s->pmgr_pa, s->pmgr_size)) {
-		ane_h15_result(ane, 4, "FAIL", "window-mismatch");
+		ane_h15_result(ane, 5, "FAIL", "window-mismatch");
 		return -EINVAL;
 	}
 	ret = ane_h15_ps_wait(ane);
 	if (ret) {
-		ane_h15_result(ane, 4, "FAIL", "pmgr-actual-stuck");
+		ane_h15_result(ane, 5, "FAIL", "pmgr-actual-stuck");
 		return ret;
+	}
+	/* The M6 lesson: RUN alone was silent and its DART state is unknown. Without an enabled stream the core cannot fetch. */
+	ret = ane_h15_dart_scan(ane, &live, &locked);
+	if (ret) {
+		ane_h15_result(ane, 5, "FAIL", "dart-read-refused-or-not-a-dart");
+		return ret;
+	}
+	if (!live && !run_unmapped) {
+		dev_err(ane->dev, "ane_h15 no ANE DART stream is enabled and mapped: the core could not fetch its firmware; nothing written (run_unmapped=1 overrides)\n");
+		ane_h15_result(ane, 5, "FAIL", "no-dart-stream-enabled");
+		return -ENODEV;
 	}
 	/* Preflight, read only. */
 	ret = ane_h15_read_word(ane, "CPU_STATUS", s->cpu_status, &st);
@@ -658,7 +847,7 @@ static int ane_h15_stage_run(struct ane_h15 *ane)
 	if (!ret)
 		ret = ane_h15_read_word(ane, "MBOX_I2A_CTRL", s->mbox + 0x114, &i2a);
 	if (ret) {
-		ane_h15_result(ane, 4, "FAIL", "read-refused");
+		ane_h15_result(ane, 5, "FAIL", "read-refused");
 		return ret;
 	}
 	if ((st & ANE_H15_ST_RUNNING) || !(st & ANE_H15_ST_STOPPED) || (ctrl & ANE_H15_CPU_RUN) ||
@@ -667,7 +856,7 @@ static int ane_h15_stage_run(struct ane_h15 *ane)
 		dev_err(ane->dev,
 			"ane_h15 preflight: cpu_status=%#x cpu_control=%#x rvbar=%#llx a2i_ctrl=%#x i2a_ctrl=%#x (want stopped, RUN clear, rvbar %#llx, both mailbox words EMPTY)\n",
 			st, ctrl, ((u64)rv_hi << 32) | rv_lo, a2i, i2a, s->rvbar_expect);
-		ane_h15_result(ane, 4, "FAIL", "preflight-not-as-iboot-left-it");
+		ane_h15_result(ane, 5, "FAIL", "preflight-not-as-iboot-left-it");
 		return -EBUSY;
 	}
 
@@ -678,7 +867,7 @@ static int ane_h15_stage_run(struct ane_h15 *ane)
 	if (ret) {
 		ane->fw_started = false;
 		ane->fw_touched = false;
-		ane_h15_result(ane, 4, "FAIL", "write-refused");
+		ane_h15_result(ane, 5, "FAIL", "write-refused");
 		return ret;
 	}
 	for (waited = 0; waited < run_wait_ms; waited += 10) {
@@ -726,13 +915,13 @@ static int ane_h15_stage_run(struct ane_h15 *ane)
 	if (!stopped) {
 		dev_emerg(ane->dev,
 			  "ane_h15 the core did not report STOPPED after RUN was cleared: power domains stay on, do NOT unload, reboot required\n");
-		ane_h15_result(ane, 4, "FAIL", "core-not-stopped");
+		ane_h15_result(ane, 5, "FAIL", "core-not-stopped");
 		/* 0, not an error: a failed probe would release the domains and the windows under a running core */
 		return 0;
 	}
 	ane->fw_started = false;
 	ane->fw_touched = false;
-	ane_h15_result(ane, 4, "PASS", started_seen ? "core-started-and-stopped" : "core-never-left-stopped");
+	ane_h15_result(ane, 5, "PASS", started_seen ? "core-started-and-stopped" : "core-never-left-stopped");
 	return 0;
 }
 
@@ -834,7 +1023,8 @@ static int ane_h15_probe(struct platform_device *pdev)
 
 	if (stage_idx == 1)       ret = ane_h15_stage_status(ane);
 	else if (stage_idx == 2)  ret = ane_h15_stage_wrapper(ane);
-	else if (stage_idx == 4)  ret = ane_h15_stage_run(ane);
+	else if (stage_idx == 4)  ret = ane_h15_stage_dart(ane);
+	else if (stage_idx == 5)  ret = ane_h15_stage_run(ane);
 	else                      ret = ane_h15_stage_boot(ane);
 
 	/* A started core that did not stop keeps its power claim (and its windows, see remove()). */
@@ -886,5 +1076,5 @@ static struct platform_driver ane_h15_driver = {
 module_platform_driver(ane_h15_driver);
 
 MODULE_AUTHOR("Joshua Warren");
-MODULE_DESCRIPTION("OPT-IN EXPERIMENTAL Apple H15-family ANE bring-up module (dt/status/wrapper/boot/run; no inference)");
+MODULE_DESCRIPTION("OPT-IN EXPERIMENTAL Apple H15-family ANE bring-up module (dt/status/wrapper/boot/dart/run; no inference)");
 MODULE_LICENSE("Dual MIT/GPL");
