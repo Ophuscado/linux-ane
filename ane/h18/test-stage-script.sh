@@ -146,6 +146,21 @@ FAKE_STAGE=boot expect "step 4 with scratch=1 passes" 0 bash "$S" 4 0123abcd GO 
 grep -q 'read_scratch=1 rtkit_hello=1 rtkit_start=1' "$T/insmod.args" && echo "  PASS scratch=1 args carry read_scratch=1" || { echo "  FAIL scratch args"; fails=$((fails + 1)); }
 rm -f "$T/work/step4-run-0123abcd"
 sleep 1
+# the handshake flag: step 5 only, with scratch=1 and hello 3 or 4
+expect "step 4 with handshake=2 refused" 2 bash "$S" 4 0123abcd GO 1 2 800 0 3 1 2
+sleep 1
+expect "step 4 with handshake=1 refused (needs step 5)" 2 bash "$S" 4 0123abcd GO 1 2 800 0 3 1 1
+sleep 1
+: > "$T/dt/soc/ane@419600000/iommus"
+: > "$T/dt/soc/ane@419600000/power-domains"
+expect "step 5 with handshake=1 and hello=2 refused" 2 bash "$S" 5 0123abcd GO 1 2 800 0 2 1 1
+sleep 1
+expect "step 5 with handshake=1 and scratch=0 refused" 2 bash "$S" 5 0123abcd GO 1 2 800 0 3 0 1
+sleep 1
+FAKE_STAGE=boot expect "step 5 with handshake=1 passes" 0 bash "$S" 5 0123abcd GO 1 2 800 0 3 1 1
+grep -q 'map_fw=1 read_scratch=1 handshake=1 rtkit_hello=1 rtkit_start=1 rtkit_stop=1' "$T/insmod.args" && echo "  PASS handshake=1 args carry map_fw, read_scratch, handshake and stop=1" || { echo "  FAIL handshake args"; fails=$((fails + 1)); }
+rm -f "$T/work/step4-run-0123abcd" "$T/dt/soc/ane@419600000/iommus" "$T/dt/soc/ane@419600000/power-domains"
+sleep 1
 # after a step 4 ran, no ANE step of any number may start until a reboot
 touch "$T/work/step4-run-0123abcd"
 expect "step 1 after a step 4 is refused" 2 bash "$S" 1 0123abcd

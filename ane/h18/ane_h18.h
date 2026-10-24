@@ -61,6 +61,15 @@
  * AppleH16ANEInterface kext stores for this SoC. Read only here, in the page at scratch_pa. */
 #define ANE_H18_SCRATCH_OFF	0x24
 #define ANE_H18_SCRATCH_N	8
+/* SCRATCH handshake of the macOS kext (ANE_Init, T8152 decode in the lab notebook): after READY the host publishes the address of a 0x174 byte init block
+ * in SCRATCH0 (low) and SCRATCH1 (high), writes the wake word to SCRATCH7, and the firmware answers READY again with the address of its channel table in
+ * SCRATCH1:SCRATCH0. The firmware already shows READY before the wake (board read), so the answer is judged by the table address, not by SCRATCH7. */
+#define ANE_H18_HS_WAKE		0xf7fbdff9u
+#define ANE_H18_HS_READY	0x08042006u
+#define ANE_H18_HS_REQ_LIMIT	0x21	/* SCRATCH0 at or above this: the kext does not go on */
+#define ANE_H18_HS_BLOCK_SIZE	0x174
+#define ANE_H18_HS_IPC_MAX	0x100000	/* refuse a firmware request above these before allocating */
+#define ANE_H18_HS_HEAP_MAX	0x4000000
 /* ANE DART (dart,gen3, instance 0): read only liveness words, see ane_h18_read_dart_words(). */
 #define ANE_H18_DART_NREAD	12
 /* Postoffice channel layout used for the RTKit exchange, as drivers/soc/apple/mailbox.c has it for the T8152 counted FIFO: RX (the outbox, firmware to host)

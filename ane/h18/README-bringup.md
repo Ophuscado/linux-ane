@@ -49,6 +49,16 @@ else in the ASC, IORVBAR or mailbox windows.
   - `read_scratch=1`: read the eight SCRATCH words of the engine block (engine + 0x18a0024 to +0x18a0040, the registers the macOS kext uses for the
     boot-args handshake of this SoC, from its decode) three times: before RUN, when AP power ON is acknowledged and before the shutdown. Read only, each
     address logged before its read. Whether the block can be read on this board is not known, and a read the block does not answer can hang or reset the machine, as the DART read can.
+  - `handshake=1` (needs `map_fw=1`, `read_scratch=1`, `rtkit_start=1` and `rtkit_stop=1` or `2`): the first write to the SCRATCH words. Once AP power ON
+    is acknowledged, the module reads the eight words, allocates the surfaces the macOS kext allocates (an IPC surface of `SCRATCH1 + 1` bytes rounded up to a
+    page, a HEAP surface of `SCRATCH3` bytes, and a page that holds the 0x174 byte init block), fills the block with the layout of `ane/t6021/ane_t6021_boot.h`,
+    writes the block address to SCRATCH0 (low) and SCRATCH1 (high), and then writes the wake word 0xf7fbdff9 to SCRATCH7. It waits up to `hs_wait_ms` for a new
+    address in SCRATCH1:SCRATCH0 together with 0x08042006 in SCRATCH7, and dumps the first 0x200 bytes at that address when one of its own surfaces holds it.
+    The firmware shows 0x08042006 before the wake, so the answer is judged by the new address. With this option the two firmware segments are mapped into the
+    default DMA domain of the ANE (no own domain is attached), because the surfaces come from the DMA API. The values the decode does not give are
+    guesses: the config size at block +0x10 is the T6021 value 0x500000 (`hs_cfg_size`), and the pool qword and the template word are zero. SCRATCH6 is not
+    written (the kext writes 1 there before RUN, the firmware showed 0). A hang, a reset or a DART fault is possible, and what the firmware does with the
+    surfaces is not known. The surfaces are freed only after the core stopped. Nothing here has run on the board.
   - `rtkit_hello=1` (needs `alias_mbox=1`): answer the firmware's RTKit management HELLO with version 12 and its endpoint map, nothing else. The
     reply goes to TX as one paired 16 byte store. No reply is sent without a free TX slot, for a message of another type or endpoint, or when the
     firmware's version range excludes 12. At most four replies per run.

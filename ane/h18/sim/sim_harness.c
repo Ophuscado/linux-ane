@@ -33,6 +33,14 @@ u64 sim_tx_msgs[32];
 int sim_n_tx_msgs, sim_idle_sent, sim_stop_needs_idle, sim_no_shutdown_reply;
 u32 sim_iop_ack_state = 0x20;
 int sim_credit_mode;
+u32 sim_scr[8];
+int sim_scr_model;
+struct sim_dma sim_dma[8];
+int sim_n_dma, sim_dma_fail, sim_dma_mask_bits;
+struct iommu_domain sim_default_dom = { __IOMMU_DOMAIN_DMA_API };
+int sim_default_dom_none;
+int sim_hs_mode;	/* 0 the firmware answers the wake word, 1 it never answers */
+int sim_hs_block_ok, sim_hs_wakes;
 u32 sim_credits_now = 1;
 int sim_rpm_enabled, sim_rpm_gets, sim_rpm_puts, sim_rpm_get_fail;
 struct sim_iocall sim_iocalls[64];
@@ -42,6 +50,40 @@ u32 sim_po_out_off, sim_alias_credits = 1, sim_hello_min = 11, sim_hello_max = 1
 
 #include "../ane_h18_soc.c"
 #include "../ane_h18_main.c"
+
+
+/* The modelled firmware sees the wake word: it checks the published init block against the layout of the T6021 header and, in mode 0, answers with a
+ * table address inside the IPC surface and READY. sim_hs_block_ok is set only when every field the decode names is right. */
+void sim_hs_react(void)
+{
+	u64 pub = ((u64)sim_scr[1] << 32) | sim_scr[0], f;
+	int k, found = -1;
+	const u8 *b;
+
+	sim_hs_wakes++;
+	for (k = 0; k < sim_n_dma; k++)
+		if (sim_dma[k].iova == pub)
+			found = k;
+	if (found < 0 || sim_n_dma < 2)
+		return;
+	b = sim_dma[found].va;
+#define F8(off) (memcpy(&f, b + (off), 8), f)
+#define F4(off) (memcpy(&f, b + (off), 4), f & 0xffffffffu)
+	f = 0;
+	sim_hs_block_ok = F8(0x00) == ane_t8152_soc.fw_seg[0].iova && F8(0x08) == sim_dma[1].iova && F8(0x10) == hs_cfg_size && F8(0x18) == 0x10000000ULL - hs_cfg_size &&
+			  F8(0x20) == (sim_n_dma > 2 ? sim_dma[2].iova : 0) && F8(0x28) == 0xf00000 && F8(0x50) == 0xc441 && F8(0x58) == pub && F4(0x68) == 0x40 && F4(0x12c) == 4 &&
+			  sim_dma[1].size == 0x10000 && sim_dma[2].size == 0xf00000;
+	if (sim_hs_mode == 2)
+		sim_scr[7] = ANE_H18_HS_READY;	/* READY again, but no table address: the block address stays in SCRATCH0 and SCRATCH1 */
+	if (sim_hs_mode == 0) {
+		u32 mark[4] = { 0x11111111, 0x22222222, 0x33333333, 0x44444444 };
+
+		memcpy((u8 *)sim_dma[1].va + 0x100, mark, sizeof(mark));
+		sim_scr[0] = (u32)(sim_dma[1].iova + 0x100);
+		sim_scr[1] = (u32)((sim_dma[1].iova + 0x100) >> 32);
+		sim_scr[7] = ANE_H18_HS_READY;
+	}
+}
 
 static int fails;
 static struct platform_device pdev;
@@ -132,6 +174,11 @@ static void reset_all(void)
 	sim_iop_ack_state = 0x20;
 	sim_credit_mode = 0;
 	sim_credits_now = 1;
+	handshake = false;
+	hs_cfg_size = 0x500000;
+	hs_wait_ms = 50;
+	sim_scr_model = sim_n_dma = sim_dma_fail = sim_default_dom_none = sim_hs_mode = sim_hs_block_ok = sim_hs_wakes = 0;
+	memset(sim_dma, 0, sizeof(sim_dma));
 	map_fw = false;
 	sim_rpm_enabled = sim_rpm_gets = sim_rpm_puts = sim_rpm_get_fail = 0;
 	sim_n_iocalls = sim_io_fail = sim_n_dom_live = 0;
@@ -799,6 +846,70 @@ static void pos_boot(void)
 	sim_start_hello = 3;
 	ret = probe_now();
 	chk(ret == 0 && events_in(SIM_SCRATCH_PA, SIM_SCRATCH_SIZE, 0) == 0, "S2 boot: no SCRATCH access without read_scratch");
+	/* handshake: the surfaces, the init block, SCRATCH0, SCRATCH1, the wake word, the table address */
+	{
+		static const u32 scr0[8] = { 8, 0xc440, 0x100, 0xf00000, 0, 0x100090, 0, ANE_H18_HS_READY };
+		int pass, k, w0 = -1, w1 = -1, w7 = -1, run = -1, shut = -1, live;
+		int nsc, nst;
+
+		for (pass = 0; pass < 9; pass++) {
+			kboot_setup();
+			alias_mbox = true;
+			rtkit_hello = true;
+			rtkit_start = true;
+			rtkit_stop = pass == 2 ? 0 : 1;
+			read_scratch = true;
+			handshake = true;
+			sim_start_chan = 536;
+			sim_start_hello = 3;
+			sim_scr_model = 1;
+			memcpy(sim_scr, scr0, sizeof(scr0));
+			if (pass == 1) sim_hs_mode = 1;
+			if (pass == 3) sim_scr[0] = 0x21;
+			if (pass == 4) sim_dma_fail = 3;
+			if (pass == 5) sim_default_dom_none = 1;
+			if (pass == 6) sim_scr[3] = 0x10000000;
+			if (pass == 7) sim_scr[1] = 0xffffffff;
+			if (pass == 8) sim_hs_mode = 2;
+			ret = probe_now();
+			nsc = events_in(SIM_SCRATCH_PA, SIM_SCRATCH_SIZE, 1);
+			for (live = 0, k = 0; k < sim_n_dma; k++)
+				live += sim_dma[k].live;
+			nst = log_count("ane_h18 rtkit shutdown: ap_acked=1 iop_acked=1");
+			if (pass == 0) {
+				for (k = 0; k < sim_n_events; k++) {
+					if (sim_events[k].write == 1 && sim_events[k].pa == SIM_SCRATCH_PA + 0x24 && w0 < 0) w0 = k;
+					if (sim_events[k].write == 1 && sim_events[k].pa == SIM_SCRATCH_PA + 0x28 && w1 < 0) w1 = k;
+					if (sim_events[k].write == 1 && sim_events[k].pa == SIM_SCRATCH_PA + 0x40 && w7 < 0) w7 = k;
+					if (sim_events[k].write == 1 && sim_events[k].pa == sim_asc_pa + 0x44 && sim_events[k].val == 0x10) run = k;
+					if (sim_events[k].write == 1 && sim_events[k].pa == sim_mbox_pa + 0x10c1c) shut = k;
+				}
+				chk(ret == 0 && result("boot", "PASS", "core-handshook-and-stopped") && sim_faults == 0, "HS1 handshake=1: PASS, the firmware's table address is seen, core stopped, no fault");
+				chk(sim_hs_wakes == 1 && sim_hs_block_ok, "HS1 handshake=1: the init block holds firmware iova, IPC and HEAP iovas, config size, SCRATCH3 and ordinal, pool iova, count 0x40, template word 4");
+				chk(nsc == 3 && sim_scr[7] == ANE_H18_HS_READY && w0 > run && w1 > w0 && w7 > w1, "HS1 handshake=1: exactly three SCRATCH writes, S0 then S1 then S7, all after RUN");
+				chk(sim_n_dma == 3 && live == 0 && sim_dma_mask_bits == 42, "HS1 handshake=1: three surfaces (pool, IPC, HEAP) from the DMA API with a 42 bit mask, all freed after the stop");
+				chk(sim_n_iocalls >= 2 && sim_iocalls[0].code == SIM_IO_MAP && sim_n_dom_live == 0 && log_count("no attach") == 1 && log_count("attach the ANE to a new DART domain") == 0,
+				    "HS1 handshake=1: the firmware segments go into the default domain, no domain allocated or attached");
+				chk(nst == 1 && log_pos("ane_h18 handshake result 0") > 0 && log_pos("ane_h18 handshake result 0") < log_pos("ane_h18 rtkit shutdown:"), "HS1 handshake=1: the handshake runs before the shutdown, which still completes");
+				chk(log_count("ane_h18 hs table +0: 11111111 22222222 33333333 44444444") == 1 && log_count("is in a surface of 0x10000 bytes") == 1, "HS1 handshake=1: the table dump starts at the address the firmware published");
+				chk(shut > w7, "HS1 handshake=1: the shutdown message comes after the wake word");
+			}
+			if (pass == 1)
+				chk(ret == -ETIMEDOUT && result("boot", "FAIL", "handshake-no-table-address") && nsc == 3 && live == 0 && nst == 1, "HS2 handshake=1: no answer gives FAIL handshake-no-table-address, the core still stopped cleanly and the surfaces freed");
+			if (pass == 2)
+				chk(ret == -EINVAL && result("boot", "REFUSED", "handshake=1 needs map_fw=1, rtkit_start=1, rtkit_stop=1 or 2, read_scratch=1, hs_wait_ms 10 to 5000, hs_cfg_size 1 to 0x10000000") && writes() == 0 && sim_n_dma == 0, "HS3 handshake=1 without rtkit_stop is refused before any write");
+			if (pass == 3)
+				chk(ret != 0 && result("boot", "FAIL", "handshake-not-done") && nsc == 0 && sim_n_dma == 0 && nst == 1, "HS4 handshake=1: SCRATCH0 at 0x21 or above: no allocation, no SCRATCH write, clean stop, FAIL");
+			if (pass == 4)
+				chk(ret != 0 && result("boot", "FAIL", "handshake-not-done") && nsc == 0 && live == 0 && sim_n_dma == 2 && nst == 1, "HS5 handshake=1: the HEAP allocation fails: surfaces freed, no SCRATCH write, clean stop, FAIL");
+			if (pass == 5)
+				chk(ret != 0 && result("boot", "FAIL", "fw-map-failed") && nsc == 0 && sim_n_dma == 0 && events_in(sim_asc_pa + 0x44, 4, 1) == 0, "HS6 handshake=1 without a default DMA domain: FAIL before RUN");
+			if (pass == 8)
+				chk(ret == -ETIMEDOUT && result("boot", "FAIL", "handshake-no-table-address") && nsc == 3 && live == 0, "HS8 handshake=1: READY again without a new table address is not an answer");
+			if (pass == 6 || pass == 7)
+				chk(ret != 0 && result("boot", "FAIL", "handshake-not-done") && nsc == 0 && sim_n_dma == 0 && nst == 1, pass == 6 ? "HS7 handshake=1: a HEAP request above the limit is refused before any allocation" : "HS7 handshake=1: an IPC request above the limit is refused before any allocation");
+		}
+	}
 	/* without rtkit_hello the messages are only logged */
 	boot_setup();
 	alias_mbox = true;
