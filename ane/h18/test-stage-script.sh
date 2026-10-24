@@ -108,6 +108,22 @@ FAKE_STAGE=boot expect "step 4 with dart=1 and hello=1 passes" 0 bash "$S" 4 012
 grep -q 'stage=boot confirm_power=1 confirm_boot=1 psd_state=1 psd_slots=2 boot_wait_ms=800 alias_mbox=1 read_dart=1 rtkit_hello=1' "$T/insmod.args" && echo "  PASS step 4 dart and hello args" || { echo "  FAIL step 4 dart and hello args"; fails=$((fails + 1)); }
 rm -f "$T/work/step4-run-0123abcd"
 sleep 1
+# step 5: step 4 with the firmware map, only for a DTB with iommus and power-domains in the node
+expect "step 5 on a node without iommus refused" 2 bash "$S" 5 0123abcd GO 1 2 800 1 1
+[ ! -e "$T/work/step4-run-0123abcd" ] && echo "  PASS a refused step 5 leaves no marker" || { echo "  FAIL marker after refused step 5"; fails=$((fails + 1)); }
+: > "$T/dt/soc/ane@419600000/iommus"
+expect "step 5 with iommus but no power-domains refused" 2 bash "$S" 5 0123abcd GO 1 2 800 1 1
+: > "$T/dt/soc/ane@419600000/power-domains"
+sleep 1
+FAKE_STAGE=boot expect "step 5 on a DTB with iommus and power-domains passes" 0 bash "$S" 5 0123abcd GO 1 2 800 1 1
+grep -q 'stage=boot confirm_power=1 confirm_boot=1 psd_state=1 psd_slots=2 boot_wait_ms=800 alias_mbox=1 read_dart=1 map_fw=1 rtkit_hello=1' "$T/insmod.args" && echo "  PASS step 5 args carry map_fw=1" || { echo "  FAIL step 5 args"; fails=$((fails + 1)); }
+expect "a second step 5 or 4 on one boot is refused" 2 bash "$S" 4 0123abcd GO
+rm -f "$T/work/step4-run-0123abcd" "$T/dt/soc/ane@419600000/iommus" "$T/dt/soc/ane@419600000/power-domains"
+sleep 1
+FAKE_STAGE=boot expect "step 4 on the old DTB passes and carries no map_fw" 0 bash "$S" 4 0123abcd GO 1 2 800
+grep -q 'map_fw' "$T/insmod.args" && { echo "  FAIL step 4 carries map_fw"; fails=$((fails + 1)); } || echo "  PASS step 4 carries no map_fw"
+rm -f "$T/work/step4-run-0123abcd"
+sleep 1
 # after a step 4 ran, no ANE step of any number may start until a reboot
 touch "$T/work/step4-run-0123abcd"
 expect "step 1 after a step 4 is refused" 2 bash "$S" 1 0123abcd

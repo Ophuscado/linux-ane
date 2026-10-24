@@ -31,6 +31,8 @@
 #include <linux/err.h>
 #include <linux/errno.h>
 #include <linux/io.h>
+#include <linux/iommu.h>
+#include <linux/pm_runtime.h>
 #include <linux/ioport.h>
 #include <linux/jiffies.h>
 #include <linux/mod_devicetable.h>
@@ -88,6 +90,10 @@ static bool alias_mbox;
 module_param(alias_mbox, bool, 0444);
 MODULE_PARM_DESC(alias_mbox, "Stage=boot: also watch the alias-bank Postoffice channel (window + 0x10000, channel 2 * mailbox number). Default off.");
 
+static bool map_fw;
+module_param(map_fw, bool, 0444);
+MODULE_PARM_DESC(map_fw, "Stage=boot: before RUN, attach the ANE to its DART through the iommu API and map the two preloaded firmware segments at their IOVAs. Needs power-domains and iommus in the node. Default off.");
+
 static bool rtkit_hello;
 module_param(rtkit_hello, bool, 0444);
 MODULE_PARM_DESC(rtkit_hello, "Stage=boot with alias_mbox=1: answer the firmware's RTKit management HELLO (version 12) and the endpoint map, nothing else. Default off.");
@@ -110,6 +116,9 @@ struct ane_h18 {
 	void __iomem *rvbar;
 	void __iomem *mbox;
 	void __iomem *dart;
+	struct iommu_domain *domain;
+	bool kpsd;		/* the node has power-domains: the kernel's PSD driver owns the slots, this module only holds a runtime PM reference */
+	bool rpm_held;
 	bool psd_on[ANE_H18_NPSD];
 	bool fw_started;
 };
@@ -295,6 +304,13 @@ static void ane_h18_psd_off(struct ane_h18 *ane)
 {
 	int i;
 
+	if (ane->kpsd) {
+		if (ane->rpm_held) {
+			ane->rpm_held = false;
+			pm_runtime_put(ane->dev);
+		}
+		return;
+	}
 	for (i = ANE_H18_NPSD - 1; i >= 0; i--) {
 		if (!ane->psd_on[i])
 			continue;
@@ -302,6 +318,37 @@ static void ane_h18_psd_off(struct ane_h18 *ane)
 			dev_warn(ane->dev, "ane_h18 psd%d did not return to state 6\n", i);
 		ane->psd_on[i] = false;
 	}
+}
+
+/* Bring the slots up. Without power-domains in the node this module requests state psd_state on the first psd_slots slots and waits for each
+ * acknowledge. With power-domains the kernel's PSD driver owns the slots: this module takes a runtime PM reference, which powers the domain (and fails
+ * if the power-on fails), and never writes a PSD request. The slots' VALID bit cannot tell on from off there, because the kernel driver's own STATUS
+ * read clears the acknowledge. */
+static int ane_h18_psd_up(struct ane_h18 *ane, const char *stg)
+{
+	unsigned int i;
+	int ret;
+
+	if (ane->kpsd) {
+		dev_crit(ane->dev, "ane_h18 runtime PM get: the kernel PSD driver powers slots 30 and 31 now\n");
+		ret = pm_runtime_resume_and_get(ane->dev);
+		if (ret) {
+			ane_h18_result(ane, stg, "FAIL", "kernel-psd-power-on-failed");
+			return ret;
+		}
+		ane->rpm_held = true;
+		return 0;
+	}
+	for (i = 0; i < psd_slots; i++) {
+		ret = ane_h18_psd_request(ane, i, psd_state);
+		if (ret) {
+			ane_h18_psd_off(ane);
+			ane_h18_result(ane, stg, "FAIL", "psd-not-acknowledged");
+			return ret;
+		}
+		ane->psd_on[i] = true;
+	}
+	return 0;
 }
 
 static int ane_h18_read(struct ane_h18 *ane, const char *name, void __iomem *base, u64 pa, u32 off, u32 size_win, u32 *v)
@@ -337,15 +384,9 @@ static int ane_h18_stage_power(struct ane_h18 *ane)
 		ane_h18_result(ane, "power", "REFUSED", "psd_state must be 0 to 5 and psd_slots 1 or 2");
 		return -EINVAL;
 	}
-	for (i = 0; i < psd_slots; i++) {
-		ret = ane_h18_psd_request(ane, i, psd_state);
-		if (ret) {
-			ane_h18_psd_off(ane);
-			ane_h18_result(ane, "power", "FAIL", "psd-not-acknowledged");
-			return ret;
-		}
-		ane->psd_on[i] = true;
-	}
+	ret = ane_h18_psd_up(ane, "power");
+	if (ret)
+		return ret;
 	/* Everything below is read-only and happens only after every requested slot acknowledged. */
 	ret = ane_h18_read(ane, "CPU_STATUS", ane->asc, s->asc_pa, ANE_H18_ASC_CPU_STATUS, s->asc_size, &cpu_status);
 	if (!ret)
@@ -405,13 +446,67 @@ static int ane_h18_po_pop(struct ane_h18 *ane, u32 chan_off, const char *tag, u3
 	return 1;
 }
 
+/* Undo ane_h18_map_firmware(): unmap what was mapped, detach, free. Never called while the core may run. */
+static void ane_h18_unmap_firmware(struct ane_h18 *ane, unsigned int nmapped)
+{
+	unsigned int i;
+
+	if (!ane->domain)
+		return;
+	for (i = 0; i < nmapped; i++)
+		iommu_unmap(ane->domain, ane->soc->fw_seg[i].iova, ane->soc->fw_seg[i].size);
+	iommu_detach_device(ane->domain, ane->dev);
+	iommu_domain_free(ane->domain);
+	ane->domain = NULL;
+}
+
+/* Attach the ANE to its DART through the iommu API (the DART driver programs its tunables, TTBR, TCR and stream enable now, with the slots powered)
+ * and map the two firmware segments the boot loader left in DRAM at their IOVAs. The mapping stays until the module is removed after a clean stop. */
+static int ane_h18_map_firmware(struct ane_h18 *ane)
+{
+	const struct ane_h18_soc *s = ane->soc;
+	struct iommu_domain *dom;
+	unsigned int i;
+	int ret;
+
+	if (!device_iommu_mapped(ane->dev)) {
+		dev_err(ane->dev, "ane_h18 map_fw: the node has no iommus (no DART client)\n");
+		return -ENODEV;
+	}
+	dom = iommu_paging_domain_alloc(ane->dev);
+	if (IS_ERR(dom)) {
+		dev_err(ane->dev, "ane_h18 map_fw: no iommu domain: %ld\n", PTR_ERR(dom));
+		return PTR_ERR(dom);
+	}
+	dev_crit(ane->dev, "ane_h18 attach the ANE to a new DART domain (the DART driver programs the DART now)\n");
+	ret = iommu_attach_device(dom, ane->dev);
+	if (ret) {
+		dev_err(ane->dev, "ane_h18 map_fw: attach failed: %d\n", ret);
+		iommu_domain_free(dom);
+		return ret;
+	}
+	ane->domain = dom;
+	for (i = 0; i < ARRAY_SIZE(s->fw_seg); i++) {
+		dev_crit(ane->dev, "ane_h18 iommu_map iova=%#llx pa=%#llx size=%#llx %s\n", s->fw_seg[i].iova, s->fw_seg[i].pa, s->fw_seg[i].size,
+			 s->fw_seg[i].write ? "read+write" : "read");
+		ret = iommu_map(dom, s->fw_seg[i].iova, s->fw_seg[i].pa, s->fw_seg[i].size,
+				IOMMU_READ | (s->fw_seg[i].write ? IOMMU_WRITE : 0), GFP_KERNEL);
+		if (ret) {
+			dev_err(ane->dev, "ane_h18 map_fw: iommu_map of segment %u failed: %d\n", i, ret);
+			ane_h18_unmap_firmware(ane, i);
+			return ret;
+		}
+	}
+	return 0;
+}
+
 /* Offsets of the ANE DART words read before RUN: config (+0x0), +0x4, version (+0x8), the stream-enable word (+0xc00), the stream configuration
  * words of streams 0, 10 and 13 (+0x1000 + 4 * stream) and the TTBR words of streams 0, 1, 10, 13 and 14 (+0x1400 + 4 * stream, one TTBR word per
  * stream as in the T8152 table of drivers/iommu/apple-dart.c that the USB DARTs of this board already run on).
  * Nothing is written. Every read is logged before it is done, so a hang names the word. */
 static const u32 ane_h18_dart_off[ANE_H18_DART_NREAD] = { 0x0, 0x4, 0x8, 0xc00, 0x1000, 0x1028, 0x1034, 0x1400, 0x1404, 0x1428, 0x1434, 0x1438 };
 
-static int ane_h18_read_dart_words(struct ane_h18 *ane)
+static int ane_h18_read_dart_words(struct ane_h18 *ane, const char *pfx)
 {
 	const struct ane_h18_soc *s = ane->soc;
 	unsigned int i;
@@ -421,7 +516,7 @@ static int ane_h18_read_dart_words(struct ane_h18 *ane)
 	for (i = 0; !ret && i < ANE_H18_DART_NREAD; i++) {
 		char nm[24];
 
-		snprintf(nm, sizeof(nm), "DART0_%#x", ane_h18_dart_off[i]);
+		snprintf(nm, sizeof(nm), "%s_%#x", pfx, ane_h18_dart_off[i]);
 		ret = ane_h18_read(ane, nm, ane->dart, s->dart_pa, ane_h18_dart_off[i], s->dart_size, &v);
 	}
 	return ret;
@@ -534,23 +629,21 @@ static int ane_h18_stage_boot(struct ane_h18 *ane)
 		ane_h18_result(ane, "boot", "REFUSED", "psd_state 0 to 5, psd_slots 1 or 2, boot_wait_ms 10 to 2000");
 		return -EINVAL;
 	}
+	if (map_fw && !ane->kpsd) {
+		ane_h18_result(ane, "boot", "REFUSED", "map_fw=1 needs power-domains in the node (the kernel's PSD driver powers the slots for the DART)");
+		return -EINVAL;
+	}
 	if (rtkit_hello && !alias_mbox) {
 		ane_h18_result(ane, "boot", "REFUSED", "rtkit_hello=1 needs alias_mbox=1");
 		return -EINVAL;
 	}
-	if (read_dart && psd_slots != ANE_H18_NPSD) {
+	if (read_dart && !ane->kpsd && psd_slots != ANE_H18_NPSD) {
 		ane_h18_result(ane, "boot", "REFUSED", "read_dart=1 needs psd_slots=2 (the DART block is read only with both ANE slots on)");
 		return -EINVAL;
 	}
-	for (i = 0; i < psd_slots; i++) {
-		ret = ane_h18_psd_request(ane, i, psd_state);
-		if (ret) {
-			ane_h18_psd_off(ane);
-			ane_h18_result(ane, "boot", "FAIL", "psd-not-acknowledged");
-			return ret;
-		}
-		ane->psd_on[i] = true;
-	}
+	ret = ane_h18_psd_up(ane, "boot");
+	if (ret)
+		return ret;
 	/* Preflight, all read only: the core must be stopped with RUN clear and IORVBAR exactly as iBoot leaves it. */
 	ret = ane_h18_read(ane, "CPU_STATUS", ane->asc, s->asc_pa, ANE_H18_ASC_CPU_STATUS, s->asc_size, &st);
 	if (!ret)
@@ -577,11 +670,28 @@ static int ane_h18_stage_boot(struct ane_h18 *ane)
 		dev_info(ane->dev, "ane_h18 alias status before RUN pa=%#llx value=%#x\n", s->mbox_pa + chan_off + ANE_H18_PO_STATUS, ast);
 	}
 	if (read_dart) {
-		ret = ane_h18_read_dart_words(ane);
+		ret = ane_h18_read_dart_words(ane, "DART0");
 		if (ret) {
 			ane_h18_psd_off(ane);
 			ane_h18_result(ane, "boot", "FAIL", "dart-read-refused");
 			return ret;
+		}
+	}
+	if (map_fw) {
+		ret = ane_h18_map_firmware(ane);
+		if (ret) {
+			ane_h18_psd_off(ane);
+			ane_h18_result(ane, "boot", "FAIL", "fw-map-failed");
+			return ret;
+		}
+		if (read_dart) {
+			ret = ane_h18_read_dart_words(ane, "DARTPOST");
+			if (ret) {
+				ane_h18_unmap_firmware(ane, ARRAY_SIZE(s->fw_seg));
+				ane_h18_psd_off(ane);
+				ane_h18_result(ane, "boot", "FAIL", "dart-read-refused");
+				return ret;
+			}
 		}
 	}
 	/* Start the core. From here a reboot may be needed. */
@@ -637,6 +747,7 @@ static int ane_h18_stage_boot(struct ane_h18 *ane)
 		return ret ? ret : -EBUSY;
 	}
 	ane->fw_started = false;
+	ane_h18_unmap_firmware(ane, ARRAY_SIZE(s->fw_seg));
 	if (!keep_on)
 		ane_h18_psd_off(ane);
 	if (ret) {
@@ -668,6 +779,13 @@ static int ane_h18_probe(struct platform_device *pdev)
 		return -ENOMEM;
 	ane->dev = &pdev->dev;
 	ane->soc = &ane_t8152_soc;
+	ane->kpsd = of_property_present(pdev->dev.of_node, "power-domains");
+	if (ane->kpsd) {
+		dev_info(&pdev->dev, "ane_h18 the node has power-domains: the kernel powers PSD slots 30 and 31, this module requests no PSD state\n");
+		ret = devm_pm_runtime_enable(&pdev->dev);
+		if (ret)
+			return ret;
+	}
 	platform_set_drvdata(pdev, ane);
 
 	ret = ane_h18_check_windows(ane, idx);

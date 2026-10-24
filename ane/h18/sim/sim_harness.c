@@ -27,6 +27,9 @@ u64 sim_rvbar_val = 0x10000000001ULL;
 int sim_core_running, sim_core_stuck, sim_ctrl_writes;
 u32 sim_po_msg[SIM_PO_CH][SIM_PO_Q][4];
 int sim_po_n[SIM_PO_CH], sim_po_head[SIM_PO_CH];
+int sim_rpm_enabled, sim_rpm_gets, sim_rpm_puts, sim_rpm_get_fail;
+struct sim_iocall sim_iocalls[64];
+int sim_n_iocalls, sim_io_fail, sim_n_dom_live;
 int sim_start_chan = -1, sim_start_msgs, sim_start_hello;
 u32 sim_po_out_off, sim_alias_credits = 1, sim_hello_min = 11, sim_hello_max = 12, sim_hello_ep, sim_hello_type = 1;
 
@@ -115,6 +118,9 @@ static void reset_all(void)
 	read_dart = false;
 	alias_mbox = false;
 	rtkit_hello = false;
+	map_fw = false;
+	sim_rpm_enabled = sim_rpm_gets = sim_rpm_puts = sim_rpm_get_fail = 0;
+	sim_n_iocalls = sim_io_fail = sim_n_dom_live = 0;
 	sim_start_hello = 0;
 	sim_po_out_off = 0;
 	sim_alias_credits = 1;
@@ -441,6 +447,45 @@ static void boot_setup(void)
 
 static int ctrl_write_events(void) { return events_in(sim_asc_pa + 0x44, 4, 1); }
 
+/* kernel-powered node: power-domains and iommus in the node, both PSD slots already on (the kernel PSD driver did it) */
+static void kboot_setup(void)
+{
+	boot_setup();
+	node.has_power_domains = true;
+	node.has_iommus = true;
+	sim_psd_state[0] = sim_psd_state[1] = 1;
+	map_fw = true;
+}
+
+static int psd_write_events(void)
+{
+	int k, n = 0;
+
+	for (k = 0; k < sim_n_events; k++)
+		if (sim_events[k].write == 1 && sim_events[k].pa >= SIM_PSD_BASE && sim_events[k].pa < SIM_PSD_BASE + 0x40000)
+			n++;
+	return n;
+}
+
+static int iocalls_of(int code)
+{
+	int k, n = 0;
+
+	for (k = 0; k < sim_n_iocalls && k < 64; k++)
+		n += sim_iocalls[k].code == code;
+	return n;
+}
+
+static int first_run_event(void)
+{
+	int k, run = -1;
+
+	for (k = 0; k < sim_n_events; k++)
+		if (sim_events[k].write == 1 && sim_events[k].pa == sim_asc_pa + 0x44 && sim_events[k].val == 0x10)
+			run = k;
+	return run;
+}
+
 static void pos_boot(void)
 {
 	char seq[512], want[512];
@@ -607,6 +652,45 @@ static void pos_boot(void)
 		chk(ret == 0 && first_alias > 0 && first_alias < run && log_count("ane_h18 alias status before RUN") == 1, "H4 boot alias_mbox: the alias STATUS word is read and logged before the RUN write");
 	}
 
+	/* kernel-powered node with map_fw: no PSD request, a runtime PM reference, then attach, two maps, the DART read again, RUN, and a clean undo */
+	kboot_setup();
+	read_dart = true;
+	alias_mbox = true;
+	rtkit_hello = true;
+	sim_start_chan = 536;
+	sim_start_hello = 1;
+	ret = probe_now();
+	chk(ret == 0 && result("boot", "PASS", "core-ran-and-stopped"), "K1 boot map_fw (kernel-powered): PASS");
+	chk(psd_write_events() == 0 && sim_rpm_enabled == 1 && sim_rpm_gets == 1 && sim_rpm_puts == 1, "K1 boot map_fw: no PSD write, one runtime PM get and put");
+	chk(iocalls_of(SIM_IO_ALLOC) == 1 && iocalls_of(SIM_IO_ATTACH) == 1 && iocalls_of(SIM_IO_MAP) == 2 && iocalls_of(SIM_IO_UNMAP) == 2 &&
+	    iocalls_of(SIM_IO_DETACH) == 1 && iocalls_of(SIM_IO_FREE) == 1 && sim_n_dom_live == 0, "K1 boot map_fw: alloc, attach, two maps, then two unmaps, detach and free after the clean stop");
+	{
+		int maps = 0, ok = 1, k, order_ok = 1, last_map = -1, attach = -1;
+
+		for (k = 0; k < sim_n_iocalls && k < 64; k++) {
+			if (sim_iocalls[k].code == SIM_IO_ATTACH)
+				attach = sim_iocalls[k].ev;
+			if (sim_iocalls[k].code != SIM_IO_MAP)
+				continue;
+			last_map = sim_iocalls[k].ev;
+			if (maps == 0)
+				ok &= sim_iocalls[k].iova == 0x10000000000ULL && sim_iocalls[k].pa == 0x100014e8000ULL && sim_iocalls[k].size == 0xc4000 && sim_iocalls[k].prot == IOMMU_READ;
+			if (maps == 1)
+				ok &= sim_iocalls[k].iova == 0x100000c4000ULL && sim_iocalls[k].pa == 0x100030c4000ULL && sim_iocalls[k].size == 0x2ac000 && sim_iocalls[k].prot == (IOMMU_READ | IOMMU_WRITE);
+			maps++;
+		}
+		chk(maps == 2 && ok, "K1 boot map_fw: TEXT maps 0x100014e8000 at 0x10000000000 read only, DATA 0x100030c4000 at 0x100000c4000 read and write");
+		order_ok = attach > 0 && last_map >= attach && first_run_event() > last_map;
+		chk(order_ok, "K1 boot map_fw: the attach and both maps come before the RUN write");
+	}
+	chk(events_in(SIM_DART_PA, SIM_DART_SIZE, 0) == 2 * ANE_H18_DART_NREAD && log_count("CRIT: ane_h18 read DARTPOST_0 pa=0x419800000") == 1, "K1 boot map_fw: the DART words are read before and after the map");
+	chk(sim_faults == 0 && log_count("ane_h18 rtkit rx type=") == 2, "K1 boot map_fw: zero faults, HELLO and EPMAP decoded");
+	/* kernel-powered node without map_fw: still no PSD request */
+	kboot_setup();
+	map_fw = false;
+	ret = probe_now();
+	chk(ret == 0 && psd_write_events() == 0 && iocalls_of(SIM_IO_ALLOC) == 0 && sim_rpm_gets == 1 && sim_rpm_puts == 1, "K2 boot kernel-powered without map_fw: PASS, no PSD write, no iommu call");
+
 	/* the core never reports running: PASS with its own reason, still stopped at the end */
 	boot_setup();
 	sim_run_status = 0x2a;
@@ -680,6 +764,46 @@ static int neg_boot(void)
 	sim_psd_mode[1] = SIM_PSD_NEVER;
 	ret = probe_now();
 	if (ret != -ETIMEDOUT || ctrl_write_events() || first_asc_read() >= 0 || sim_psd_state[0] != 6) { printf("    PSD never acknowledges\n"); bad = 1; }
+
+	/* map_fw: refusals and failures end before the RUN write and undo what was done */
+	boot_setup();
+	map_fw = true;
+	ret = probe_now();
+	if (ret != -EINVAL || writes() || sim_n_iocalls || !result("boot", "REFUSED", "map_fw=1 needs power-domains in the node (the kernel's PSD driver powers the slots for the DART)")) { printf("    map_fw without power-domains\n"); bad = 1; }
+	{
+		int c;
+
+		for (c = 0; c < 5; c++) {
+			const char *what = "";
+
+			kboot_setup();
+			switch (c) {
+			case 0: node.has_iommus = false; what = "no iommus in the node"; break;
+			case 1: sim_io_fail = 1; what = "domain alloc fails"; break;
+			case 2: sim_io_fail = 2; what = "attach fails"; break;
+			case 3: sim_io_fail = 3; what = "the second map fails"; break;
+			case 4: sim_rpm_get_fail = 1; what = "the runtime PM get fails"; break;
+			}
+			ret = probe_now();
+			if (ret == 0 || first_run_event() >= 0 || psd_write_events() || sim_n_dom_live != 0 || !result("boot", "FAIL", c == 4 ? "kernel-psd-power-on-failed" : "fw-map-failed")) {
+				printf("    %s: ret %d, run event %d, psd writes %d, live domains %d\n", what, ret, first_run_event(), psd_write_events(), sim_n_dom_live);
+				bad = 1;
+			}
+			if (c == 3 && (iocalls_of(SIM_IO_MAP) != 2 || iocalls_of(SIM_IO_UNMAP) != 1 || iocalls_of(SIM_IO_DETACH) != 1 || iocalls_of(SIM_IO_FREE) != 1)) { printf("    %s: undo incomplete\n", what); bad = 1; }
+			if (c == 2 && (iocalls_of(SIM_IO_MAP) != 0 || iocalls_of(SIM_IO_FREE) != 1)) { printf("    %s: map after a failed attach or no free\n", what); bad = 1; }
+			if (c == 4 && (sim_n_iocalls || events_in(sim_asc_pa, sim_asc_size, 0))) { printf("    %s: touched the ASC or the iommu\n", what); bad = 1; }
+			if (c != 4 && sim_rpm_puts != 1) { printf("    %s: runtime PM reference not released\n", what); bad = 1; }
+			if (sim_n_iomap != sim_n_iounmap) { printf("    %s: leaked a window\n", what); bad = 1; }
+		}
+	}
+	/* a stuck core with map_fw: the mapping and the power reference stay, nothing is undone under a core that may run */
+	kboot_setup();
+	sim_core_stuck = 1;
+	ret = probe_now();
+	if (ret == 0 || !result("boot", "FAIL", "core-not-stopped") || iocalls_of(SIM_IO_UNMAP) || iocalls_of(SIM_IO_DETACH) || iocalls_of(SIM_IO_FREE) || sim_n_dom_live != 1 || sim_rpm_puts != 0) {
+		printf("    stuck core with map_fw: ret %d unmaps %d live %d puts %d\n", ret, iocalls_of(SIM_IO_UNMAP), sim_n_dom_live, sim_rpm_puts);
+		bad = 1;
+	}
 
 	/* a core that does not stop: FAIL, slots stay on, the module keeps its mappings and refuses to claim a clean state */
 	boot_setup();

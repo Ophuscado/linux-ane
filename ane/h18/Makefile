@@ -71,7 +71,7 @@ sim-mutation-nowindow:
 
 # a failed request does not put the acknowledged slots back to state 6
 sim-mutation-noundo:
-	$(call mutant,noundo,/^static int ane_h18_stage_power/$(COMMA)/^}/ s/ane_h18_psd_off(ane);/\/* NEG: no undo *\//,NEG: no undo,neg-psd-never)
+	$(call mutant,noundo,/^static int ane_h18_psd_up/$(COMMA)/^}/ s/ane_h18_psd_off(ane);/\/* NEG: no undo *\//,NEG: no undo,neg-psd-never)
 
 # the acknowledged state is not compared with the requested one
 sim-mutation-noack:
@@ -108,21 +108,38 @@ sim-mutation-nover:
 
 # read_dart is allowed with one PSD slot
 sim-mutation-dartgate:
-	$(call mutant,dartgate,s/if (read_dart \&\& psd_slots != ANE_H18_NPSD) {/if (0 \/* NEG: DART gate off *\/) {/,NEG: DART gate off,neg-boot)
+	$(call mutant,dartgate,s/if (read_dart \&\& !ane->kpsd \&\& psd_slots != ANE_H18_NPSD) {/if (0 \/* NEG: DART gate off *\/) {/,NEG: DART gate off,neg-boot)
 
 # rtkit_hello is allowed without alias_mbox
 sim-mutation-hellogate:
 	$(call mutant,hellogate,s/if (rtkit_hello \&\& !alias_mbox) {/if (0 \/* NEG: hello gate off *\/) {/,NEG: hello gate off,neg-boot)
 
+# the firmware is mapped without the kernel-powered node (map_fw allowed with the module's own PSD requests)
+sim-mutation-mapgate:
+	$(call mutant,mapgate,s/if (map_fw \&\& !ane->kpsd) {/if (0 \/* NEG: map gate off *\/) {/,NEG: map gate off,neg-boot)
+
+# the RUN write comes before the firmware map (the maps move behind the RUN comment)
+sim-mutation-nofail:
+	$(call mutant,nofail,s/ane_h18_result(ane$(COMMA) "boot"$(COMMA) "FAIL"$(COMMA) "fw-map-failed");/\/* NEG: map failure ignored *\/ ret = 0;/,NEG: map failure ignored,neg-boot)
+
+# a failed second map leaves the first mapped, the domain attached
+sim-mutation-noundomap:
+	$(call mutant,noundomap,s/for (i = 0; i < nmapped; i++)/for (i = 0; i < 0 \&\& nmapped; i++) \/* NEG: no unmap *\//,NEG: no unmap,neg-boot)
+
+# the runtime PM reference is never released after a clean stop
+sim-mutation-norpmput:
+	$(call mutant,norpmput,s/pm_runtime_put(ane->dev);/\/* NEG: no put *\//,NEG: no put,pos)
+
 sim-all: sim-test sim-negative-psd-never sim-negative-psd-wrong sim-negative-dt sim-negative-args sim-negative-boot \
 	sim-mutation-noconfirm sim-mutation-nowindow sim-mutation-noundo sim-mutation-noack sim-mutation-nogate \
 	sim-mutation-noconfirmboot sim-mutation-nopreflight sim-mutation-nohalt \
-	sim-mutation-nocredit sim-mutation-wronghalf sim-mutation-nover sim-mutation-dartgate sim-mutation-hellogate
+	sim-mutation-nocredit sim-mutation-wronghalf sim-mutation-nover sim-mutation-dartgate sim-mutation-hellogate \
+	sim-mutation-mapgate sim-mutation-nofail sim-mutation-noundomap sim-mutation-norpmput
 
 clean:
 	$(MAKE) -C $(KERNELDIR) M=$(PWD) clean
 	rm -f sim/sim_h18
 
-.PHONY: sim-mutation-nocredit sim-mutation-wronghalf sim-mutation-nover sim-mutation-dartgate sim-mutation-hellogate sim-negative-boot sim-mutation-noconfirmboot sim-mutation-nopreflight sim-mutation-nohalt default modules sim-test sim-negative-psd-never sim-negative-psd-wrong sim-negative-dt sim-negative-args \
+.PHONY: sim-mutation-mapgate sim-mutation-nofail sim-mutation-noundomap sim-mutation-norpmput sim-mutation-nocredit sim-mutation-wronghalf sim-mutation-nover sim-mutation-dartgate sim-mutation-hellogate sim-negative-boot sim-mutation-noconfirmboot sim-mutation-nopreflight sim-mutation-nohalt default modules sim-test sim-negative-psd-never sim-negative-psd-wrong sim-negative-dt sim-negative-args \
 	sim-mutation-noconfirm sim-mutation-nowindow sim-mutation-noundo sim-mutation-noack sim-mutation-nogate sim-all clean
 endif

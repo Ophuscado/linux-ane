@@ -1,0 +1,59 @@
+// SPDX-License-Identifier: GPL-2.0+ OR MIT
+/*
+ * Apple T8152 (M6) J873: the ANE DART, the ANE PSD slot group and the iommu and power links of the ane0 node.
+ * Use it after t8152-j873-ane.dtsi, which has the ane0 node. The group below has its own slot windows and needs no other PSD file.
+ *
+ * ANE DART (ADT /arm-io/dart-ane): dart,gen3, manual availability, page size 16384, vm-base 0x10000000000,
+ * 16 streams. Instance 0 window 0x219800000 size 0xc000 plus 0x200000000 (the translation of every ADT address of this board), its
+ * tunables as (offset, mask, value) from dart-tunables-instance-0, byte for byte the same seven entries as the USB DARTs, and the shared
+ * TLBI doorbell (ADT dart-tlbi-aperture at offset 0, tlbi-aperture-offset 0 for dart-ane). The interrupt is ADT 789.
+ * The firmware stream of the ANE ASC is stream 0 (ADT /arm-io/dart-ane/mapper-ane, reg 0). Instances 1 to 3 are not described.
+ *
+ * Power: the ADT lists power-gates [30, 31] for the ANE, PSD service slots 30 and 31. The group domain requests state 1 on both, in that
+ * order, as the module's stage power did on the board (state 1 was acknowledged on both slots). The DART and the ane0 node both list the
+ * group, so the kernel powers the slots before the DART is first used and before the ane_h18 module binds. With this overlay the ane_h18
+ * module requests no PSD state of its own: it sees power-domains in its node. Binding the module now writes the two PSD request
+ * registers, so even stage dt touches the hardware with this overlay.
+ *
+ * Not verified on the board: the DART node (no ANE DART access has run through the kernel's DART driver), and that the kernel's static
+ * topology path programs this DART the way it does the USB DARTs.
+ */
+
+/ {
+	soc {
+		psd_ane0: power-controller@303a11e00 {
+			compatible = "apple,t8152-psd-group";
+			reg = <0x3 0x03a11e00 0x0 0x100>,	/* slot 30 ANE0_CPU_BLOCKIN */
+			      <0x3 0x03a11f00 0x0 0x100>;	/* slot 31 ANE0_SYS_0 */
+			apple,psd-states = <1 1>;
+			#power-domain-cells = <0>;
+			label = "psd_ane0";
+		};
+
+		dart_ane0: iommu@419800000 {
+			compatible = "apple,t8152-dart";
+			reg = <0x4 0x19800000 0x0 0xc000>,
+			      <0x2 0x00000000 0x0 0x10>;
+			interrupt-parent = <&aic>;
+			interrupts = <AIC_IRQ 789 IRQ_TYPE_LEVEL_HIGH>;
+			#iommu-cells = <1>;
+			/* no DART MMIO at probe: ADT dart,gen3 manual-availability, see apple-dart.c */
+			apple,static-topology;
+			apple,num-streams = <16>;
+			power-domains = <&psd_ane0>;
+			/* ADT dart-tunables-instance-0 as (offset, mask, value) */
+			apple,tunable = <0x20c 0x80000121 0x80000121>,
+					<0x220 0x00000f0f 0x00000f0f>,
+					<0x224 0x0000ffff 0x00000909>,
+					<0x300 0x00001f31 0x00000001>,
+					<0x308 0x3ffffffc 0x10000000>,
+					<0x310 0x3ffffffc 0x3ffffffc>,
+					<0x4600 0x00000002 0x00000002>;
+		};
+	};
+};
+
+&ane0 {
+	iommus = <&dart_ane0 0>;
+	power-domains = <&psd_ane0>;
+};

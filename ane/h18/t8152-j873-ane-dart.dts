@@ -1,0 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0+ OR MIT
+/*
+ * Apple T8152 (M6) J873 with the ANE0 node, the ANE DART and the ANE PSD slot group: the board file plus t8152-j873-ane.dtsi and
+ * t8152-j873-ane-dart.dtsi. The kernel powers PSD slots 30 and 31 for the DART and at module bind; the module requests no PSD state.
+ * Copy the three files next to t8152-j873.dts in the kernel tree to build the DTB.
+ */
+
+#include "t8152-j873.dts"
+#include "t8152-j873-ane.dtsi"
+#include "t8152-j873-ane-dart.dtsi"

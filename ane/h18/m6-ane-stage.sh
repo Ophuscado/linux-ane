@@ -3,6 +3,7 @@
 # m6-ane-stage.sh: run ONE ane_h18 stage on the M6 (T8152), as root, and collect the log.
 #   m6-ane-stage.sh <1|2|3> <boot-id prefix> [GO [state [slots [mbox [ctrl]]]]]
 #   m6-ane-stage.sh 4 <boot-id prefix> GO [state [slots [wait_ms [dart [hello]]]]]
+#   m6-ane-stage.sh 5 <boot-id prefix> GO [state [slots [wait_ms [dart [hello]]]]]
 # Step 1 = stage dt (no MMIO), step 2 = stage psd (read-only PSD slots 30 and 31), step 3 = stage power with
 # confirm_power=1 (requests PSD state <state> on the first <slots> slots, default 1 = slot 30 only, then reads CPU_STATUS,
 # ASC_STATUS and IORVBAR; mbox=1 also reads the Postoffice status words of three candidate channels, ctrl=1 also reads CPU_CONTROL).
@@ -10,6 +11,9 @@
 # clears RUN again. It also reads the status word of the alias-bank mailbox channel before RUN and watches that channel for messages.
 # dart=1 reads twelve words of the ANE DART before RUN (needs two slots); hello=1 answers the firmware's RTKit management HELLO
 # (version 12) and endpoint map in the TX half of that channel (RX +0x00, TX +0x10), one paired 16 byte access per message, nothing else.
+# Step 5 is step 4 with map_fw=1, for a DTB that has the ANE DART: it needs power-domains and iommus in the ANE node, attaches the ANE to
+# its DART through the iommu API and maps the two preloaded firmware segments before RUN. The state and slots arguments are ignored there
+# (the kernel's PSD driver owns the slots). Step 5 counts as step 4: it needs a step 3 PASS and runs once per boot.
 # It needs GO, a step 3 PASS on this boot, and runs once per boot: reboot before anything else after it.
 # The state defaults to 1: the AppleT8152PMGR kext decode in the lab receipts reads "on" as request 1 (or 2) for these slots,
 # and names 1 as the first experiment. 0 is the value proven for the ATC USB slot 71 and GPU slot 3, 2 is the GPU ASC value.
@@ -32,7 +36,7 @@ fi
 
 WORK=${WORK:-/var/tmp/m6-ane}
 KO=${KO:-$WORK/ane_h18.ko}
-KO_SHA256=${KO_SHA256:-270984ad2c1a2867ead220c144d012de7d40ed57fed859ad78d004968d918a68}
+KO_SHA256=${KO_SHA256:-0961e70197782bddb77eeda9f728fd74acc5818b47d50820e21dd2ead731abdc}
 WANT_UNAME=${WANT_UNAME:-7.1.12-aurora-m6usb-ARCH}
 UNAME_R=${UNAME_R:-$(uname -r)}
 BOOT_ID_FILE=${BOOT_ID_FILE:-/proc/sys/kernel/random/boot_id}
@@ -43,6 +47,8 @@ DMESG=${DMESG:-dmesg}
 LSMOD=${LSMOD:-lsmod}
 
 step=${1:-}
+fw=0
+if [ "$step" = 5 ]; then fw=1; step=4; fi
 bid=${2:-}
 go=${3:-}
 state=${4:-1}
@@ -61,6 +67,9 @@ if [ "$step" = 4 ]; then
   case "$wait_ms" in *[!0-9]*|"") die "wait_ms must be a number" ;; esac
   [ "$wait_ms" -ge 10 ] && [ "$wait_ms" -le 2000 ] || die "wait_ms must be 10 to 2000"
   case "$dart$hello" in 00|01|10|11) ;; *) die "dart and hello must be 0 or 1" ;; esac
+  if [ "$fw" = 1 ]; then
+    [ -e "$DT_NODE/iommus" ] && [ -e "$DT_NODE/power-domains" ] || die "step 5 needs a DTB with iommus and power-domains in the ANE node"
+  fi
   [ "$dart" = 0 ] || [ "$slots" = 2 ] || die "dart=1 needs two slots"
 else
   case "$mbox$ctrl" in 00|01|10|11) ;; *) die "mbox and ctrl must be 0 or 1" ;; esac
@@ -106,6 +115,7 @@ case "$step" in
      rm -f "$WORK/step3-pass-$boot"; : > "$WORK/step3-run-$boot" ;;
   4) args="optin=t8152 stage=boot confirm_power=1 confirm_boot=1 psd_state=$state psd_slots=$slots boot_wait_ms=$wait_ms alias_mbox=1"
      [ "$dart" = 1 ] && args="$args read_dart=1"
+     [ "$fw" = 1 ] && args="$args map_fw=1"
      [ "$hello" = 1 ] && args="$args rtkit_hello=1"
      : > "$WORK/step4-run-$boot" ;;
 esac

@@ -22,4 +22,10 @@ const struct ane_h18_soc ane_t8152_soc = {
 	.mbox_num = 12,
 	.rvbar_expect = 0x10000000001ULL,
 	.psd_slot = { 30, 31 },
+	/* /arm-io/ane segment-ranges of the saved M6 ADT: TEXT 0x100014e8000 (0xc4000) at IOVA 0x10000000000, DATA 0x100030c4000 (0x2ac000) at
+	 * IOVA 0x10000000000 + 0xc4000. IORVBAR 0x10000000001 is the TEXT IOVA with the valid bit. */
+	.fw_seg = {
+		{ .pa = 0x100014e8000ULL, .size = 0xc4000, .iova = 0x10000000000ULL, .write = false },
+		{ .pa = 0x100030c4000ULL, .size = 0x2ac000, .iova = 0x100000c4000ULL, .write = true },
+	},
 };

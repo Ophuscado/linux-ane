@@ -35,9 +35,17 @@ else in the ASC, IORVBAR or mailbox windows.
     logged before its read, so a hang names the word. It can wedge the machine: the block has manual availability, the macOS driver does not
     touch it before forcing it available, and a read of such a block hung the USB DARTs on this board before their power chain was up. The
     gate on both PSD slots is a hypothesis, not a measured safe condition. Only the first word is read before anything else runs.
+  - `map_fw=1` (needs power-domains and iommus in the node): before RUN, attach the ANE to its DART through the iommu API and map the two
+    firmware segments the boot loader left in DRAM at their IOVAs: TEXT at 0x10000000000 read only, DATA at 0x100000c4000 read and write
+    (the ADT `segment-ranges`). The DART driver programs the DART at the attach. With `read_dart=1` the twelve DART words are read before and after.
+    The mapping is released after a clean stop. If the core does not stop, it stays.
   - `rtkit_hello=1` (needs `alias_mbox=1`): answer the firmware's RTKit management HELLO with version 12 and its endpoint map, nothing else. The
     reply goes to TX as one paired 16 byte store. No reply is sent without a free TX slot, for a message of another type or endpoint, or when the
     firmware's version range excludes 12. At most four replies per run.
+
+With power-domains in the node (the overlay `t8152-j873-ane-dart.dtsi`), the kernel's PSD driver owns slots 30 and 31. The module then
+requests no PSD state and no undo. It takes a runtime PM reference in stages power and boot, which powers the slots and fails if the power-on fails,
+and releases it after a clean stop. Binding the module powers the domain, so stage dt is no longer free of hardware access with that overlay.
 
 ## Why the ANE is powered by PSD slots
 
@@ -109,6 +117,10 @@ step 3 PASS with a `did not return to state 6` line exits 3. `test-stage-script.
 `t8152-j873-ane.dtsi` adds the `ane@419600000` node under `/soc` of `t8152-j873.dts`. Every window is a live ADT value
 plus 0x200000000. `t8152-j873-ane.dts` includes both files, as `t8152-j873-gpupsd.dts` does for the GPU. The node has
 no `power-domains` property, because attaching a PSD domain writes the slot request before any stage decides.
+
+`t8152-j873-ane-dart.dtsi` adds the ANE DART (`dart,gen3`, instance 0, the ADT tunables, the shared TLBI doorbell, interrupt 789), a
+PSD group for slots 30 and 31 (state 1 on both, as the board accepted) and the `iommus` and `power-domains` links of the `ane0` node.
+`t8152-j873-ane-dart.dts` includes all three files. None of it has run: no ANE DART access has gone through the kernel's DART driver.
 
 ## Bring-up order
 

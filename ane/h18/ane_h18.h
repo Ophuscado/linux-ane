@@ -66,6 +66,15 @@
 #define ANE_H18_RTK_EPMAP	8	/* the reply has the same type */
 #define ANE_H18_RTK_VERSION	12	/* the version macOS and Linux answer with on this firmware family */
 
+/* A firmware segment the boot loader left in DRAM (ADT /arm-io/ane segment-ranges: physical address, size, and the IOVA the firmware is linked at in the
+ * ANE DART's address space). The DART maps it before the core runs. TEXT is mapped read only, DATA read and write. */
+struct ane_h18_fw_seg {
+	u64 pa;
+	u64 size;
+	u64 iova;
+	bool write;
+};
+
 struct ane_h18_soc {
 	const char *name;
 	u32 ane_type;
@@ -82,6 +91,7 @@ struct ane_h18_soc {
 	u32 mbox_num;		/* ADT msgbox-mailbox-num */
 	u64 rvbar_expect;	/* IORVBAR as iBoot leaves it: entry 0x10000000000 (the segment-ranges remap) | valid bit. Measured on the board. */
 	u32 psd_slot[ANE_H18_NPSD];
+	struct ane_h18_fw_seg fw_seg[2];
 };
 
 extern const struct ane_h18_soc ane_t8152_soc;
