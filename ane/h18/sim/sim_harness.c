@@ -35,7 +35,7 @@ u32 sim_iop_ack_state = 0x20;
 int sim_credit_mode;
 u32 sim_scr[8];
 int sim_scr_model;
-struct sim_dma sim_dma[8];
+struct sim_dma sim_dma[SIM_NDMA];
 int sim_n_dma, sim_dma_fail, sim_dma_mask_bits;
 struct iommu_domain sim_default_dom = { __IOMMU_DOMAIN_DMA_API };
 int sim_default_dom_none;
@@ -45,7 +45,7 @@ int sim_db_writes, sim_hs_table, sim_s3_mode, sim_cmd_mode, sim_cmds_seen, sim_t
 u32 sim_pend_val;
 int sim_ack_writes, sim_cmd_blk_in_pool, sim_posted, sim_term_tick;
 u32 sim_ack_last;
-u32 sim_cmd_ops[8];
+u32 sim_cmd_ops[16];
 u32 sim_credits_now = 1;
 int sim_rpm_enabled, sim_rpm_gets, sim_rpm_puts, sim_rpm_get_fail;
 struct sim_iocall sim_iocalls[64];
@@ -56,6 +56,215 @@ u32 sim_po_out_off, sim_alias_credits = 1, sim_hello_min = 11, sim_hello_max = 1
 #include "../ane_h18_soc.c"
 #include "../ane_h18_main.c"
 
+
+
+/* ---- hs_prog: the program file the harness hands to request_firmware, and a firmware that answers the program commands ---- */
+const u8 *sim_fw_data;
+size_t sim_fw_size;
+int sim_fw_err, sim_fw_released, sim_fw_requests;
+static u8 sim_blob[0x8000];
+static size_t sim_blob_len;
+int sim_prog_mode, sim_prog_n, sim_prog_loaded, sim_prog_created, sim_t2h_back, sim_out_written, sim_t2h_posted;
+u32 sim_prog_ops[16];
+int sim_pub_wait;
+
+/* the file: sections 1 to 5 and 7 (the add program's six), buffers 5 and 6 as inputs and 4 as the output, 0x4000 bytes each; input 5 starts with 0xaa bytes */
+static void make_blob(void)
+{
+	static const u32 sids[6] = { 1, 2, 3, 4, 5, 7 };
+	static const u32 bids[3] = { 5, 6, 4 };
+	static const u32 bdir[3] = { 0, 0, 1 };
+	u32 magic = ANE_H18_PROG_MAGIC, version = 1, nsec = 6, nio = 3, i, zero = 0;
+	u64 pos = 0x1000, fsize, size, off, dsz, doff;
+
+	memset(sim_blob, 0, sizeof(sim_blob));
+	memcpy(sim_blob, &magic, 4);
+	memcpy(sim_blob + 4, &version, 4);
+	memcpy(sim_blob + 8, &nsec, 4);
+	memcpy(sim_blob + 12, &nio, 4);
+	for (i = 0; i < nsec; i++) {
+		u8 *r = sim_blob + 0x20 + i * 0x20;
+
+		size = 0x100 * (i + 1);
+		off = pos;
+		memcpy(r, &sids[i], 4);
+		memcpy(r + 4, &zero, 4);
+		memcpy(r + 8, &size, 8);
+		memcpy(r + 16, &off, 8);
+		memset(sim_blob + off, 0x10 + i, size);
+		pos += size;
+	}
+	for (i = 0; i < nio; i++) {
+		u8 *r = sim_blob + 0x20 + (nsec + i) * 0x20;
+
+		size = 0x4000;
+		dsz = i < 2 ? 0x40 : 0;
+		doff = i < 2 ? pos : 0;
+		memcpy(r, &bids[i], 4);
+		memcpy(r + 4, &bdir[i], 4);
+		memcpy(r + 8, &size, 8);
+		memcpy(r + 16, &doff, 8);
+		memcpy(r + 24, &dsz, 8);
+		if (dsz) {
+			memset(sim_blob + doff, i ? 0xbb : 0xaa, dsz);
+			pos += dsz;
+		}
+	}
+	fsize = pos;
+	memcpy(sim_blob + 16, &fsize, 8);
+	sim_blob_len = fsize;
+	sim_fw_data = sim_blob;
+	sim_fw_size = fsize;
+}
+
+static int sim_buf_ok(u64 iova, u64 size)
+{
+	int d;
+
+	for (d = 0; d < sim_n_dma; d++)
+		if (sim_dma[d].live && iova >= sim_dma[d].iova && size <= sim_dma[d].size && iova - sim_dma[d].iova <= sim_dma[d].size - size)
+			return 1;
+	return 0;
+}
+
+static u8 *sim_buf_va(u64 iova)
+{
+	int d;
+
+	for (d = 0; d < sim_n_dma; d++)
+		if (sim_dma[d].live && iova >= sim_dma[d].iova && iova < sim_dma[d].iova + sim_dma[d].size)
+			return (u8 *)sim_dma[d].va + (iova - sim_dma[d].iova);
+	return NULL;
+}
+
+/* The firmware's side of LOAD_PROGRAM, CREATE_PROCESS, PROCEDURE_CALL, TERMINATE_PROCESS and DESTROY_PROGRAM. Returns the acknowledgement for +6: 0 ok, 3 refused by
+ * the mode, 4 an id it does not know, 5 a program with a live process, 7 an address that is not in a buffer the host allocated. A call posts two IO_T2H events. */
+static u16 sim_prog_cmd(u16 op, u8 *blk)
+{
+	u32 prog = 0, proc = 0, v;
+	u64 cookie, a, s;
+	int i, n;
+
+	if (sim_prog_n < 16)
+		sim_prog_ops[sim_prog_n] = op;
+	sim_prog_n++;
+	memcpy(&prog, blk + 8, 4);
+	memcpy(&proc, blk + 0xc, 4);
+	switch (op) {
+	case 0x200:
+		if (sim_prog_mode == 1)
+			return 3;
+		n = 0;
+		for (i = 1; i <= 9; i++) {
+			const u8 *r = blk + 8 + (i - 1) * 0x30;
+			u32 flags, id;
+
+			memcpy(&flags, r, 4);
+			memcpy(&id, r + 4, 4);
+			if (!flags)
+				continue;
+			memcpy(&a, r + 0x18, 8);
+			memcpy(&s, r + 0x20, 8);
+			if (id != (u32)i || !sim_buf_ok(a, s))
+				return 7;
+			if (sim_buf_va(a)[0] != 0x10 + (id == 7 ? 5 : id - 1))	/* the section bytes of the file are in the surface */
+				return 7;
+			n++;
+		}
+		if (!n)
+			return 7;
+		if (sim_prog_mode != 4) {
+			v = 0x5a;
+			memcpy(blk + 0x1b8, &v, 4);
+		}
+		sim_prog_loaded = 1;
+		return 0;
+	case 0x202:
+		if (sim_prog_mode == 2)
+			return 3;
+		if (sim_prog_mode == 6)
+			return 0xffff;
+		if (!sim_prog_loaded || prog != 0x5a)
+			return 4;
+		v = 0x77;
+		memcpy(blk + 0xc, &v, 4);
+		sim_prog_created = 1;
+		return 0;
+	case 0x204: {
+		u32 cnt, prio;
+		u64 *ring = (u64 *)((u8 *)sim_dma[1].va + 0xb000);
+		u8 *pool = sim_dma[0].va;
+
+		if (!sim_prog_created || prog != 0x5a || proc != 0x77)
+			return 4;
+		memcpy(&prio, blk + 0x18, 4);
+		memcpy(&cookie, blk + 0x20, 8);
+		memcpy(&cnt, blk + 0x28, 4);
+		if (prio != 2 || cookie != 0xADD0 || !cnt || cnt > 8)
+			return 7;
+		for (i = 0; i < (int)cnt; i++) {
+			const u8 *r = blk + 0x60 + i * 0x30;
+			u32 flags, type;
+			u8 *o;
+
+			memcpy(&flags, r, 4);
+			memcpy(&type, r + 8, 4);
+			memcpy(&a, r + 0x18, 8);
+			memcpy(&s, r + 0x20, 8);
+			if (flags != 1 || !sim_buf_ok(a, s))
+				return 7;
+			{
+				u32 bid;
+
+				memcpy(&bid, r + 4, 4);
+				if ((bid == 5 && sim_buf_va(a)[0] != 0xaa) || (bid == 6 && sim_buf_va(a)[0] != 0xbb) || (bid != 4 && bid != 5 && bid != 6))	/* the input data of the file is in the surface */
+					return 7;
+			}
+			if (type == 1 && (o = sim_buf_va(a))) {
+				v = 0x11223344;
+				memcpy(o, &v, 4);
+				memcpy(o + 4, &v, 4);
+				sim_out_written = 1;
+			}
+		}
+		if (sim_prog_mode == 3)
+			return 0;
+		for (i = 0; i < 2; i++) {
+			u8 *ev = pool + 0x1000 + i * 0x40;
+			u32 seq = i + 1, k = 0x300, st = i;
+
+			memset(ev, 0, 0x28);
+			memcpy(ev, &seq, 4);
+			memcpy(ev + 4, &k, 4);
+			memcpy(ev + 8, &cookie, 8);
+			memcpy(ev + 0x10, &prog, 4);
+			memcpy(ev + 0x14, &proc, 4);
+			memcpy(ev + 0x1c, &st, 4);
+			ring[i * 8 + 1] = 0x28;
+			if (sim_prog_mode == 5) {	/* the length first, the address (the publication) three sleeps later */
+				sim_pub_wait = 3;
+				continue;
+			}
+			ring[i * 8] = sim_dma[0].iova + 0x1000 + i * 0x40;
+			sim_t2h_posted++;
+		}
+		return 0;
+	}
+	case 0x203:
+		if (!sim_prog_created || prog != 0x5a || proc != 0x77)
+			return 4;
+		sim_prog_created = 0;
+		return 0;
+	case 0x201:
+		if (!sim_prog_loaded || prog != 0x5a)
+			return 4;
+		if (sim_prog_created)
+			return 5;
+		sim_prog_loaded = 0;
+		return 0;
+	}
+	return 4;
+}
 
 /* The modelled firmware sees the wake word: it checks the published init block against the layout of the T6021 header and, in mode 0, answers with a
  * table address inside the IPC surface and READY. sim_hs_block_ok is set only when every field the decode names is right. */
@@ -132,6 +341,15 @@ void sim_hs_react(void)
 /* A firmware console that prints on every poll (chan_req 4): the terminal ring changes at each sleep once the table exists. */
 void sim_usleep_hook(void)
 {
+	if (sim_pub_wait && !--sim_pub_wait && sim_n_dma > 1) {	/* publish the two IO_T2H events of a call in mode 5 */
+		u64 *ring = (u64 *)((u8 *)sim_dma[1].va + 0xb000);
+		int q;
+
+		for (q = 0; q < 2; q++) {
+			ring[q * 8] = sim_dma[0].iova + 0x1000 + q * 0x40;
+			sim_t2h_posted++;
+		}
+	}
 	if (sim_chan_req == 4 && sim_n_dma > 1 && sim_scr_model && sim_scr[3] == 0 && sim_hs_table) {
 		u32 *t = (u32 *)((u8 *)sim_dma[1].va + 0x800);
 
@@ -176,6 +394,15 @@ void sim_db_react(u32 v)
 		}
 		return;
 	}
+	if (v == BIT(6) && sim_n_dma > 1) {
+		u64 *r6 = (u64 *)((u8 *)sim_dma[1].va + 0xb000);
+		int q;
+
+		for (q = 0; q < 2; q++)
+			if (r6[q * 8] & 1)
+				sim_t2h_back = q + 1;
+		return;
+	}
 	if (v != BIT(1) || sim_n_dma < 3)
 		return;
 	if (sim_chan_req == 2 && !(((u64 *)((u8 *)sim_dma[1].va + 0xae00))[0] & 1))
@@ -196,7 +423,7 @@ void sim_db_react(u32 v)
 		memcpy(&op, blk + 4, 2);
 		if (d <= sim_n_dma && blk >= (u8 *)sim_dma[0].va + 0x400 && blk < (u8 *)sim_dma[0].va + 0x4400)
 			sim_cmd_blk_in_pool = 1;
-		if (sim_cmds_seen < 8)
+		if (sim_cmds_seen < 16)
 			sim_cmd_ops[sim_cmds_seen] = op;
 		sim_cmds_seen++;
 		if (sim_cmd_mode == 1)
@@ -205,6 +432,13 @@ void sim_db_react(u32 v)
 			u16 bad = 2;
 
 			memcpy(blk + 6, &bad, 2);
+		}
+		if (op >= 0x200 && op <= 0x204) {
+			u16 ack = sim_prog_cmd(op, blk);
+
+			if (ack == 0xffff)	/* the modelled firmware does not answer this one */
+				return;
+			memcpy(blk + 6, &ack, 2);
 		}
 		if (op == ANE_H18_CSNE_RESOURCE_INFO_GET) {
 			u32 a = 0xabcd0020, b = 0xabcd0050;
@@ -323,7 +557,10 @@ static void reset_all(void)
 	hs_cfg_size = 0x380000;
 	hs_wait_ms = 50;
 	sim_scr_model = sim_n_dma = sim_dma_fail = sim_default_dom_none = sim_hs_mode = sim_hs_block_ok = sim_hs_wakes = 0;
-	hs_chan = hs_cmds = hs_start = false;
+	hs_chan = hs_cmds = hs_start = hs_prog = false;
+	sim_pub_wait = sim_prog_mode = sim_prog_n = sim_prog_loaded = sim_prog_created = sim_t2h_back = sim_out_written = sim_t2h_posted = 0;
+	sim_fw_err = sim_fw_released = sim_fw_requests = 0;
+	make_blob();
 	sim_db_writes = sim_hs_table = sim_s3_mode = sim_cmd_mode = sim_cmds_seen = sim_table_bad = sim_chan_req = 0;
 	sim_pend_val = 0;
 	sim_ack_writes = 0;
@@ -725,6 +962,64 @@ static int first_run_event(void)
 	return run;
 }
 
+
+/* the program file reader on its own: every limit and every overflow is refused, the good file is accepted */
+static void pos_prog_parse(void)
+{
+	static u8 b[0x8000];
+	struct ane_h18_pdesc pd;
+	const char *why;
+	size_t n;
+	u64 big = ~0ULL, v;
+	u32 two = 2;
+	int r_good, k;
+	struct { const char *what; size_t off; const void *val; size_t len; } mut[] = {
+		{ "a section size of zero", 0x20 + 8, &(u64){ 0 }, 8 },
+		{ "a section over the buffer limit", 0x20 + 8, &(u64){ ANE_H18_PROG_MAX_BUF + 1 }, 8 },
+		{ "a section offset near 2^64", 0x20 + 16, &big, 8 },
+		{ "a section size that runs past the end", 0x20 + 8, &(u64){ 0x7ffff }, 8 },
+		{ "a section offset that is not 16 byte aligned", 0x20 + 16, &(u64){ 0x1008 + 4 }, 8 },
+		{ "a section offset inside the tables", 0x20 + 16, &(u64){ 0x10 }, 8 },
+		{ "a section id of zero", 0x20, &(u64){ 0 }, 4 },
+		{ "two sections with one id", 0x20 + 0x20, &(u32){ 1 }, 4 },
+		{ "nine buffers", 12, &(u32){ 9 }, 4 },
+		{ "no sections", 8, &(u32){ 0 }, 4 },
+		{ "ten sections", 8, &(u32){ 10 }, 4 },
+		{ "a buffer direction of 3", 0x20 + 6 * 0x20 + 4, &(u32){ 3 }, 4 },
+		{ "initial data larger than its buffer", 0x20 + 6 * 0x20 + 24, &(u64){ 0x4001 }, 8 },
+		{ "initial data offset near 2^64", 0x20 + 6 * 0x20 + 16, &big, 8 },
+		{ "a buffer of zero bytes", 0x20 + 6 * 0x20 + 8, &(u64){ 0 }, 8 },
+		{ "two buffers with one id", 0x20 + 7 * 0x20, &(u32){ 5 }, 4 },
+		{ "a wrong size in the header", 16, &(u64){ 0x1234 }, 8 },
+		{ "version 2", 4, &two, 4 },
+	};
+
+	make_blob();
+	memcpy(b, sim_blob, sim_blob_len);
+	n = sim_blob_len;
+	r_good = ane_h18_prog_parse(b, n, &pd, &why);
+	chk(r_good == 0 && pd.nsec == 6 && pd.nio == 3 && pd.sec[5].id == 7 && pd.io[2].dir == 1 && pd.io[0].dsize == 0x40, "PG12 the good program file is accepted with its six sections and three buffers");
+	for (k = 0; k < (int)(sizeof(mut) / sizeof(mut[0])); k++) {
+		char name[120];
+
+		memcpy(b, sim_blob, sim_blob_len);
+		memcpy(b + mut[k].off, mut[k].val, mut[k].len);
+		snprintf(name, sizeof(name), "PG13 refused: %s", mut[k].what);
+		chk(ane_h18_prog_parse(b, n, &pd, &why) == -EINVAL, name);
+	}
+	/* the same files, truncated: the header or the tables do not fit */
+	memcpy(b, sim_blob, sim_blob_len);
+	chk(ane_h18_prog_parse(b, 0x10, &pd, &why) == -EINVAL && ane_h18_prog_parse(b, 0x100, &pd, &why) == -EINVAL, "PG14 a file shorter than its header or tables is refused");
+	/* total over the limit: buffers are not bounded by the file (zero filled), so three of 64 MiB plus the sections are over 192 MiB; two of 64 MiB are fine */
+	memcpy(b, sim_blob, sim_blob_len);
+	v = ANE_H18_PROG_MAX_BUF;
+	memcpy(b + 0x20 + 6 * 0x20 + 8, &v, 8);
+	memcpy(b + 0x20 + 7 * 0x20 + 8, &v, 8);
+	chk(ane_h18_prog_parse(b, n, &pd, &why) == 0, "PG15 two buffers of 64 MiB with the sections are within the byte limit");
+	memcpy(b + 0x20 + 8 * 0x20 + 8, &v, 8);
+	chk(ane_h18_prog_parse(b, n, &pd, &why) == -EINVAL, "PG15 three buffers of 64 MiB with the sections are over the byte limit and refused");
+}
+
 static void pos_boot(void)
 {
 	char seq[512], want[512];
@@ -1070,7 +1365,7 @@ static void pos_boot(void)
 		int pass, k, w3 = -1, db = -1, nsc3, nh2t, ok;
 		u8 *ipc;
 
-		for (pass = 0; pass < 17; pass++) {
+		for (pass = 0; pass < 27; pass++) {
 			kboot_setup();
 			alias_mbox = true;
 			rtkit_hello = true;
@@ -1101,6 +1396,16 @@ static void pos_boot(void)
 			if (pass == 13) hs_cmds = false;
 			if (pass == 15) hs_start = true;
 			if (pass == 16) { hs_start = true; hs_cmds = false; }
+			if (pass >= 17) { hs_start = true; hs_prog = true; }
+			if (pass == 18) hs_start = false;
+			if (pass == 19) sim_blob[0] ^= 0xff;
+			if (pass == 20) sim_fw_err = -2;
+			if (pass == 21) sim_prog_mode = 1;
+			if (pass == 22) sim_prog_mode = 3;
+			if (pass == 23) sim_prog_mode = 2;
+			if (pass == 24) sim_prog_mode = 4;
+			if (pass == 25) sim_prog_mode = 5;
+			if (pass == 26) sim_prog_mode = 6;
 			ret = probe_now();
 			ipc = sim_n_dma > 1 ? sim_dma[1].va : NULL;
 			nsc3 = 0;
@@ -1111,6 +1416,47 @@ static void pos_boot(void)
 			(void)ipc;
 			nh2t = log_count("hs chan ");
 			ok = result("boot", "PASS", "core-handshook-and-stopped");
+
+			if (pass >= 17) {
+				int live = 0, kk;
+
+				for (kk = 0; kk < sim_n_dma; kk++)
+					live += sim_dma[kk].live;
+				if (pass == 17) {
+					chk(ret == 0 && ok && sim_cmds_seen == 9 && sim_cmd_ops[4] == 0x200 && sim_cmd_ops[5] == 0x202 && sim_cmd_ops[6] == 0x204 && sim_cmd_ops[7] == 0x203 && sim_cmd_ops[8] == 0x201 &&
+					    !sim_prog_loaded && !sim_prog_created,
+					    "PG1 hs_prog=1: LOAD_PROGRAM, CREATE_PROCESS, PROCEDURE_CALL, TERMINATE_PROCESS, DESTROY_PROGRAM in that order after the four start commands, the firmware holds nothing afterwards");
+					chk(log_count("LOAD_PROGRAM program id 0x5a") == 1 && log_count("CREATE_PROCESS process id 0x77") == 1 && sim_out_written &&
+					    log_count("buffer 4 (output, 0x4000 bytes): 2 nonzero words, first 11223344 11223344") == 1 && log_count("buffer 5 (input, 0x4000 bytes): 16 nonzero words, first aaaaaaaa") == 1,
+					    "PG2 the ids come back from the replies, the sections and buffers reach the firmware (it checked every IOVA), the output buffer is read back and logged");
+					chk(log_count("PROCEDURE_CALL finished after") == 1 && log_count("IO_T2H slot 0 header=") == 1 && log_count("IO_T2H slot 1 header=") == 1 && sim_t2h_posted == 2 && sim_t2h_back == 2 && log_count("write doorbell BIT(6)") == 2,
+					    "PG3 both IO_T2H events are read, logged and given back with the doorbell of that ring");
+					chk(sim_n_dma >= 3 + 6 + 3 && live == 0 && sim_fw_requests == 1 && sim_fw_released == 1 && sim_prog_n == 5 && log_count("sequence result 0") == 1,
+					    "PG4 nine surfaces for the program, all freed after the core stopped, the file requested once and released once");
+				}
+				if (pass == 18)
+					chk(ret == -EINVAL && result("boot", "REFUSED", "hs_chan=1 needs handshake=1, hs_cmds=1 needs hs_chan=1, hs_start=1 needs hs_cmds=1 and hs_prog=1 needs hs_start=1") && writes() == 0 && sim_fw_requests == 0, "PG5 hs_prog=1 without hs_start=1 is refused before any write and before the file is requested");
+				if (pass == 19)
+					chk(ret == -EINVAL && result("boot", "REFUSED", "hs_prog=1: the program file is not valid") && writes() == 0 && sim_fw_released == 1 && sim_n_dma == 0, "PG6 a file with a wrong magic is refused before any write or allocation, and released");
+				if (pass == 20)
+					chk(ret == -ENOENT && result("boot", "REFUSED", "hs_prog=1: the program file could not be loaded") && writes() == 0 && sim_fw_released == 0, "PG7 a file that cannot be loaded is refused before any write");
+				if (pass == 21)
+					chk(ret == -EIO && result("boot", "FAIL", "handshake-channel-step-failed") && sim_prog_n == 1 && sim_prog_ops[0] == 0x200 && log_count("rtkit shutdown:") == 1 && live == 0,
+					    "PG8 LOAD_PROGRAM refused by the firmware (acknowledgement 3): FAIL, no further program command, the stop still runs, surfaces freed");
+				if (pass == 22)
+					chk(ret == -EIO && sim_prog_n == 3 && sim_prog_ops[2] == 0x204 && log_count("gave no finish event") == 1 && live == 0 && sim_t2h_posted == 0,
+					    "PG9 a call without a finish event: FAIL, nothing is unloaded (the firmware may be hung), the stop still runs");
+				if (pass == 23)
+					chk(ret == -EIO && sim_prog_n == 3 && sim_prog_ops[1] == 0x202 && sim_prog_ops[2] == 0x201 && !sim_prog_loaded, "PG10 CREATE_PROCESS refused: the program is destroyed, no call");
+				if (pass == 26)
+					chk(ret == -EIO && sim_prog_n == 2 && sim_prog_ops[0] == 0x200 && sim_prog_ops[1] == 0x202 && sim_prog_loaded && live == 0 && log_count("rtkit shutdown:") == 1,
+					    "PG17 CREATE_PROCESS not answered: FAIL, no DESTROY_PROGRAM and nothing else sent to the firmware, the stop still runs and the surfaces are freed afterwards");
+				if (pass == 25)
+					chk(ret == 0 && ok && sim_t2h_posted == 2 && sim_t2h_back == 2 && log_count("PROCEDURE_CALL finished after") == 1 && log_count("is not in a buffer the firmware was given") == 0 && log_count("IO_T2H slot 0 header=0x") == 1,
+					    "PG16 an IO_T2H slot whose length is written before its address is not consumed until the address is there: both events are read after publication, the call finishes");
+				if (pass == 24)
+					chk(ret == -EIO && sim_prog_n == 1 && log_count("did not write a program id") == 1, "PG11 a LOAD_PROGRAM reply without a program id is a FAIL, nothing is created");
+			}
 			if (pass == 0) {
 				chk(ret == 0 && ok && nsc3 == 1 && sim_db_writes == 0 && sim_ack_writes == 0 && nh2t == 8 && log_count("chan snapshot after SCRATCH3: IPI pending = 0\n") == 1 && log_count("chan snapshot after SCRATCH3: TERMINAL +") == 0 && log_pos("read IPI pending pa=0x4198ac000") > 0 && log_pos("read IPI pending pa=0x4198ac000") < log_pos("IPI pending = 0\n"), "CH1 hs_chan=1: table of 8 rings checked, SCRATCH3 written once, firmware cleared it, no doorbell, snapshot with the pending address logged before its read");
 				chk(log_count("SCRATCH3 reads 0 after") == 1 && sim_n_dma == 3 && log_count("write doorbell") == 0, "CH1 hs_chan=1: no command surface allocated, no doorbell write");
@@ -1127,7 +1473,7 @@ static void pos_boot(void)
 			if (pass == 4)
 				chk(ret == -EIO && result("boot", "FAIL", "handshake-channel-step-failed") && sim_cmds_seen == 1, "CH5 a failing acknowledgement (+6 = 2) is a FAIL, CONFIG_GET is not sent");
 			if (pass == 5)
-				chk(ret == -EINVAL && result("boot", "REFUSED", "hs_chan=1 needs handshake=1, hs_cmds=1 needs hs_chan=1 and hs_start=1 needs hs_cmds=1") && writes() == 0, "CH6 hs_cmds=1 without hs_chan=1 is refused before any write");
+				chk(ret == -EINVAL && result("boot", "REFUSED", "hs_chan=1 needs handshake=1, hs_cmds=1 needs hs_chan=1, hs_start=1 needs hs_cmds=1 and hs_prog=1 needs hs_start=1") && writes() == 0, "CH6 hs_cmds=1 without hs_chan=1 is refused before any write");
 			if (pass == 13) {
 				u64 *sm = sim_n_dma > 1 ? (u64 *)((u8 *)sim_dma[1].va + 0xae00) : NULL;
 
@@ -1137,7 +1483,7 @@ static void pos_boot(void)
 				chk(ret == 0 && ok && sim_cmds_seen == 4 && sim_cmd_ops[0] == 4 && sim_cmd_ops[1] == 0 && sim_cmd_ops[2] == 3 && sim_cmd_ops[3] == 0x22 && log_count("RESOURCE_INFO_GET reply +0x20: abcd0020") == 1 && log_count("RESOURCE_INFO_GET reply +0x50: abcd0050") == 1,
 				    "CH14 hs_start=1: PRINT_ENABLE, START, CONFIG_GET, RESOURCE_INFO_GET in the kext's order, the 100 byte reply logged in 16 byte lines");
 			if (pass == 16)
-				chk(ret == -EINVAL && result("boot", "REFUSED", "hs_chan=1 needs handshake=1, hs_cmds=1 needs hs_chan=1 and hs_start=1 needs hs_cmds=1") && writes() == 0, "CH15 hs_start=1 without hs_cmds=1 is refused before any write");
+				chk(ret == -EINVAL && result("boot", "REFUSED", "hs_chan=1 needs handshake=1, hs_cmds=1 needs hs_chan=1, hs_start=1 needs hs_cmds=1 and hs_prog=1 needs hs_start=1") && writes() == 0, "CH15 hs_start=1 without hs_cmds=1 is refused before any write");
 			if (pass == 14)
 				chk(log_count("chan snapshot ring change: TERMINAL has 6 nonzero lines, 2 not printed") >= 1 && log_count("chan snapshot ring change: TERMINAL +0x30 = ") >= 1 && log_count("chan snapshot ring change: TERMINAL +0x40 = ") == 0 && log_count("chan snapshot ring change: TERMINAL text slot") == 0 && log_count("chan snapshot after SCRATCH3: TERMINAL text slot 0: ") == 1 && log_count("chan snapshot after SCRATCH3: TERMINAL has 6 nonzero lines, 0 not printed") == 1,
 				    "CH16 a change snapshot prints 4 nonzero lines of a ring and no terminal text, the explicit snapshot prints all 6 and the text");
@@ -1432,6 +1778,7 @@ int main(int argc, char **argv)
 		pos_refuse();
 		pos_power();
 		pos_boot();
+		pos_prog_parse();
 		printf("%s\n", fails ? "SIM-TEST: FAILED" : "SIM-TEST: all positive controls PASS");
 	} else if (!strcmp(mode, "neg-psd-never")) {
 		fails = neg_never();

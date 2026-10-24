@@ -240,6 +240,66 @@ sim-mutation-chnoipiack:
 sim-mutation-chnotext:
 	$(call mutant,chnotext,s/if (any \&\& shown++ < 32)/if (0 \/* NEG: no terminal text *\/)/,NEG: no terminal text,pos)
 
+# the program file is accepted without its checks
+sim-mutation-pgnoparse:
+	$(call mutant,pgnoparse,s/ret = ane_h18_prog_parse/ret = 0 \&\& \/* NEG: parse skipped *\/ ane_h18_prog_parse/,NEG: parse skipped,pos)
+
+# a section may run past the end of the file
+sim-mutation-pgnobounds:
+	$(call mutant,pgnobounds,s/ size > n - off/ 0 \/* NEG: no section end check *\//,NEG: no section end check,pos)
+
+# hs_prog without hs_start is not refused
+sim-mutation-pgnostartgate:
+	$(call mutant,pgnostartgate,s/ || (hs_prog \&\& !hs_start)/ \/* NEG: no hs_start gate for hs_prog *\//,NEG: no hs_start gate for hs_prog,pos)
+
+# the command block stays 0x100 bytes with hs_prog
+sim-mutation-pgblock:
+	$(call mutant,pgblock,s/hs_prog ? ANE_H18_PROG_BLOCK : ANE_H18_CMD_BLOCK/ANE_H18_CMD_BLOCK \/* NEG: small block *\//,NEG: small block,pos)
+
+# the call cookie is not at +0x20
+sim-mutation-pgcookie:
+	$(call mutant,pgcookie,s/memcpy(cmd + 0x20, \&cookie, 8);/memcpy(cmd + 0x28, \&cookie, 8); \/* NEG: cookie at +0x28 *\//,NEG: cookie at +0x28,pos)
+
+# the IOVA of a section or buffer is not at +0x18 of its record
+sim-mutation-pgiovaoff:
+	$(call mutant,pgiovaoff,s/memcpy(r + 0x18, \&iova, 8);/memcpy(r + 0x10, \&iova, 8); \/* NEG: iova at +0x10 *\//,NEG: iova at +0x10,pos)
+
+# a section record sits at the slot of its index, not of its id
+sim-mutation-pgslot:
+	$(call mutant,pgslot,s/(size_t)(p->sec\[i\].id - 1) \* 0x30/(size_t)i * 0x30 \/* NEG: slot = index *\//,NEG: slot = index,pos)
+
+# every buffer is announced as an input
+sim-mutation-pgouttype:
+	$(call mutant,pgouttype,s/type = p->io\[i\].dir == 1 ? 1 : 0;/type = 0; \/* NEG: every buffer is type 0 *\//,NEG: every buffer is type 0,pos)
+
+# the section bytes are not copied into their surfaces
+sim-mutation-pgnosecdata:
+	$(call mutant,pgnosecdata,s/memcpy(b->va, fw + p->sec\[i\].off, p->sec\[i\].size);/(void)fw; \/* NEG: no section bytes *\//,NEG: no section bytes,pos)
+
+# the input data of the file is not copied into its buffers
+sim-mutation-pgnoindata:
+	$(call mutant,pgnoindata,s/memcpy(b->va, fw + p->io\[i\].doff, p->io\[i\].dsize);/(void)fw; \/* NEG: no input data *\//,NEG: no input data,pos)
+
+# an IO_T2H slot is not given back
+sim-mutation-pgnogiveback:
+	$(call mutant,pgnogiveback,s/WRITE_ONCE(slot\[0\], hdr | 1);/(void)hdr; \/* NEG: T2H slot not given back *\//,NEG: T2H slot not given back,pos)
+
+# the IO_T2H doorbell is not rung
+sim-mutation-pgnodoorbell:
+	$(call mutant,pgnodoorbell,s/writel(BIT(r->bit), ane->doorbell);/(void)r; \/* NEG: no T2H doorbell *\//,NEG: no T2H doorbell,pos)
+
+# a call that never finished is followed by an unload anyway
+sim-mutation-pgunloadtimeout:
+	$(call mutant,pgunloadtimeout,s/if (ret == -ETIMEDOUT || ret == -EBUSY)/if (0 \/* NEG: unload after a timeout *\/)/,NEG: unload after a timeout,pos)
+
+# a never written IO_T2H slot counts as an event
+sim-mutation-pgemptyslot:
+	$(call mutant,pgemptyslot,s/if ((hdr \& 1) || !hdr)/if (hdr \& 1 \/* NEG: empty slot is an event *\/)/,NEG: empty slot is an event,pos)
+
+# a slot with a length and no address yet counts as published
+sim-mutation-pgearlylen:
+	$(call mutant,pgearlylen,s/ || !hdr/ || \/* NEG: length counts as published *\/ !(hdr | READ_ONCE(slot[1]))/,NEG: length counts as published,pos)
+
 # a change snapshot prints as many lines as an explicit one
 sim-mutation-chsnaplim:
 	$(call mutant,chsnaplim,s/(full ? 24 : 4)/24 \/* NEG: no change cap *\//,NEG: no change cap,pos)
@@ -287,6 +347,21 @@ sim-all: sim-test sim-negative-psd-never sim-negative-psd-wrong sim-negative-dt 
 	sim-mutation-chnowrap \
 	sim-mutation-chnosnap \
 	sim-mutation-chsnaplim \
+	sim-mutation-pgnoparse \
+	sim-mutation-pgnobounds \
+	sim-mutation-pgnostartgate \
+	sim-mutation-pgblock \
+	sim-mutation-pgcookie \
+	sim-mutation-pgiovaoff \
+	sim-mutation-pgslot \
+	sim-mutation-pgouttype \
+	sim-mutation-pgnosecdata \
+	sim-mutation-pgnoindata \
+	sim-mutation-pgnogiveback \
+	sim-mutation-pgnodoorbell \
+	sim-mutation-pgunloadtimeout \
+	sim-mutation-pgemptyslot \
+	sim-mutation-pgearlylen \
 	sim-mutation-chsnaptxt \
 	sim-mutation-chsnapw \
 	sim-mutation-chnoserve \
@@ -301,6 +376,6 @@ clean:
 	$(MAKE) -C $(KERNELDIR) M=$(PWD) clean
 	rm -f sim/sim_h18
 
-.PHONY: sim-mutation-chsnaplim sim-mutation-chsnaptxt sim-mutation-chnostartgate sim-mutation-chnocap sim-mutation-chackalways sim-mutation-chnotext sim-mutation-chnoserve sim-mutation-chnofreeans sim-mutation-chnoipiack sim-mutation-chnosnap sim-mutation-chsnapw sim-mutation-chnowrap sim-mutation-chnoverlap sim-mutation-chnoinit sim-mutation-chnos3 sim-mutation-chnovalid sim-mutation-chs3skip sim-mutation-chnoack sim-mutation-chnobell sim-mutation-hsnowake sim-mutation-hsnohigh sim-mutation-hsnofree sim-mutation-hsbys7 sim-mutation-hsnoreqgate sim-mutation-hsnolimit sim-mutation-hsowndom sim-mutation-hsmask sim-mutation-noqueue sim-mutation-noshutfail sim-mutation-nostate6 sim-mutation-nostop sim-mutation-noackstate sim-mutation-mapgate sim-mutation-nofail sim-mutation-noundomap sim-mutation-norpmput sim-mutation-nocredit sim-mutation-wronghalf sim-mutation-nover sim-mutation-dartgate sim-mutation-hellogate sim-negative-boot sim-mutation-noconfirmboot sim-mutation-nopreflight sim-mutation-nohalt default modules sim-test sim-negative-psd-never sim-negative-psd-wrong sim-negative-dt sim-negative-args \
+.PHONY: sim-mutation-pgearlylen sim-mutation-pgnoparse sim-mutation-pgnobounds sim-mutation-pgnostartgate sim-mutation-pgblock sim-mutation-pgcookie sim-mutation-pgiovaoff sim-mutation-pgslot sim-mutation-pgouttype sim-mutation-pgnosecdata sim-mutation-pgnoindata sim-mutation-pgnogiveback sim-mutation-pgnodoorbell sim-mutation-pgunloadtimeout sim-mutation-pgemptyslot sim-mutation-chsnaplim sim-mutation-chsnaptxt sim-mutation-chnostartgate sim-mutation-chnocap sim-mutation-chackalways sim-mutation-chnotext sim-mutation-chnoserve sim-mutation-chnofreeans sim-mutation-chnoipiack sim-mutation-chnosnap sim-mutation-chsnapw sim-mutation-chnowrap sim-mutation-chnoverlap sim-mutation-chnoinit sim-mutation-chnos3 sim-mutation-chnovalid sim-mutation-chs3skip sim-mutation-chnoack sim-mutation-chnobell sim-mutation-hsnowake sim-mutation-hsnohigh sim-mutation-hsnofree sim-mutation-hsbys7 sim-mutation-hsnoreqgate sim-mutation-hsnolimit sim-mutation-hsowndom sim-mutation-hsmask sim-mutation-noqueue sim-mutation-noshutfail sim-mutation-nostate6 sim-mutation-nostop sim-mutation-noackstate sim-mutation-mapgate sim-mutation-nofail sim-mutation-noundomap sim-mutation-norpmput sim-mutation-nocredit sim-mutation-wronghalf sim-mutation-nover sim-mutation-dartgate sim-mutation-hellogate sim-negative-boot sim-mutation-noconfirmboot sim-mutation-nopreflight sim-mutation-nohalt default modules sim-test sim-negative-psd-never sim-negative-psd-wrong sim-negative-dt sim-negative-args \
 	sim-mutation-noconfirm sim-mutation-nowindow sim-mutation-noundo sim-mutation-noack sim-mutation-nogate sim-all clean
 endif

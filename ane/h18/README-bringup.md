@@ -69,7 +69,15 @@ else in the ASC, IORVBAR or mailbox windows.
     START is not sent, because the firmware may ask for memory on the shared-memory ring and this module does not answer that ring.
   - `hs_start=1` (needs `hs_cmds=1`): the kext's order of commands, PRINT_ENABLE, START, CONFIG_GET and RESOURCE_INFO_GET. START has no payload. RESOURCE_INFO_GET is
     a 100 byte command, and its reply is logged in 16 byte lines (the kext copies 16 bytes from +0x20 and +0x50). START starts the firmware's services and can bring
-    more memory requests, which the polling answers. On the M6 the first two commands, PRINT_ENABLE and CONFIG_GET, were answered and CONFIG_GET returned 0x16e3600.
+    more memory requests, which the polling answers. On the M6 all four commands were answered in one run and CONFIG_GET returned 0x16e3600.
+  - `hs_prog=1` (needs `hs_start=1`, file `prog_fw`, default `ane_h18_prog.bin` under /lib/firmware): run one program on the IO ring. The file is made by
+    `tools/ane-prog-pack` from an ANEC with the section builder libane uses on the M2, and the module checks every size and offset in it and requests it before the
+    first write. It allocates one DMA surface per section and per buffer, sends LOAD_PROGRAM (0x200, 0x1c0 bytes, six 0x30 byte section records, the program id comes
+    back at +0x1b8), CREATE_PROCESS (0x202, process id at +0xc) and PROCEDURE_CALL (0x204, one 0x30 byte element per buffer at +0x60, cookie 0xADD0), reads the
+    IO_T2H events (two per call, the second with state 1 when the procedure finished) and gives each slot back with the ring's doorbell bit, logs the buffers,
+    then sends TERMINATE_PROCESS (0x203) and DESTROY_PROGRAM (0x201). The wire format is the T6021's, which the M2 driver uses and the kext decode matches in command ids
+    and sizes. Whether the M6 firmware accepts a program built for the M2's firmware has not been tried: a refusal is logged with the reply, an unanswered command
+    or a call without a finish event ends the sequence with no unload, and the buffers are freed only after the core stopped.
   - After the channel step the module polls the doorbell side every millisecond while it waits. That is 100 ms after SCRATCH3 and the whole wait of each command.
     It answers the firmware's requests on the SHAREDMALLOC ring. A MALLOC gets a DMA buffer of up to 2 MiB (at most 16 buffers and 64 MiB) and an ordinal. A FREE
     gets the answer the firmware waits for with no timeout. Each answer rings the ring's doorbell bit. A pending IPI value is written to the ack register at
@@ -152,7 +160,7 @@ gating, not any M6 behavior.
 
 ## Stage script
 
-`m6-ane-stage.sh <1|2|3> <boot-id prefix> [GO [state]]` runs one stage as root and collects the log in a new directory under
+`m6-ane-stage.sh <1|2|3> <boot-id prefix> [GO [state]]` runs one stage as root (step 4 with chan=4 also installs the pinned program file into /lib/firmware) and collects the log in a new directory under
 `/var/tmp/m6-ane`. It refuses on a kernel release other than 7.1.12-aurora-m6usb-ARCH, a boot id that does not match,
 a missing ANE node, a module whose sha256 is not the pinned one, and a module that is already loaded. It enforces the
 order per boot: step 2 needs a step 1 PASS, step 3 needs a step 2 PASS and the literal argument `GO`, and step 3 runs once
