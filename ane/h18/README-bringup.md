@@ -53,7 +53,7 @@ else in the ASC, IORVBAR or mailbox windows.
     is acknowledged, the module reads the eight words, allocates the surfaces the macOS kext allocates (an IPC surface of `SCRATCH1 + 1` bytes rounded up to a
     page, a HEAP surface of `SCRATCH3` bytes, and a 0x40000 byte pool surface that holds the 0x174 byte init block), fills the block with the layout of `ane/t6021/ane_t6021_boot.h`,
     writes the block address to SCRATCH0 (low) and SCRATCH1 (high), and then writes the wake word 0xf7fbdff9 to SCRATCH7. It waits up to `hs_wait_ms` for a new
-    address in SCRATCH1:SCRATCH0 together with 0x08042006 in SCRATCH7, and dumps the first 0x200 bytes at that address when one of its own surfaces holds it.
+    address in SCRATCH1:SCRATCH0 together with 0x08042006 in SCRATCH7, and dumps the first 0x800 bytes at that address (all-zero lines of 16 bytes are counted, not printed) when one of its own surfaces holds it.
     The firmware shows 0x08042006 before the wake, so the answer is judged by the new address. With this option the two firmware segments are mapped into the
     default DMA domain of the ANE (no own domain is attached), because the surfaces come from the DMA API. The config size at block +0x10 is 0x380000, the value the M6 kext sets (`hs_cfg_size`; T6021 uses 0x500000). Two words the decode
     does not give is zero: the template word. The pool qword at +0x60 is 0x40000 as in the T6021 sequencer. The handshake refuses unless SCRATCH7 already shows READY. SCRATCH6 is not

@@ -892,7 +892,7 @@ static void pos_boot(void)
 				chk(sim_n_iocalls >= 2 && sim_iocalls[0].code == SIM_IO_MAP && sim_n_dom_live == 0 && log_count("no attach") == 1 && log_count("attach the ANE to a new DART domain") == 0,
 				    "HS1 handshake=1: the firmware segments go into the default domain, no domain allocated or attached");
 				chk(nst == 1 && log_pos("ane_h18 handshake result 0") > 0 && log_pos("ane_h18 handshake result 0") < log_pos("ane_h18 rtkit shutdown:"), "HS1 handshake=1: the handshake runs before the shutdown, which still completes");
-				chk(log_count("ane_h18 hs table +0: 11111111 22222222 33333333 44444444") == 1 && log_count("is in a surface of 0x10000 bytes") == 1, "HS1 handshake=1: the table dump starts at the address the firmware published");
+				chk(log_count("ane_h18 hs table +0: 11111111 22222222 33333333 44444444") == 1 && log_count("is in a surface of 0x10000 bytes") == 1 && log_count("ane_h18 hs table +") == 1 && log_count("ane_h18 hs table: 127 all-zero lines of 16 bytes skipped") == 1, "HS1 handshake=1: the table dump starts at the address the firmware published");
 				chk(shut > w7, "HS1 handshake=1: the shutdown message comes after the wake word");
 			}
 			if (pass == 1)
