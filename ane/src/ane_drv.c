@@ -1289,6 +1289,9 @@ static int ane_platform_probe(struct platform_device *pdev)
 	err = ane_boost_init(ane);
 	if (err < 0)
 		goto detach_genpd;
+	err = ane_dvfs_init(ane);
+	if (err < 0)
+		goto detach_boost;
 
 	/*
 	 * Kernel-owned IOMMU domain. Defers until every "iommus" provider
@@ -1347,8 +1350,9 @@ disable_pm:
 	pm_runtime_disable(dev);
 	pm_runtime_dont_use_autosuspend(dev);
 	drm_mm_takedown(&ane->mm);
-detach_genpd:
+detach_boost:
 	ane_boost_exit(ane);
+detach_genpd:
 	ane_detach_genpd(ane);
 	return err;
 }
@@ -1380,6 +1384,7 @@ static void ane_platform_remove(struct platform_device *pdev)
 	ane_reclaim_preserved(ane);
 	drm_mm_takedown(&ane->mm);
 
+	ane_dvfs_exit(ane);
 	ane_boost_exit(ane);
 	ane_detach_genpd(ane);
 
@@ -1400,6 +1405,7 @@ static int __maybe_unused ane_runtime_suspend(struct device *dev)
 	if (atomic_read(&ane->wedged) && !ane->recovering)
 		return -EBUSY;
 
+	ane_dvfs_down(ane);
 	return 0;
 }
 
@@ -1446,6 +1452,7 @@ static int __maybe_unused ane_runtime_resume(struct device *dev)
 		dev_dbg(dev, "ANERD ps probe act=%#x\n", ane_ps_act(ane));
 	}
 
+	ane_dvfs_up(ane);
 	return 0;
 }
 

@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- ANE clock level on the T6001 (M1 Max): ane.ko requests level 1 from the PMP
+  when the partition comes up and releases it before the partition goes down
+  (`ane/src/ane_dvfs.c`, runtime resume and suspend), in the order macOS uses.
+  A full Qwen decode step on the 16-inch drops from 0.2009 s to 0.1158 s (4.98
+  to 8.64 tokens per second) with bit-identical logits; level 2 adds under 3
+  percent and higher levels were not written. The driver needs two more `reg`
+  entries and the PMS SRAM power domain on the ANE node (only the T6001 overlay
+  carries them; without them nothing changes) and the PMP firmware running;
+  `perf_state` in the device's sysfs directory says what happened. See
+  `receipts/2026-10-24-ane-level-driver/README.md`.
 - The release step cuts the release it should: one release per run covering
   every promotion merged since the last tag (verdict, chip, row shas,
   driver_source, merge sha), tagging the release commit so the tarball

@@ -14,3 +14,39 @@
 };
 
 /include/ "t600x-ane.dtsi"
+
+/*
+ * ANE clock level (ane/src/ane_dvfs.c): two more windows and the PMS SRAM power domain on the ANE node. T6001 only:
+ * the pmgr DVFS block is macOS RegMap 113 = ADT reg[39] of the M1 Max pmgr, read from AppleT6001PMGR::initRegMaps
+ * in the 25G83 kernelcache (ane-linux receipt 2026-10-24-ane-level-driver); the same index on T6000 or T6002 is unproven.
+ *   dvfs: DVFS_ON at +0x2000, DVFS_CMD at +0xa00
+ *   ptd:  the PMP PTD window: read entities at +reg*16, update space at +0x10000 + reg*8 (the PS-REQ word and the level word)
+ * The PTD window lives in the PMS SRAM domain, so ps_pms_sram joins the ANE power domains: the window is powered whenever
+ * the driver touches it. Without these two windows ane.ko behaves as before.
+ */
+/ {
+	fragment@10 {
+		target-path = "/soc/power-management@28e080000/power-controller@2e0";
+		ps_pms_sram: __overlay__ {
+		};
+	};
+
+	fragment@11 {
+		target-path = "/soc";
+
+		__overlay__ {
+			ane@284000000 {
+				reg-names = "engine", "dvfs", "ptd";
+				reg = <0x2 0x85c04000 0x0 0x0024000>,
+				      <0x2 0x85868000 0x0 0x4000>,
+				      <0x2 0x8e3c0000 0x0 0x20000>;
+				power-domains = <&ane_cpu_pd>,
+						<&ps_ane_set1>,
+						<&ps_ane_set2>,
+						<&ps_ane_set3>,
+						<&ps_ane_set4>,
+						<&ps_pms_sram>;
+			};
+		};
+	};
+};
