@@ -16,6 +16,12 @@
  * logits differ from the fp32 head at fp32 rounding and are not bit-identical. The activations stay fp32 (no int8
  * activation quantization).
  *
+ * q6k_matvec_f32_fp16x is the same product for an activation vector that is exactly representable in fp16 (the head input of the staged decodes is the
+ * fp16 output of the engine). The weights (-32..31) and the activations are fp16 for the multiply and the multiply-accumulate is FMLAL (fp16 x fp16, fp32
+ * accumulate), so every product is exact and the lanes are summed in the same order as q6k_matvec_f32: the result is bit-identical to q6k_matvec_f32 for such x,
+ * about 1.3 times faster on an M1. For any other x it differs by the rounding of x to fp16; the caller checks (tools/q6k_head.py does). It exists only when the file
+ * is built with -march=armv8.2-a+fp16+fp16fml (q6k_has_fp16fml() says so).
+ *
  * Threads split the rows evenly; the caller pins them (tools/pcore_mask.py). Build: cc -O3 -pthread -shared -fPIC.
  * On aarch64 the NEON path is used unless Q6K_NO_NEON is defined; elsewhere a scalar path with double accumulation runs.
  */
@@ -194,6 +200,106 @@ void q6k_matvec_f32(const uint8_t *w, size_t rows, size_t k, const float *x, flo
     for (int t = 1; t < nthreads; t++) pthread_join(threads[t], NULL);
 }
 
+#if Q6K_NEON && defined(__ARM_FEATURE_FP16_FML)
+#define Q6K_FP16FML 1
+static inline float32x4_t group16h(uint8x16_t u, const float16_t *xh, float32x4_t acc, float dsc) {
+    const int8x16_t q = vsubq_s8(vreinterpretq_s8_u8(u), vdupq_n_s8(32));
+    const float16x8_t qlo = vcvtq_f16_s16(vmovl_s8(vget_low_s8(q)));
+    const float16x8_t qhi = vcvtq_f16_s16(vmovl_high_s8(q));
+    const float16x8_t xlo = vld1q_f16(xh), xhi = vld1q_f16(xh + 8);
+    float32x4_t s = vfmlalq_low_f16(vdupq_n_f32(0.0f), qlo, xlo);
+    s = vfmlalq_high_f16(s, qlo, xlo);
+    s = vfmlalq_low_f16(s, qhi, xhi);
+    s = vfmlalq_high_f16(s, qhi, xhi);
+    return vfmaq_n_f32(acc, s, dsc);
+}
+
+static float row_dot_h(const uint8_t *w, size_t nb, const float16_t *x) {
+    float32x4_t acc = vdupq_n_f32(0.0f);
+    const uint8x16_t m4 = vdupq_n_u8(0x0F), m3 = vdupq_n_u8(0x03);
+    for (size_t b = 0; b < nb; b++) {
+        const uint8_t *ql = w + b * BLOCK_BYTES;
+        const uint8_t *qh = ql + 128;
+        const int8_t *sc = (const int8_t *)(ql + 192);
+        uint16_t dh;
+        memcpy(&dh, ql + 208, sizeof dh);
+        const float d = half_to_float(dh);
+        const float16_t *xb = x + b * QK_K;
+        for (int half = 0; half < 2; half++) {
+            const uint8x16_t ql0 = vld1q_u8(ql), ql1 = vld1q_u8(ql + 16), ql2 = vld1q_u8(ql + 32), ql3 = vld1q_u8(ql + 48);
+            const uint8x16_t qh0 = vld1q_u8(qh), qh1 = vld1q_u8(qh + 16);
+            const uint8x16_t a0 = vorrq_u8(vandq_u8(ql0, m4), vshlq_n_u8(vandq_u8(qh0, m3), 4));
+            const uint8x16_t a1 = vorrq_u8(vandq_u8(ql2, m4), vshlq_n_u8(vandq_u8(vshrq_n_u8(qh0, 2), m3), 4));
+            const uint8x16_t a2 = vorrq_u8(vshrq_n_u8(ql0, 4), vshlq_n_u8(vandq_u8(vshrq_n_u8(qh0, 4), m3), 4));
+            const uint8x16_t a3 = vorrq_u8(vshrq_n_u8(ql2, 4), vshlq_n_u8(vshrq_n_u8(qh0, 6), 4));
+            const uint8x16_t b0 = vorrq_u8(vandq_u8(ql1, m4), vshlq_n_u8(vandq_u8(qh1, m3), 4));
+            const uint8x16_t b1 = vorrq_u8(vandq_u8(ql3, m4), vshlq_n_u8(vandq_u8(vshrq_n_u8(qh1, 2), m3), 4));
+            const uint8x16_t b2 = vorrq_u8(vshrq_n_u8(ql1, 4), vshlq_n_u8(vandq_u8(vshrq_n_u8(qh1, 4), m3), 4));
+            const uint8x16_t b3 = vorrq_u8(vshrq_n_u8(ql3, 4), vshlq_n_u8(vshrq_n_u8(qh1, 6), 4));
+            acc = group16h(a0, xb + 0, acc, d * (float)sc[0]);
+            acc = group16h(a1, xb + 32, acc, d * (float)sc[2]);
+            acc = group16h(a2, xb + 64, acc, d * (float)sc[4]);
+            acc = group16h(a3, xb + 96, acc, d * (float)sc[6]);
+            acc = group16h(b0, xb + 16, acc, d * (float)sc[1]);
+            acc = group16h(b1, xb + 48, acc, d * (float)sc[3]);
+            acc = group16h(b2, xb + 80, acc, d * (float)sc[5]);
+            acc = group16h(b3, xb + 112, acc, d * (float)sc[7]);
+            xb += 128;
+            ql += 64;
+            qh += 32;
+            sc += 8;
+        }
+    }
+    return vaddvq_f32(acc);
+}
+
+struct jobh {
+    const uint8_t *w;
+    size_t row0, row1, nb;
+    const float16_t *x;
+    float *y;
+};
+
+static void *run_job_h(void *arg) {
+    const struct jobh *j = (const struct jobh *)arg;
+    for (size_t r = j->row0; r < j->row1; r++) j->y[r] = row_dot_h(j->w + r * j->nb * BLOCK_BYTES, j->nb, j->x);
+    return NULL;
+}
+
+static void matvec_fp16(const uint8_t *w, size_t rows, size_t k, const float16_t *xh, float *y, int nthreads) {
+    const size_t nb = k / QK_K;
+    struct jobh jobs[64];
+    pthread_t threads[64];
+    for (int t = 0; t < nthreads; t++) {
+        jobs[t].w = w; jobs[t].nb = nb; jobs[t].x = xh; jobs[t].y = y;
+        jobs[t].row0 = rows * (size_t)t / (size_t)nthreads;
+        jobs[t].row1 = rows * (size_t)(t + 1) / (size_t)nthreads;
+    }
+    for (int t = 1; t < nthreads; t++) pthread_create(&threads[t], NULL, run_job_h, &jobs[t]);
+    run_job_h(&jobs[0]);
+    for (int t = 1; t < nthreads; t++) pthread_join(threads[t], NULL);
+}
+
+// Same contract as q6k_matvec_f32; x must be exactly representable in fp16 for the result to equal q6k_matvec_f32 bit for bit.
+void q6k_matvec_f32_fp16x(const uint8_t *w, size_t rows, size_t k, const float *x, float *y, int nthreads) {
+    float16_t *xh = malloc(k * sizeof(float16_t));
+    if (!xh) abort();
+    for (size_t i = 0; i < k; i++) xh[i] = (float16_t)x[i];
+    if (nthreads < 1) nthreads = 1;
+    if ((size_t)nthreads > rows) nthreads = (int)(rows ? rows : 1);
+    if (nthreads > 64) nthreads = 64;
+    matvec_fp16(w, rows, k, xh, y, nthreads);
+    free(xh);
+}
+#else
+#define Q6K_FP16FML 0
+void q6k_matvec_f32_fp16x(const uint8_t *w, size_t rows, size_t k, const float *x, float *y, int nthreads) {
+    q6k_matvec_f32(w, rows, k, x, y, nthreads);   // no FMLAL here: the merged kernel (exact for any x)
+}
+#endif
+
+int q6k_has_fp16fml(void) { return Q6K_FP16FML; }
+
 #ifdef Q6K_TEST_MAIN
 static void *slurp(const char *path, size_t *n) {
     FILE *f = fopen(path, "rb");
@@ -209,14 +315,15 @@ static void *slurp(const char *path, size_t *n) {
 
 // q6k_test blocks.bin rows k x.bin y.bin dq_row dq.bin nthreads
 int main(int argc, char **argv) {
-    if (argc != 9) { fprintf(stderr, "usage: %s blocks rows k x y dq_row dq nthreads\n", argv[0]); return 64; }
+    if (argc != 9 && argc != 10) { fprintf(stderr, "usage: %s blocks rows k x y dq_row dq nthreads [fp16x]\n", argv[0]); return 64; }
     size_t nbytes, nx;
     uint8_t *w = slurp(argv[1], &nbytes);
     const size_t rows = strtoull(argv[2], NULL, 10), k = strtoull(argv[3], NULL, 10);
     float *x = slurp(argv[4], &nx);
     if (nbytes != rows * (k / QK_K) * BLOCK_BYTES || nx != k * sizeof(float)) { fprintf(stderr, "size mismatch\n"); return 65; }
     float *y = malloc(rows * sizeof(float));
-    q6k_matvec_f32(w, rows, k, x, y, atoi(argv[8]));
+    if (argc == 10) q6k_matvec_f32_fp16x(w, rows, k, x, y, atoi(argv[8]));
+    else q6k_matvec_f32(w, rows, k, x, y, atoi(argv[8]));
     FILE *f = fopen(argv[5], "wb");
     fwrite(y, sizeof(float), rows, f);
     fclose(f);
@@ -226,7 +333,7 @@ int main(int argc, char **argv) {
     f = fopen(argv[7], "wb");
     fwrite(dq, sizeof(float), k, f);
     fclose(f);
-    printf("neon=%d\n", q6k_has_neon());
+    printf("neon=%d fp16fml=%d\n", q6k_has_neon(), q6k_has_fp16fml());
     return 0;
 }
 #endif

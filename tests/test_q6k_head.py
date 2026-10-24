@@ -5,6 +5,7 @@ The reference is numpy: the ggml Q6_K dequantization in fp32 ((d * scale) * q) a
 The native build is the scalar path; the NEON path is cross-compiled for aarch64 and run under qemu-user when both
 tools are installed. Random blocks use finite fp16 scales, scales in the int8 range and any 6-bit values."""
 
+import platform
 import shutil
 import subprocess
 from pathlib import Path
@@ -69,13 +70,13 @@ def binaries(tmp_path_factory):
     return result
 
 
-def run(binary, tmp_path, blocks, x, row, threads):
+def run(binary, tmp_path, blocks, x, row, threads, extra=()):
     rows, width = blocks.shape[0], x.size
     paths = {name: tmp_path / name for name in ("blocks", "x", "y", "dq")}
     paths["blocks"].write_bytes(blocks.tobytes())
     paths["x"].write_bytes(x.astype(np.float32).tobytes())
     proc = subprocess.run([*binary, str(paths["blocks"]), str(rows), str(width), str(paths["x"]), str(paths["y"]), str(row),
-                           str(paths["dq"]), str(threads)], capture_output=True, text=True, check=True)
+                           str(paths["dq"]), str(threads), *extra], capture_output=True, text=True, check=True)
     return (np.frombuffer(paths["y"].read_bytes(), dtype=np.float32), np.frombuffer(paths["dq"].read_bytes(), dtype=np.float32),
             proc.stdout.strip())
 
@@ -90,7 +91,7 @@ def test_dequant_row_is_bit_identical_and_the_matvec_is_close(binaries, tmp_path
     x = rng.standard_normal(k).astype(np.float32) * 3.0
     reference = dequant_np(blocks, k)
     y, dq, banner = run(binaries[variant], tmp_path, blocks, x, rows - 1, 3)
-    assert banner == ("neon=1" if variant == "neon" else "neon=0")
+    assert banner.split()[0] == ("neon=1" if variant == "neon" else "neon=0")
     assert np.array_equal(dq, reference[rows - 1]), "dequantized row differs from the fp32 reference"
     exact = reference.astype(np.float64) @ x.astype(np.float64)
     scale = np.abs(reference.astype(np.float64)) @ np.abs(x.astype(np.float64))
@@ -99,6 +100,70 @@ def test_dequant_row_is_bit_identical_and_the_matvec_is_close(binaries, tmp_path
     # The comparison point: numpy's own fp32 matvec on the same fp32 weights.
     baseline = np.abs((reference @ x).astype(np.float64) - exact)
     assert err.max() <= 4 * baseline.max() + 1e-6 * scale.max()
+
+
+def _has_fmlal():
+    try:
+        return platform.machine() == "aarch64" and " asimdfhm" in Path("/proc/cpuinfo").read_text()
+    except OSError:
+        return False
+
+
+@pytest.fixture(scope="module")
+def fp16fml_binary(tmp_path_factory):
+    """The test main built natively with FMLAL; only on an aarch64 host whose CPU has FP16FML."""
+    cc = shutil.which("cc") or shutil.which("gcc")
+    if not (cc and _has_fmlal()):
+        pytest.skip("needs a native aarch64 host with FP16FML (asimdfhm)")
+    out = tmp_path_factory.mktemp("q6kfp16") / "q6k_fp16"
+    try:
+        subprocess.run([cc, "-O2", "-Wall", "-march=armv8.2-a+fp16+fp16fml", "-DQ6K_TEST_MAIN", "-pthread", str(SOURCE), "-o", str(out), "-lm"], check=True)
+    except subprocess.CalledProcessError:
+        pytest.skip("the compiler has no FMLAL intrinsics")
+    return [str(out)]
+
+
+@pytest.mark.parametrize("threads", [1, 3, 8])
+@pytest.mark.parametrize("rows, k", [(1, 256), (37, 1024), (64, 2048)])
+def test_fp16x_is_bit_identical_when_x_is_an_fp16_value(fp16fml_binary, tmp_path, rows, k, threads):
+    rng = np.random.default_rng(2000 + rows + k)
+    blocks = make_blocks(rng, rows, k)
+    x = (rng.standard_normal(k) * 3.0).astype(np.float16).astype(np.float32)
+    plain, _, banner = run(fp16fml_binary, tmp_path, blocks, x, 0, threads)
+    fast, _, banner16 = run(fp16fml_binary, tmp_path, blocks, x, 0, threads, ("fp16x",))
+    assert banner == banner16 == "neon=1 fp16fml=1"
+    assert np.array_equal(fast, plain)
+
+
+def test_fp16x_on_any_other_x_differs_only_by_the_rounding_of_x(fp16fml_binary, tmp_path):
+    rng = np.random.default_rng(31)
+    blocks, x = make_blocks(rng, 64, 2048), rng.standard_normal(2048).astype(np.float32) * 3.0
+    plain = run(fp16fml_binary, tmp_path, blocks, x, 0, 2)[0].astype(np.float64)
+    fast = run(fp16fml_binary, tmp_path, blocks, x, 0, 2, ("fp16x",))[0].astype(np.float64)
+    scale = np.abs(dequant_np(blocks, 2048).astype(np.float64)) @ np.abs(x.astype(np.float64))
+    assert not np.array_equal(plain, fast)
+    assert np.all(np.abs(fast - plain) <= 2.0 ** -10 * scale)   # fp16 has an 11 bit significand
+
+
+def test_the_wrapper_uses_fp16x_only_for_fp16_exact_input(tmp_path, monkeypatch):
+    import sys
+
+    sys.path.insert(0, str(ROOT / "tools"))
+    from q6k_head import Q6KHead, build
+
+    blocks = np.frombuffer(REAL.read_bytes(), dtype=np.uint8).reshape(64, 1680)
+    rng = np.random.default_rng(13)
+    lib = build(tmp_path)
+    exact = (rng.standard_normal(2048) * 2.0).astype(np.float16).astype(np.float32)
+    other = rng.standard_normal(2048).astype(np.float32)
+    monkeypatch.setenv("Q6K_FP16X", "0")
+    off = Q6KHead(blocks, 64, 2048, threads=3, lib=lib)
+    monkeypatch.setenv("Q6K_FP16X", "1")
+    on = Q6KHead(blocks, 64, 2048, threads=3, lib=lib)
+    assert off._fp16x is False
+    assert on._fp16x is bool(on._lib.q6k_has_fp16fml())
+    assert np.array_equal(on.logits(exact), off.logits(exact))
+    assert np.array_equal(on.logits(other), off.logits(other))   # not fp16-exact: the merged kernel runs, bit for bit
 
 
 @pytest.mark.parametrize("variant", ["scalar", "neon"])
