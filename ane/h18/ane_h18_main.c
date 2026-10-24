@@ -1189,6 +1189,42 @@ static const u8 *ane_h18_prog_cpu(const struct ane_h18 *ane, u64 a, size_t len)
 	return NULL;
 }
 
+/* The firmware console as text. A record of the terminal ring is 64 bytes: word 0 the firmware address of the text (low two bits are flags), word 1 the length,
+ * word 3 a timestamp (seen on the board; the format is not documented anywhere). The text lies in a buffer the firmware was given, so the host can read it.
+ * One log line per record, slot number first: the ring wraps, the timestamps give the order. Records that do not point into one of our buffers, or whose
+ * length is over 0x100, are counted and not printed. Read only. */
+static void ane_h18_term_log(struct ane_h18 *ane, const char *when)
+{
+	unsigned int i, k, shown = 0, skipped = 0;
+
+	for (i = 0; i < ANE_H18_CH_COUNT; i++) {
+		const u64 *r = ane->ch_rings[i].base;
+
+		if (ane->ch_rings[i].type != 2)
+			continue;
+		for (k = 0; k < ane->ch_rings[i].slots; k++) {
+			u64 w0 = READ_ONCE(r[k * 8]), len = READ_ONCE(r[k * 8 + 1]), ts = READ_ONCE(r[k * 8 + 3]);
+			const u8 *t;
+			char txt[0x101];
+			unsigned int j;
+
+			if (!w0)
+				continue;
+			t = len && len <= 0x100 ? ane_h18_prog_cpu(ane, w0 & ~3ULL, len) : NULL;
+			if (!t) {
+				skipped++;
+				continue;
+			}
+			for (j = 0; j < len; j++)
+				txt[j] = t[j] >= 0x20 && t[j] < 0x7f ? t[j] : (t[j] == '\n' ? ' ' : '.');
+			txt[len] = 0;
+			dev_info(ane->dev, "ane_h18 fw log %s: %u ts %#llx: %s\n", when, k, ts, txt);
+			shown++;
+		}
+	}
+	dev_info(ane->dev, "ane_h18 fw log %s: %u records printed, %u not (no buffer behind the address, or length 0 or over 0x100)\n", when, shown, skipped);
+}
+
 /* Give every firmware-owned slot of the IO_T2H ring back (header | 1, doorbell BIT(ring bit)), as the T6021 driver does, and log the event each one points to
  * (0x28 bytes: u32 sequence, u32 0x300, u64 cookie, u32 program, u32 process, u32 0, u32 state; two per call, state 0 and then 1 when the procedure finished).
  * Returns the number of events taken and sets *finished when an event of our cookie had state 1. Nothing is written unless the firmware posted a slot. */
@@ -1667,6 +1703,7 @@ static int ane_h18_chan_step(struct ane_h18 *ane, const struct ane_h18_hs_buf *t
 			if (ret) {
 				snprintf(when, sizeof(when), "after the failed %s", seq[i].name);
 				ane_h18_chan_snapshot(ane, when, true);
+				ane_h18_term_log(ane, when);
 				return ret == -EPROTO || ret == -EREMOTEIO || ret == -ETIMEDOUT || ret == -EBUSY ? -EIO : ret;
 			}
 			if (seq[i].op == ANE_H18_CSNE_CONFIG_GET) {
@@ -1687,6 +1724,7 @@ static int ane_h18_chan_step(struct ane_h18 *ane, const struct ane_h18_hs_buf *t
 		ret = ane_h18_prog_run(ane, &io);
 		if (ret) {
 			ane_h18_chan_snapshot(ane, "after the failed program", true);
+			ane_h18_term_log(ane, "after the failed program");
 			return ret;
 		}
 	}

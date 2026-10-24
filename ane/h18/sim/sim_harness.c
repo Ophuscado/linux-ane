@@ -344,6 +344,12 @@ void sim_hs_react(void)
 			u64 *sm = (u64 *)((u8 *)sim_dma[1].va + 0xae00);	/* the SHAREDMALLOC ring: a request nobody answered */
 
 			memcpy((u8 *)sim_dma[1].va + 0x800, "ANE fw says hi", 14);	/* the firmware console */
+			if (sim_chan_req == 1) {
+				memcpy((u8 *)sim_dma[1].va + 0xf000, "fw text\n\x01", 9);	/* a console record that points to text: slot 2, flag 2, length 9, timestamp 0x77 */
+				((u64 *)((u8 *)sim_dma[1].va + 0x800))[2 * 8] = (sim_dma[1].iova + 0xf000) | 2;
+				((u64 *)((u8 *)sim_dma[1].va + 0x800))[2 * 8 + 1] = 9;
+				((u64 *)((u8 *)sim_dma[1].va + 0x800))[2 * 8 + 3] = 0x77;
+			}
 			sm[0] = 0x1000;	/* a header that is an iova, with a size: no request has this shape */
 			sm[1] = 0x40;
 			sm[2] = 0;
@@ -1584,8 +1590,9 @@ static void pos_boot(void)
 			}
 			if (pass == 11)
 				chk(ret == -EIO && log_count("chan snapshot after SCRATCH3: IPI pending = 0x20") == 1 && log_count("chan snapshot after the failed PRINT_ENABLE: IPI pending = 0x20") == 1 &&
-				    log_count("chan snapshot after SCRATCH3: SHAREDMALLOC +0 = 0x1000 0x40") == 1 && log_count("after SCRATCH3: TERMINAL text slot 0: ANE fw says hi") == 1 && log_count("after the failed PRINT_ENABLE: TERMINAL text slot 0: ANE fw says hi") == 1 && sim_ack_writes > 0 && sim_ack_last == 0x20 && log_count("write IPI ack=0x20") > 0 && log_count("chan snapshot after the failed PRINT_ENABLE: IO slot 0 = ") == 1,
-				    "CH10 a request nobody answered on the SHAREDMALLOC ring and the IO slot show up in the snapshots after S3 and after the failed command");
+				    log_count("chan snapshot after SCRATCH3: SHAREDMALLOC +0 = 0x1000 0x40") == 1 && log_count("after SCRATCH3: TERMINAL text slot 0: ANE fw says hi") == 1 && log_count("after the failed PRINT_ENABLE: TERMINAL text slot 0: ANE fw says hi") == 1 && sim_ack_writes > 0 && sim_ack_last == 0x20 && log_count("write IPI ack=0x20") > 0 && log_count("chan snapshot after the failed PRINT_ENABLE: IO slot 0 = ") == 1 &&
+			    log_count("fw log after the failed PRINT_ENABLE: 2 ts 0x77: fw text .\n") == 1 && log_count("fw log after the failed PRINT_ENABLE: 1 records printed, 1 not") == 1,
+				    "CH10 a request nobody answered on the SHAREDMALLOC ring, the IO slot and the console text a record points to show up after the failed command (the record that holds inline text is counted, not printed)");
 			if (pass == 10)
 				chk(ret == -EPROTO && result("boot", "FAIL", "handshake-channel-step-failed") && nsc3 == 0 && sim_db_writes == 0 && sim_cmds_seen == 0, "CH9 a ring address near 2^64 that wraps the old bound check: FAIL, nothing written");
 			if (pass == 8 || pass == 9)
