@@ -204,6 +204,12 @@ void sim_db_react(u32 v)
 
 			memcpy(blk + 6, &bad, 2);
 		}
+		if (op == ANE_H18_CSNE_RESOURCE_INFO_GET) {
+			u32 a = 0xabcd0020, b = 0xabcd0050;
+
+			memcpy(blk + 0x20, &a, 4);
+			memcpy(blk + 0x50, &b, 4);
+		}
 		if (op == ANE_H18_CSNE_CONFIG_GET) {
 			u32 rate = 0x16e3600;
 
@@ -315,7 +321,7 @@ static void reset_all(void)
 	hs_cfg_size = 0x380000;
 	hs_wait_ms = 50;
 	sim_scr_model = sim_n_dma = sim_dma_fail = sim_default_dom_none = sim_hs_mode = sim_hs_block_ok = sim_hs_wakes = 0;
-	hs_chan = hs_cmds = false;
+	hs_chan = hs_cmds = hs_start = false;
 	sim_db_writes = sim_hs_table = sim_s3_mode = sim_cmd_mode = sim_cmds_seen = sim_table_bad = sim_chan_req = 0;
 	sim_pend_val = 0;
 	sim_ack_writes = 0;
@@ -1062,7 +1068,7 @@ static void pos_boot(void)
 		int pass, k, w3 = -1, db = -1, nsc3, nh2t, ok;
 		u8 *ipc;
 
-		for (pass = 0; pass < 15; pass++) {
+		for (pass = 0; pass < 17; pass++) {
 			kboot_setup();
 			alias_mbox = true;
 			rtkit_hello = true;
@@ -1091,6 +1097,8 @@ static void pos_boot(void)
 			if (pass == 13) { sim_chan_req = 3; }
 			if (pass == 14) { sim_chan_req = 4; sim_cmd_mode = 1; }
 			if (pass == 13) hs_cmds = false;
+			if (pass == 15) hs_start = true;
+			if (pass == 16) { hs_start = true; hs_cmds = false; }
 			ret = probe_now();
 			ipc = sim_n_dma > 1 ? sim_dma[1].va : NULL;
 			nsc3 = 0;
@@ -1117,12 +1125,17 @@ static void pos_boot(void)
 			if (pass == 4)
 				chk(ret == -EIO && result("boot", "FAIL", "handshake-channel-step-failed") && sim_cmds_seen == 1, "CH5 a failing acknowledgement (+6 = 2) is a FAIL, CONFIG_GET is not sent");
 			if (pass == 5)
-				chk(ret == -EINVAL && result("boot", "REFUSED", "hs_chan=1 needs handshake=1 and hs_cmds=1 needs hs_chan=1") && writes() == 0, "CH6 hs_cmds=1 without hs_chan=1 is refused before any write");
+				chk(ret == -EINVAL && result("boot", "REFUSED", "hs_chan=1 needs handshake=1, hs_cmds=1 needs hs_chan=1 and hs_start=1 needs hs_cmds=1") && writes() == 0, "CH6 hs_cmds=1 without hs_chan=1 is refused before any write");
 			if (pass == 13) {
 				u64 *sm = sim_n_dma > 1 ? (u64 *)((u8 *)sim_dma[1].va + 0xae00) : NULL;
 
 				chk(ret == 0 && ok && sm && sm[8] == 1 && (sm[16] & 1) && sm[18] == 1 && log_count("ordinal 1\n") == 2 && sim_n_dma == 5, "CH12 a freed MALLOC slot is reused: the second request of the same size gets ordinal 1 again, not 2");
 			}
+			if (pass == 15)
+				chk(ret == 0 && ok && sim_cmds_seen == 4 && sim_cmd_ops[0] == 4 && sim_cmd_ops[1] == 0 && sim_cmd_ops[2] == 3 && sim_cmd_ops[3] == 0x22 && log_count("RESOURCE_INFO_GET reply +0x20: abcd0020") == 1 && log_count("RESOURCE_INFO_GET reply +0x50: abcd0050") == 1,
+				    "CH14 hs_start=1: PRINT_ENABLE, START, CONFIG_GET, RESOURCE_INFO_GET in the kext's order, the 100 byte reply logged in 16 byte lines");
+			if (pass == 16)
+				chk(ret == -EINVAL && result("boot", "REFUSED", "hs_chan=1 needs handshake=1, hs_cmds=1 needs hs_chan=1 and hs_start=1 needs hs_cmds=1") && writes() == 0, "CH15 hs_start=1 without hs_cmds=1 is refused before any write");
 			if (pass == 14)
 				chk(log_count("chan snapshot ring change: IPI pending") == 11, "CH13 a console that changes at every poll gives at most 6 change snapshots per wait (6 + 5 in this run, 10 + 5 without the cap), not one per check");
 			if (pass == 12) {

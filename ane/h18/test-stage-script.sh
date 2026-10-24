@@ -162,12 +162,16 @@ grep -q 'map_fw=1 read_scratch=1 handshake=1 rtkit_hello=1 rtkit_start=1 rtkit_s
 rm -f "$T/work/step4-run-0123abcd"
 sleep 1
 # the chan flag: needs handshake=1
-expect "step 5 with chan=3 refused" 2 bash "$S" 5 0123abcd GO 1 2 800 0 3 1 1 3
+expect "step 5 with chan=4 refused" 2 bash "$S" 5 0123abcd GO 1 2 800 0 3 1 1 4
 sleep 1
 expect "step 5 with chan=1 and handshake=0 refused" 2 bash "$S" 5 0123abcd GO 1 2 800 0 3 1 0 1
 sleep 1
 FAKE_STAGE=boot expect "step 5 with chan=2 passes" 0 bash "$S" 5 0123abcd GO 1 2 800 0 3 1 1 2
 grep -q 'handshake=1 hs_chan=1 hs_cmds=1 rtkit_hello=1' "$T/insmod.args" && echo "  PASS chan=2 args carry hs_chan and hs_cmds" || { echo "  FAIL chan args"; fails=$((fails + 1)); }
+rm -f "$T/work/step4-run-0123abcd"
+sleep 1
+FAKE_STAGE=boot expect "step 5 with chan=3 passes" 0 bash "$S" 5 0123abcd GO 1 2 800 0 3 1 1 3
+grep -q 'hs_chan=1 hs_cmds=1 hs_start=1' "$T/insmod.args" && echo "  PASS chan=3 args carry hs_chan, hs_cmds and hs_start" || { echo "  FAIL chan=3 args"; fails=$((fails + 1)); }
 rm -f "$T/work/step4-run-0123abcd"
 sleep 1
 FAKE_STAGE=boot expect "step 5 with chan=1 passes" 0 bash "$S" 5 0123abcd GO 1 2 800 0 3 1 1 1

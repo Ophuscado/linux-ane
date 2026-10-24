@@ -109,6 +109,8 @@ static inline enum ane_h18_mal_kind ane_h18_mal_classify(u64 hdr, u64 size, u64 
 #define ANE_H18_CMD_POOL_OFF	0x400	/* the command block lives in the pool surface, 0x100 aligned, as the kext takes every command block from the pool */
 #define ANE_H18_CSNE_PRINT_ENABLE	0x04
 #define ANE_H18_CSNE_CONFIG_GET		0x03
+#define ANE_H18_CSNE_START		0x00
+#define ANE_H18_CSNE_RESOURCE_INFO_GET	0x22	/* 100 byte command, the kext copies 16 bytes from +0x20 and +0x50 of the reply */
 /* ANE DART (dart,gen3, instance 0): read only liveness words, see ane_h18_read_dart_words(). */
 #define ANE_H18_DART_NREAD	12
 /* Postoffice channel layout used for the RTKit exchange, as drivers/soc/apple/mailbox.c has it for the T8152 counted FIFO: RX (the outbox, firmware to host)
