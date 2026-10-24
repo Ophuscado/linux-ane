@@ -176,9 +176,11 @@ step 3 PASS with a `did not return to state 6` line exits 3. `test-stage-script.
 plus 0x200000000. `t8152-j873-ane.dts` includes both files, as `t8152-j873-gpupsd.dts` does for the GPU. The node has
 no `power-domains` property, because attaching a PSD domain writes the slot request before any stage decides.
 
-`t8152-j873-ane-dart.dtsi` adds the ANE DART (`dart,gen3`, instance 0, the ADT tunables, the DMA range of the ADT vm-base and vm-size, the shared TLBI doorbell, interrupt 789), a
+`t8152-j873-ane-dart.dtsi` adds the ANE DART (`dart,gen3`, instances 0 to 3 as four nodes on the one ADT interrupt, the ADT tunables of instance 0, the DMA range of the ADT vm-base and vm-size, the shared TLBI doorbell, interrupt 789), a
 PSD group for slots 30 and 31 (state 1 on both, as the board accepted) and the `iommus` and `power-domains` links of the `ane0` node.
 `t8152-j873-ane-dart.dts` includes all three files. None of it has run: no ANE DART access has gone through the kernel's DART driver.
+
+The ADT `dart-ane` has four translation instances (0x419800000 LLT, 0x419820000 BRD, 0x419840000 BRD, 0x419860000 BWR, 0xc000 each) and a DAPF window, and one interrupt, 789. On the M1 and M2 the engine's reads and writes go through the BRD and BWR instances (stream 0), and every working ANE overlay lists all instances in `iommus`; the first M6 program ran with only instance 0 in `iommus`: the firmware, which uses instance 0, worked, and the engine never finished while interrupt 789 stormed. The overlay now has one node per instance with `iommus` naming all four (stream 0). `t8152-j873-ane-dart-tunables.dtsi` adds the ADT tunables of instances 1 to 3 and `t8152-j873-ane-dart-sid11.dtsi` adds stream 11 (`mapper-ane-mpm`) on every instance; `t8152-j873-ane-dart-full.dts` includes both. Build `t8152-j873-ane-dart.dts` first, so a run isolates the instances. `h18-dart-check.py ADT.bin DTB` compares the built DTB with the ADT of the same board (addresses, interrupt, tunable records, streams). It is a static check; no instance 1 to 3 register has been read on the board.
 
 ## Bring-up order
 
