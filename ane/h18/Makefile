@@ -150,6 +150,38 @@ sim-mutation-noshutfail:
 sim-mutation-noqueue:
 	$(call mutant,noqueue,s/ane->rtk_txq\[ane->rtk_txq_n++\] = msg0;/(void)msg0; \/* NEG: message dropped *\//,NEG: message dropped,pos)
 
+# the wake word is never written
+sim-mutation-hsnowake:
+	$(call mutant,hsnowake,s/ane_h18_scratch_write(ane, 7, ANE_H18_HS_WAKE);/(void)0; \/* NEG: no wake *\//,NEG: no wake,pos)
+
+# the high half of the block address is not published
+sim-mutation-hsnohigh:
+	$(call mutant,hsnohigh,s/ane_h18_scratch_write(ane, 1, (u32)(pub >> 32));/ane_h18_scratch_write(ane, 1, 0); \/* NEG: high half lost *\//,NEG: high half lost,pos)
+
+# the surfaces are never freed
+sim-mutation-hsnofree:
+	$(call mutant,hsnofree,s/^\tane_h18_hs_free(ane);\t\/\* only after.*/\t\/* NEG: surfaces leaked *\//,NEG: surfaces leaked,pos)
+
+# the answer is judged by READY alone, which is there before the wake
+sim-mutation-hsbys7:
+	$(call mutant,hsbys7,s/if (table != pub \&\& cur\[2\] == ANE_H18_HS_READY) {/if (cur[2] == ANE_H18_HS_READY) { \/* NEG: judged by S7 *\//,NEG: judged by S7,pos)
+
+# SCRATCH0 at 0x21 or above does not stop the handshake
+sim-mutation-hsnoreqgate:
+	$(call mutant,hsnoreqgate,s/if (w\[0\] >= ANE_H18_HS_REQ_LIMIT) {/if (0 \/* NEG: request gate off *\/) {/,NEG: request gate off,pos)
+
+# a huge firmware request is allocated
+sim-mutation-hsnolimit:
+	$(call mutant,hsnolimit,s/if (ipc_size > ANE_H18_HS_IPC_MAX || heap_size > ANE_H18_HS_HEAP_MAX) {/if (0 \/* NEG: size limits off *\/) {/,NEG: size limits off,pos)
+
+# the segments go into a new domain instead of the default one
+sim-mutation-hsowndom:
+	$(call mutant,hsowndom,s/dom = iommu_get_domain_for_dev(ane->dev);/dom = iommu_paging_domain_alloc(ane->dev); \/* NEG: own domain *\//,NEG: own domain,pos)
+
+# the DMA mask is too small for the DART aperture
+sim-mutation-hsmask:
+	$(call mutant,hsmask,s/DMA_BIT_MASK(42)/DMA_BIT_MASK(32) \/* NEG: 32 bit mask *\//,NEG: 32 bit mask,pos)
+
 sim-all: sim-test sim-negative-psd-never sim-negative-psd-wrong sim-negative-dt sim-negative-args sim-negative-boot \
 	sim-mutation-noconfirm sim-mutation-nowindow sim-mutation-noundo sim-mutation-noack sim-mutation-nogate \
 	sim-mutation-noconfirmboot sim-mutation-nopreflight sim-mutation-nohalt \
@@ -158,12 +190,20 @@ sim-all: sim-test sim-negative-psd-never sim-negative-psd-wrong sim-negative-dt 
 	sim-mutation-nostop sim-mutation-noackstate \
 	sim-mutation-nostate6 \
 	sim-mutation-noshutfail \
-	sim-mutation-noqueue
+	sim-mutation-noqueue \
+	sim-mutation-hsnowake \
+	sim-mutation-hsnohigh \
+	sim-mutation-hsnofree \
+	sim-mutation-hsbys7 \
+	sim-mutation-hsnoreqgate \
+	sim-mutation-hsnolimit \
+	sim-mutation-hsowndom \
+	sim-mutation-hsmask
 
 clean:
 	$(MAKE) -C $(KERNELDIR) M=$(PWD) clean
 	rm -f sim/sim_h18
 
-.PHONY: sim-mutation-noqueue sim-mutation-noshutfail sim-mutation-nostate6 sim-mutation-nostop sim-mutation-noackstate sim-mutation-mapgate sim-mutation-nofail sim-mutation-noundomap sim-mutation-norpmput sim-mutation-nocredit sim-mutation-wronghalf sim-mutation-nover sim-mutation-dartgate sim-mutation-hellogate sim-negative-boot sim-mutation-noconfirmboot sim-mutation-nopreflight sim-mutation-nohalt default modules sim-test sim-negative-psd-never sim-negative-psd-wrong sim-negative-dt sim-negative-args \
+.PHONY: sim-mutation-hsnowake sim-mutation-hsnohigh sim-mutation-hsnofree sim-mutation-hsbys7 sim-mutation-hsnoreqgate sim-mutation-hsnolimit sim-mutation-hsowndom sim-mutation-hsmask sim-mutation-noqueue sim-mutation-noshutfail sim-mutation-nostate6 sim-mutation-nostop sim-mutation-noackstate sim-mutation-mapgate sim-mutation-nofail sim-mutation-noundomap sim-mutation-norpmput sim-mutation-nocredit sim-mutation-wronghalf sim-mutation-nover sim-mutation-dartgate sim-mutation-hellogate sim-negative-boot sim-mutation-noconfirmboot sim-mutation-nopreflight sim-mutation-nohalt default modules sim-test sim-negative-psd-never sim-negative-psd-wrong sim-negative-dt sim-negative-args \
 	sim-mutation-noconfirm sim-mutation-nowindow sim-mutation-noundo sim-mutation-noack sim-mutation-nogate sim-all clean
 endif

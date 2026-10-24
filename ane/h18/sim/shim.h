@@ -131,6 +131,41 @@ struct platform_driver {
 #define module_platform_driver(x) extern char __sim_kmod_noop
 
 #define GFP_KERNEL 0
+#define PAGE_SIZE 0x4000UL
+#define ALIGN(x, a) (((x) + (a) - 1) / (a) * (a))
+#define wmb() do { } while (0)
+typedef u64 dma_addr_t;
+#define DMA_BIT_MASK(n) ((1ULL << (n)) - 1)
+struct sim_dma { void *va; dma_addr_t iova; size_t size; int live; };
+extern struct sim_dma sim_dma[8];
+extern int sim_n_dma, sim_dma_fail, sim_dma_mask_bits;
+static inline int dma_set_mask_and_coherent(struct device *d, u64 mask)
+{
+	(void)d;
+	sim_dma_mask_bits = 64 - __builtin_clzll(mask);
+	return 0;
+}
+static inline void *dma_alloc_coherent(struct device *d, size_t size, dma_addr_t *iova, int gfp)
+{
+	(void)d; (void)gfp;
+	if (sim_dma_fail == sim_n_dma + 1 || sim_n_dma >= 8)
+		return NULL;
+	sim_dma[sim_n_dma].va = calloc(1, size);
+	sim_dma[sim_n_dma].iova = 0x3ff00000000ULL - 0x4000000ULL * (sim_n_dma + 1);
+	sim_dma[sim_n_dma].size = size;
+	sim_dma[sim_n_dma].live = 1;
+	*iova = sim_dma[sim_n_dma].iova;
+	return sim_dma[sim_n_dma++].va;
+}
+static inline void dma_free_coherent(struct device *d, size_t size, void *va, dma_addr_t iova)
+{
+	int k;
+
+	(void)d; (void)size;
+	for (k = 0; k < sim_n_dma; k++)
+		if (sim_dma[k].va == va && sim_dma[k].iova == iova)
+			sim_dma[k].live = 0;
+}
 static inline void *devm_kzalloc(struct device *d, size_t n, int f) { (void)d; (void)f; return calloc(1, n); }
 static inline void platform_set_drvdata(struct platform_device *p, void *d) { p->drvdata = d; }
 static inline void *platform_get_drvdata(struct platform_device *p) { return p->drvdata; }
@@ -175,6 +210,9 @@ extern int sim_tx_got;
 extern u64 sim_tx_msgs[32];
 extern int sim_n_tx_msgs, sim_idle_sent, sim_stop_needs_idle, sim_no_shutdown_reply;
 extern u32 sim_iop_ack_state;
+extern u32 sim_scr[8];			/* modelled SCRATCH words when sim_scr_model is set */
+extern int sim_scr_model;
+extern void sim_hs_react(void);		/* the modelled firmware sees the wake word */
 extern int sim_credit_mode;	/* 1: every host TX message uses the only free slot, the slot returns at the next sleep */
 extern u32 sim_credits_now;
 extern u64 sim_asc_pa, sim_rvbar_pa, sim_mbox_pa;
@@ -297,6 +335,8 @@ static inline u32 bus_read(u64 pa)
 		/* the engine block page is only reachable with both ANE PSD slots on */
 		if (sim_psd_state[0] == 6 || sim_psd_state[1] == 6)
 			sim_faults++;
+		else if (sim_scr_model && pa >= SIM_SCRATCH_PA + 0x24 && pa < SIM_SCRATCH_PA + 0x44)
+			v = sim_scr[(pa - SIM_SCRATCH_PA - 0x24) / 4];
 		else
 			v = 0x5c000000u | (u32)(pa & 0xffff);
 	} else if (sim_in(pa, SIM_DART_PA, SIM_DART_SIZE)) {
@@ -381,6 +421,12 @@ static inline void bus_write(u64 pa, u32 v)
 		}
 		return;
 	}
+	if (i < 0 && sim_scr_model && sim_in(pa, SIM_SCRATCH_PA + 0x24, 0x20) && sim_psd_state[0] != 6 && sim_psd_state[1] != 6) {
+		sim_scr[(pa - SIM_SCRATCH_PA - 0x24) / 4] = v;
+		if (pa == SIM_SCRATCH_PA + 0x40)
+			sim_hs_react();
+		return;
+	}
 	if (i < 0)
 		sim_faults++;
 }
@@ -420,7 +466,11 @@ static inline int pm_runtime_put(struct device *d) { (void)d; sim_rpm_puts++; re
 
 #define IOMMU_READ 1
 #define IOMMU_WRITE 2
-struct iommu_domain { int dummy; };
+#define __IOMMU_DOMAIN_DMA_API (1U << 1)
+struct iommu_domain { unsigned int type; };
+extern struct iommu_domain sim_default_dom;
+extern int sim_default_dom_none;
+static inline struct iommu_domain *iommu_get_domain_for_dev(struct device *d) { (void)d; return sim_default_dom_none ? NULL : &sim_default_dom; }
 enum { SIM_IO_ALLOC = 1, SIM_IO_ATTACH, SIM_IO_MAP, SIM_IO_UNMAP, SIM_IO_DETACH, SIM_IO_FREE };
 struct sim_iocall { int code; u64 iova, pa, size; int prot; int ev; };
 extern struct sim_iocall sim_iocalls[64];

@@ -27,6 +27,7 @@
  *   insmod ane_h18.ko optin=t8152 stage=psd
  */
 #include <linux/delay.h>
+#include <linux/dma-mapping.h>
 #include <linux/device.h>
 #include <linux/err.h>
 #include <linux/errno.h>
@@ -94,6 +95,18 @@ static bool read_scratch;
 module_param(read_scratch, bool, 0444);
 MODULE_PARM_DESC(read_scratch, "Stage=boot: read the eight SCRATCH words of the engine block (engine + 0x18a0024) before RUN, when AP power ON is acknowledged and before the shutdown. Read only. Default off.");
 
+static bool handshake;
+module_param(handshake, bool, 0444);
+MODULE_PARM_DESC(handshake, "Stage=boot with map_fw=1, read_scratch=1, rtkit_start=1 and rtkit_stop=1 or 2: after AP power ON is acknowledged, allocate the surfaces the macOS kext allocates, publish a 0x174 byte init block in SCRATCH0 and SCRATCH1, write the wake word to SCRATCH7 and wait for the firmware's channel table address. The firmware segments are then mapped into the default DMA domain of the ANE instead of an own domain. Default off.");
+
+static unsigned int hs_cfg_size = 0x380000;
+module_param(hs_cfg_size, uint, 0444);
+MODULE_PARM_DESC(hs_cfg_size, "Stage=boot with handshake=1: the config size stored at init block +0x10 (+0x18 is 0x10000000 minus it). 0x380000 is the value the M6 kext sets for ane-type 0x310 (T6021 uses 0x500000). Default 0x380000.");
+
+static unsigned int hs_wait_ms = 1000;
+module_param(hs_wait_ms, uint, 0444);
+MODULE_PARM_DESC(hs_wait_ms, "Stage=boot with handshake=1: how long to wait for the firmware's table address, ms, 10 to 5000. Default 1000.");
+
 static bool map_fw;
 module_param(map_fw, bool, 0444);
 MODULE_PARM_DESC(map_fw, "Stage=boot: before RUN, attach the ANE to its DART through the iommu API and map the two preloaded firmware segments at their IOVAs. Needs power-domains and iommus in the node. Default off.");
@@ -130,6 +143,12 @@ struct ane_h18 {
 	void __iomem *dart;
 	void __iomem *scratch;
 	struct iommu_domain *domain;
+	bool dom_own;		/* the domain was allocated and attached here (map_fw without handshake); otherwise it is the default DMA domain */
+	struct ane_h18_hs_buf {
+		void *va;
+		dma_addr_t iova;
+		size_t size;
+	} hs_pool, hs_ipc, hs_heap;
 	bool kpsd;		/* the node has power-domains: the kernel's PSD driver owns the slots, this module only holds a runtime PM reference */
 	bool rpm_held;
 	u32 rtk_eps[8];		/* RTKit endpoints the firmware announced, one bit per endpoint number */
@@ -484,8 +503,10 @@ static void ane_h18_unmap_firmware(struct ane_h18 *ane, unsigned int nmapped)
 		return;
 	for (i = 0; i < nmapped; i++)
 		iommu_unmap(ane->domain, ane->soc->fw_seg[i].iova, ane->soc->fw_seg[i].size);
-	iommu_detach_device(ane->domain, ane->dev);
-	iommu_domain_free(ane->domain);
+	if (ane->dom_own) {
+		iommu_detach_device(ane->domain, ane->dev);
+		iommu_domain_free(ane->domain);
+	}
 	ane->domain = NULL;
 }
 
@@ -502,19 +523,30 @@ static int ane_h18_map_firmware(struct ane_h18 *ane)
 		dev_err(ane->dev, "ane_h18 map_fw: the node has no iommus (no DART client)\n");
 		return -ENODEV;
 	}
-	dom = iommu_paging_domain_alloc(ane->dev);
-	if (IS_ERR(dom)) {
-		dev_err(ane->dev, "ane_h18 map_fw: no iommu domain: %ld\n", PTR_ERR(dom));
-		return PTR_ERR(dom);
-	}
-	dev_crit(ane->dev, "ane_h18 attach the ANE to a new DART domain (the DART driver programs the DART now)\n");
-	ret = iommu_attach_device(dom, ane->dev);
-	if (ret) {
-		dev_err(ane->dev, "ane_h18 map_fw: attach failed: %d\n", ret);
-		iommu_domain_free(dom);
-		return ret;
+	if (handshake) {
+		/* The DMA API (the handshake surfaces) allocates in the default domain, so the segments go into that one and nothing is attached. */
+		dom = iommu_get_domain_for_dev(ane->dev);
+		if (!dom || !(dom->type & __IOMMU_DOMAIN_DMA_API)) {
+			dev_err(ane->dev, "ane_h18 map_fw: the ANE has no default DMA domain\n");
+			return -ENODEV;
+		}
+		dev_crit(ane->dev, "ane_h18 map the firmware into the default DMA domain of the ANE (no attach)\n");
+	} else {
+		dom = iommu_paging_domain_alloc(ane->dev);
+		if (IS_ERR(dom)) {
+			dev_err(ane->dev, "ane_h18 map_fw: no iommu domain: %ld\n", PTR_ERR(dom));
+			return PTR_ERR(dom);
+		}
+		dev_crit(ane->dev, "ane_h18 attach the ANE to a new DART domain (the DART driver programs the DART now)\n");
+		ret = iommu_attach_device(dom, ane->dev);
+		if (ret) {
+			dev_err(ane->dev, "ane_h18 map_fw: attach failed: %d\n", ret);
+			iommu_domain_free(dom);
+			return ret;
+		}
 	}
 	ane->domain = dom;
+	ane->dom_own = !handshake;
 	for (i = 0; i < ARRAY_SIZE(s->fw_seg); i++) {
 		dev_crit(ane->dev, "ane_h18 iommu_map iova=%#llx pa=%#llx size=%#llx %s\n", s->fw_seg[i].iova, s->fw_seg[i].pa, s->fw_seg[i].size,
 			 s->fw_seg[i].write ? "read+write" : "read");
@@ -603,6 +635,173 @@ static void ane_h18_read_scratch_words(struct ane_h18 *ane, const char *phase)
 		if (ane_h18_read(ane, nm, ane->scratch, s->scratch_pa, ANE_H18_SCRATCH_OFF + 4 * i, s->scratch_size, &v))
 			break;
 	}
+}
+
+/* Write one SCRATCH word. The address is logged before the store. */
+static void ane_h18_scratch_write(struct ane_h18 *ane, unsigned int i, u32 v)
+{
+	dev_crit(ane->dev, "ane_h18 write SCRATCH%u=%#x pa=%#llx\n", i, v, ane->soc->scratch_pa + ANE_H18_SCRATCH_OFF + 4 * i);
+	writel(v, ane->scratch + ANE_H18_SCRATCH_OFF + 4 * i);
+}
+
+static void ane_h18_hs_free(struct ane_h18 *ane)
+{
+	struct ane_h18_hs_buf *b[3] = { &ane->hs_heap, &ane->hs_ipc, &ane->hs_pool };
+	unsigned int i;
+
+	for (i = 0; i < 3; i++)
+		if (b[i]->va) {
+			dma_free_coherent(ane->dev, b[i]->size, b[i]->va, b[i]->iova);
+			b[i]->va = NULL;
+		}
+}
+
+/* One zeroed surface from the DMA API, in the default domain the firmware segments are mapped in. It must not overlap a firmware segment. */
+static int ane_h18_hs_alloc(struct ane_h18 *ane, struct ane_h18_hs_buf *b, size_t size, const char *name)
+{
+	const struct ane_h18_soc *s = ane->soc;
+	unsigned int i;
+
+	b->va = dma_alloc_coherent(ane->dev, size, &b->iova, GFP_KERNEL);
+	if (!b->va) {
+		dev_err(ane->dev, "ane_h18 handshake: allocation of %s (%#zx bytes) failed\n", name, size);
+		return -ENOMEM;
+	}
+	b->size = size;
+	dev_info(ane->dev, "ane_h18 hs surface %s size=%#zx iova=%#llx\n", name, size, (u64)b->iova);
+	for (i = 0; i < ARRAY_SIZE(s->fw_seg); i++)
+		if (b->iova < s->fw_seg[i].iova + s->fw_seg[i].size && b->iova + size > s->fw_seg[i].iova) {
+			dev_err(ane->dev, "ane_h18 handshake: %s overlaps firmware segment %u\n", name, i);
+			return -EBUSY;
+		}
+	return 0;
+}
+
+static void ane_h18_hs_put(struct ane_h18 *ane, u8 *blk, unsigned int off, unsigned int width, u64 v)
+{
+	dev_info(ane->dev, "ane_h18 hs block +%#x (%u bytes) = %#llx\n", off, width, v);
+	memcpy(blk + off, &v, width);	/* little endian host */
+}
+
+static const struct ane_h18_hs_buf *ane_h18_hs_find(const struct ane_h18 *ane, u64 a)
+{
+	const struct ane_h18_hs_buf *b[3] = { &ane->hs_pool, &ane->hs_ipc, &ane->hs_heap };
+	unsigned int i;
+
+	for (i = 0; i < 3; i++)
+		if (b[i]->va && a >= b[i]->iova && a < b[i]->iova + b[i]->size)
+			return b[i];
+	return NULL;
+}
+
+static int ane_h18_rtkit_step(struct ane_h18 *ane, u32 chan_off, const char *tag, unsigned int *sent);
+
+/* The macOS handshake after READY, as decoded from the T8152 kext: surfaces IPC (max(page, SCRATCH1 + 1) bytes) and HEAP (SCRATCH3 bytes), the 0x174 byte
+ * init block taken from a pool surface, then SCRATCH0 (low), SCRATCH1 (high), the wake word in SCRATCH7. Values the decode does not give (the config size,
+ * the pool qword, the template word) are zero or the T6021 value, logged with the block. Returns 0 only when the firmware published a table address.
+ * Needs the core running with AP power ON acknowledged. */
+static int ane_h18_handshake(struct ane_h18 *ane)
+{
+	const struct ane_h18_soc *s = ane->soc;
+	u32 chan_off = ANE_H18_PO_ALIAS_OFF + s->mbox_num * 2 * ANE_H18_PO_STRIDE;
+	u32 w[ANE_H18_SCRATCH_N], cur[3], last[3] = { 0xffffffffu, 0xffffffffu, 0xffffffffu };
+	unsigned int i, waited, sent = 0;
+	const struct ane_h18_hs_buf *tb;
+	u64 ipc_size, heap_size, pub, table = 0;
+	bool answered = false;
+	char nm[24], tag[16];
+	u8 *blk;
+	int ret;
+
+	for (i = 0; i < ANE_H18_SCRATCH_N; i++) {
+		snprintf(nm, sizeof(nm), "HS_SCRATCH%u", i);
+		ret = ane_h18_read(ane, nm, ane->scratch, s->scratch_pa, ANE_H18_SCRATCH_OFF + 4 * i, s->scratch_size, &w[i]);
+		if (ret)
+			return ret;
+	}
+	if (w[0] >= ANE_H18_HS_REQ_LIMIT) {
+		dev_err(ane->dev, "ane_h18 handshake: SCRATCH0=%#x is not below %#x, not going on\n", w[0], ANE_H18_HS_REQ_LIMIT);
+		return -EOPNOTSUPP;
+	}
+	ipc_size = ALIGN((u64)w[1] + 1 > PAGE_SIZE ? (u64)w[1] + 1 : PAGE_SIZE, PAGE_SIZE);
+	heap_size = w[3] ? ALIGN(w[3] > PAGE_SIZE ? (u64)w[3] : PAGE_SIZE, PAGE_SIZE) : 0;
+	if (ipc_size > ANE_H18_HS_IPC_MAX || heap_size > ANE_H18_HS_HEAP_MAX) {
+		dev_err(ane->dev, "ane_h18 handshake: firmware asks for IPC %#llx and HEAP %#llx bytes, above the limits %#x and %#x\n", ipc_size, heap_size,
+			ANE_H18_HS_IPC_MAX, ANE_H18_HS_HEAP_MAX);
+		return -E2BIG;
+	}
+	ret = dma_set_mask_and_coherent(ane->dev, DMA_BIT_MASK(42));
+	if (ret) {
+		dev_err(ane->dev, "ane_h18 handshake: no 42 bit DMA mask: %d\n", ret);
+		return ret;
+	}
+	ret = ane_h18_hs_alloc(ane, &ane->hs_pool, ALIGN(ANE_H18_HS_BLOCK_SIZE, PAGE_SIZE), "POOL");
+	if (!ret)
+		ret = ane_h18_hs_alloc(ane, &ane->hs_ipc, ipc_size, "IPC");
+	if (!ret && heap_size)
+		ret = ane_h18_hs_alloc(ane, &ane->hs_heap, heap_size, "HEAP");
+	if (ret) {
+		ane_h18_hs_free(ane);
+		return ret;
+	}
+	blk = ane->hs_pool.va;
+	/* The block layout of ane_t6021_boot.h, which the T8152 kext shares (decode of ANE_Init). Everything not listed stays zero. */
+	ane_h18_hs_put(ane, blk, 0x00, 8, s->fw_seg[0].iova);		/* firmware surface */
+	ane_h18_hs_put(ane, blk, 0x08, 8, ane->hs_ipc.iova);
+	ane_h18_hs_put(ane, blk, 0x10, 8, hs_cfg_size);
+	ane_h18_hs_put(ane, blk, 0x18, 8, 0x10000000ULL - hs_cfg_size);
+	ane_h18_hs_put(ane, blk, 0x20, 8, heap_size ? ane->hs_heap.iova : 0);
+	ane_h18_hs_put(ane, blk, 0x28, 8, w[3]);
+	ane_h18_hs_put(ane, blk, 0x30, 4, 0);				/* previous firmware length, first boot */
+	ane_h18_hs_put(ane, blk, 0x50, 8, (u64)w[1] + 1);		/* ordinal */
+	ane_h18_hs_put(ane, blk, 0x58, 8, ane->hs_pool.iova);
+	ane_h18_hs_put(ane, blk, 0x60, 8, 0);				/* first qword of the pool object: not known */
+	ane_h18_hs_put(ane, blk, 0x68, 4, 0x40);
+	ane_h18_hs_put(ane, blk, 0x6c + 0xc0, 4, 4);			/* template word +0xc0, the template is otherwise zero */
+	pub = ane->hs_pool.iova;
+	dev_info(ane->dev, "ane_h18 handshake: init block at iova %#llx (IPC %#llx bytes, HEAP %#llx bytes)\n", pub, ipc_size, heap_size);
+	wmb();
+	ane_h18_scratch_write(ane, 0, (u32)pub);
+	ane_h18_scratch_write(ane, 1, (u32)(pub >> 32));
+	ane_h18_scratch_write(ane, 7, ANE_H18_HS_WAKE);
+	snprintf(tag, sizeof(tag), "alias%u", s->mbox_num * 2);
+	for (waited = 0; waited < hs_wait_ms; waited++) {
+		usleep_range(1000, 1100);
+		for (i = 0; i < 3; i++)
+			cur[i] = readl(ane->scratch + ANE_H18_SCRATCH_OFF + (i == 2 ? 28 : 4 * i));
+		if (cur[0] != last[0] || cur[1] != last[1] || cur[2] != last[2]) {
+			dev_info(ane->dev, "ane_h18 handshake t+%ums SCRATCH0=%#x SCRATCH1=%#x SCRATCH7=%#x\n", waited + 1, cur[0], cur[1], cur[2]);
+			memcpy(last, cur, sizeof(last));
+		}
+		ane_h18_rtkit_step(ane, chan_off, tag, &sent);	/* log whatever the firmware sends now */
+		table = ((u64)cur[1] << 32) | cur[0];
+		if (table != pub && cur[2] == ANE_H18_HS_READY) {
+			answered = true;
+			break;
+		}
+	}
+	for (i = 0; i < ANE_H18_SCRATCH_N; i++)
+		w[i] = readl(ane->scratch + ANE_H18_SCRATCH_OFF + 4 * i);
+	dev_info(ane->dev, "ane_h18 handshake after %ums: SCRATCH0..7 = %#x %#x %#x %#x %#x %#x %#x %#x\n", waited, w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7]);
+	if (!answered) {
+		dev_err(ane->dev, "ane_h18 handshake: no table address within %ums\n", hs_wait_ms);
+		return -ETIMEDOUT;
+	}
+	tb = ane_h18_hs_find(ane, table);
+	if (!tb) {
+		dev_info(ane->dev, "ane_h18 handshake: the table address %#llx is outside the surfaces allocated here\n", table);
+	} else {
+		u64 left = tb->iova + tb->size - table, len = left < 0x200 ? left : 0x200, off;
+
+		dev_info(ane->dev, "ane_h18 handshake: table address %#llx is in a surface of %#zx bytes at %#llx, first %#llx bytes follow\n", table, tb->size, (u64)tb->iova, len);
+		for (off = 0; off + 16 <= len; off += 16) {
+			u32 q[4];
+
+			memcpy(q, (u8 *)tb->va + (table - tb->iova) + off, sizeof(q));
+			dev_info(ane->dev, "ane_h18 hs table +%#llx: %08x %08x %08x %08x\n", off, q[0], q[1], q[2], q[3]);
+		}
+	}
+	return 0;
 }
 
 /* Store one RTKit management message (endpoint 0) in TX as one paired store, if a TX slot is free. */
@@ -761,7 +960,7 @@ static int ane_h18_stage_boot(struct ane_h18 *ane)
 	u32 st = 0, ctrl = 0, rv_lo = 0, rv_hi = 0, last = 0xffffffffu, po;
 	unsigned int i, c, waited = 0, msgs = 0, running_seen = 0, sent = 0;
 	bool stopped = false;
-	int ret = 0;
+	int ret = 0, hs_ret = 0;
 
 	if (!confirm_power || !confirm_boot) {
 		ane_h18_result(ane, "boot", "REFUSED", "confirm_power=1 and confirm_boot=1 required");
@@ -785,6 +984,10 @@ static int ane_h18_stage_boot(struct ane_h18 *ane)
 	}
 	if (rtkit_start && !rtkit_hello) {
 		ane_h18_result(ane, "boot", "REFUSED", "rtkit_start=1 needs rtkit_hello=1");
+		return -EINVAL;
+	}
+	if (handshake && (!map_fw || !rtkit_start || !rtkit_stop || !read_scratch || hs_wait_ms < 10 || hs_wait_ms > 5000 || !hs_cfg_size || hs_cfg_size > 0x10000000)) {
+		ane_h18_result(ane, "boot", "REFUSED", "handshake=1 needs map_fw=1, rtkit_start=1, rtkit_stop=1 or 2, read_scratch=1, hs_wait_ms 10 to 5000, hs_cfg_size 1 to 0x10000000");
 		return -EINVAL;
 	}
 	if (read_dart && !ane->kpsd && psd_slots != ANE_H18_NPSD) {
@@ -880,6 +1083,15 @@ static int ane_h18_stage_boot(struct ane_h18 *ane)
 		}
 	}
 	ane_h18_read_scratch_words(ane, "end");
+	if (handshake) {
+		if (ane->rtk_ap_on) {
+			hs_ret = ane_h18_handshake(ane);
+		} else {
+			dev_err(ane->dev, "ane_h18 handshake: AP power ON was not acknowledged, no handshake\n");
+			hs_ret = -ENODEV;
+		}
+		dev_info(ane->dev, "ane_h18 handshake result %d\n", hs_ret);
+	}
 	if (rtkit_stop && ane->rtk_ap_on) {
 		/* RTKit shutdown as apple_rtkit_shutdown does it: AP power state QUIESCED, then IOP power state SLEEP once that is acknowledged, then wait for the
 		 * IOP acknowledgement (or an idle message). rtkit_stop=2 sends OFF on both sides instead (apple_rtkit_poweroff), which cannot be restarted. */
@@ -924,6 +1136,7 @@ static int ane_h18_stage_boot(struct ane_h18 *ane)
 		return ret ? ret : -EBUSY;
 	}
 	ane->fw_started = false;
+	ane_h18_hs_free(ane);	/* only after the core stopped: a running core may still write into these surfaces */
 	ane_h18_unmap_firmware(ane, ARRAY_SIZE(s->fw_seg));
 	if (!keep_on)
 		ane_h18_psd_off(ane);
@@ -935,7 +1148,11 @@ static int ane_h18_stage_boot(struct ane_h18 *ane)
 		ane_h18_result(ane, "boot", "FAIL", "rtkit-shutdown-incomplete");
 		return -EIO;
 	}
-	ane_h18_result(ane, "boot", "PASS", running_seen ? "core-ran-and-stopped" : "core-never-reported-running");
+	if (handshake && hs_ret) {
+		ane_h18_result(ane, "boot", "FAIL", hs_ret == -ETIMEDOUT ? "handshake-no-table-address" : "handshake-not-done");
+		return hs_ret;
+	}
+	ane_h18_result(ane, "boot", "PASS", handshake ? "core-handshook-and-stopped" : running_seen ? "core-ran-and-stopped" : "core-never-reported-running");
 	return 0;
 }
 
