@@ -378,9 +378,36 @@ static int neg_psd_failure(int mode, int slots)
 	return bad;
 }
 
+/* a slot that acknowledges the run state and ignores the request for state 6: the stage must fail, never report PASS */
+static int neg_undo6(void)
+{
+	int bad = 0, ret;
+
+	reset_all();
+	stage = "power";
+	confirm_power = true;
+	psd_state = 0;
+	psd_slots = 1;
+	sim_psd_mode[0] = SIM_PSD_IGNORE6;
+	ret = probe_now();
+	if (ret == 0 || !result("power", "FAIL", "psd-not-returned-to-state-6") || log_count("verdict=PASS") != 0) {
+		printf("    a slot that ignores state 6: ret %d, no FAIL psd-not-returned-to-state-6 or a PASS line\n", ret);
+		bad = 1;
+	}
+	if (log_count("did not return to state 6") != 1 || sim_psd_state[0] != 0) {
+		printf("    the warning line or the slot state is not as expected (state %u)\n", sim_psd_state[0]);
+		bad = 1;
+	}
+	if (sim_n_iomap != sim_n_iounmap) {
+		printf("    leaked a window\n");
+		bad = 1;
+	}
+	return bad;
+}
+
 static int neg_never(void)
 {
-	int bad = neg_psd_failure(SIM_PSD_NEVER, 1) | neg_psd_failure(SIM_PSD_NEVER, 2);
+	int bad = neg_psd_failure(SIM_PSD_NEVER, 1) | neg_psd_failure(SIM_PSD_NEVER, 2) | neg_undo6();
 
 	printf("%s\n", bad ? "  neg-psd-never: harness FAILED the module (BAD)" : "  neg-psd-never: module fails as required");
 	return bad;

@@ -132,7 +132,7 @@ extern int sim_n_iomap, sim_n_iounmap;
 #define SIM_NPSD 2
 #define SIM_PSD_BASE 0x303a10000ULL
 /* per-slot behavior */
-enum { SIM_PSD_ACK = 0, SIM_PSD_NEVER = 1, SIM_PSD_WRONG_STATE = 2 };
+enum { SIM_PSD_ACK = 0, SIM_PSD_NEVER = 1, SIM_PSD_WRONG_STATE = 2, SIM_PSD_IGNORE6 = 3 };
 extern int sim_psd_mode[SIM_NPSD];
 extern u32 sim_psd_slot[SIM_NPSD];	/* slot numbers, set by the harness */
 extern u32 sim_psd_state[SIM_NPSD];	/* current state, 6 at start */
@@ -260,6 +260,9 @@ static inline void bus_write(u64 pa, u32 v)
 			sim_psd_valid[i] = 1;
 		} else if (sim_psd_mode[i] == SIM_PSD_WRONG_STATE) {
 			sim_psd_state[i] = 4;
+			sim_psd_valid[i] = 1;
+		} else if (sim_psd_mode[i] == SIM_PSD_IGNORE6 && v != 6) {
+			sim_psd_state[i] = v;
 			sim_psd_valid[i] = 1;
 		}
 		return;
