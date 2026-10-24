@@ -105,7 +105,7 @@ static inline enum ane_h18_mal_kind ane_h18_mal_classify(u64 hdr, u64 size, u64 
 	}
 	return (size || mode) ? ANE_H18_MAL_BAD : ANE_H18_MAL_FREE;
 }
-#define ANE_H18_CMD_BLOCK	0x4000
+#define ANE_H18_CMD_BLOCK	0x100	/* the commands here are 12 and 16 bytes, the reply fits in the block too: clear no more of the pool than that */
 #define ANE_H18_CMD_POOL_OFF	0x400	/* the command block lives in the pool surface, 0x100 aligned, as the kext takes every command block from the pool */
 #define ANE_H18_CSNE_PRINT_ENABLE	0x04
 #define ANE_H18_CSNE_CONFIG_GET		0x03

@@ -43,7 +43,7 @@ fi
 
 WORK=${WORK:-/var/tmp/m6-ane}
 KO=${KO:-$WORK/ane_h18.ko}
-KO_SHA256=${KO_SHA256:-d6efe503f1c0a6522120cf9617602d487ad4d3108421fba8be59684444e00c12}
+KO_SHA256=${KO_SHA256:-93b17fb3665c8155d6ad00835a5981fb48fc181c0d9ffcad958a2d1957d7bcd7}
 WANT_UNAME=${WANT_UNAME:-7.1.12-aurora-m6usb-ARCH}
 UNAME_R=${UNAME_R:-$(uname -r)}
 BOOT_ID_FILE=${BOOT_ID_FILE:-/proc/sys/kernel/random/boot_id}

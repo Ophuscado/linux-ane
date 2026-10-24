@@ -63,7 +63,7 @@ else in the ASC, IORVBAR or mailbox windows.
     to 2, bit below 32, a ring inside the surface that holds the table) and writes nothing if one entry is wrong. Then it sets every host-to-firmware slot header to 1
     (host owned, as `ane/t6021/ane_t6021_boot.h` does before the wake), writes 0x08042006 to SCRATCH3 and waits up to `hs_wait_ms` for the firmware to clear it.
     The firmware's own restartable stop got no IOP acknowledgement after the handshake alone, and this step may be what it waits for. Not known.
-  - `hs_cmds=1` (needs `hs_chan=1`): PRINT_ENABLE (0) and CONFIG_GET as 64 byte slots on the IO ring. The slot header is the DMA address of a 0x4000 byte command block
+  - `hs_cmds=1` (needs `hs_chan=1`): PRINT_ENABLE (0) and CONFIG_GET as 64 byte slots on the IO ring. The slot header is the DMA address of a command block of 0x100 bytes in the pool
     (id at +4, argument at +8), the doorbell is BIT(bit of the IO entry) written to engine + 0x18a4000, and the answer is the slot header with bit 0 set and a zero
     acknowledgement at +6. The doorbell address comes from the decode of the M6 kext and has never been written on this board. CONFIG_GET returns the tick rate at +8.
     START is not sent, because the firmware may ask for memory on the shared-memory ring and this module does not answer that ring.
