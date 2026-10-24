@@ -58,7 +58,10 @@ def main():
     rvbar = int(sys.argv[2], 0) if len(sys.argv) == 3 else 0x10000000001
     with open(sys.argv[1], 'rb') as f:
         data = f.read()
-    root, _ = parse(data)
+    try:
+        root, _ = parse(data)
+    except (struct.error, IndexError, UnicodeDecodeError, RecursionError, MemoryError):
+        sys.exit('this file is not an ADT dump')
     ane = find(root, 'arm-io', 'ane')
     if ane is None:
         sys.exit('no /arm-io/ane node in this ADT')
