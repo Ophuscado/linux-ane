@@ -207,16 +207,21 @@ A `fw_ref` BO never goes back to the kernel, and its bytes stay counted
 against the `bo_total_max_mb` cap (12 GiB by default):
 
 - a section BO of a sent `LOAD_PROGRAM` is held while the program is
-  loaded, because the firmware keeps reading it. When the last file that
-  loaded or looked the program up closes, the driver unloads the program
-  (terminate its process with command 0x203, destroy it with 0x201, both
-  acknowledged) and then gives the section buffers back. They follow the
+  loaded, because the firmware keeps reading it. With `unload_on_close=1`
+  (default 0, see below), when the last file that loaded or looked the
+  program up closes, the driver unloads the program (terminate its process
+  with command 0x203, destroy it with 0x201, both acknowledged) and then
+  gives the section buffers back. They follow the
   usual rule for a BO the firmware no longer reads: freed, or parked under
   the `bo_pool_max_mb` budget, where their bytes stay counted until the
   pool is drained (set `bo_pool_max_mb` to 0 to see `bo_total_bytes` fall
   to the io pool). If either command fails or times out, the sections stay
-  held for good and the device is quarantined. The module parameter
-  `unload_on_close=0` restores the old behaviour (hold until reboot);
+  held for good and the device is quarantined. `unload_on_close` is 0 by
+  default, which keeps every program loaded until reboot as before. The
+  first run with it on, on an M2, failed: the first 0x203 aborted in the
+  exchange (the driver stopped on a malloc-ring entry it does not know),
+  the device stayed quarantined and a second session could not open it
+  until reboot. Do not set it to 1 on a machine you need;
 - an io BO is parked in a pool when its last reference drops. Its IOVA
   stays mapped. The next `BO_INIT` of the same page-aligned size takes it,
   zeroes it and gives it to the new owner. After a quarantine, io BOs are
