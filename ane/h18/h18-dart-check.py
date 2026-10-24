@@ -59,7 +59,9 @@ def adt_view(path):
     reg = [struct.unpack_from('<QQ', dart['props']['reg'], 16 * i) for i in range(len(dart['props']['reg']) // 16)]
     tun = []
     for i in range(4):
-        b = dart['props']['dart-tunables-instance-%d' % i]
+        b = dart['props'].get('dart-tunables-instance-%d' % i)
+        if b is None:
+            sys.exit('the ADT has no dart-tunables-instance-%d' % i)
         tun.append([struct.unpack_from('<IIQQ', b, o) for o in range(0, len(b), 24)])
     phandle = {struct.unpack('<I', m['props']['AAPL,phandle'])[0]: struct.unpack('<I', m['props']['reg'])[0]
                for m in dart['kids'] if 'reg' in m['props']}
@@ -101,7 +103,7 @@ def main():
         if body is None:
             say(False, 'instance %d: no node at %#x' % (i, addr))
             continue
-        r = cells(body, 'reg')
+        r = cells(body, 'reg') or []
         say(r[:4] == [addr >> 32, addr & 0xffffffff, 0, reg[i][1]], 'instance %d: reg %#x size %#x' % (i, addr, reg[i][1]))
         say(cells(body, 'interrupts')[1] == irq, 'instance %d: interrupt %d' % (i, irq))
         t = cells(body, 'apple,tunable')
