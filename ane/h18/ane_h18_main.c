@@ -2,9 +2,10 @@
 /*
  * ane_h18: OPT-IN EXPERIMENTAL bring-up module for the H18 ANE0 of the T8152 (Mac mini M6, J873g).
  *
- * Stages dt, psd and power ran on a Mac mini M6 (see README-bringup.md). Stage boot has not run on any machine.
+ * Stages dt, psd, power and boot ran on a Mac mini M6 (see README-bringup.md). The options alias_mbox, read_dart and rtkit_hello have not.
  * The firmware is preloaded by iBoot (the ADT /arm-io/ane segment-ranges name where) and iBoot programs IORVBAR. This module never writes
- * IORVBAR or a mailbox. Stage boot sets the core's RUN bit once, watches the status and the Postoffice outboxes for a short time, then clears RUN.
+ * IORVBAR. Stage boot sets the core's RUN bit once, watches the status and the Postoffice outboxes for a short time, then clears RUN.
+ * Only with rtkit_hello=1 does it write a mailbox: the RTKit management replies, to the TX half of the alias-bank channel.
  *
  * Stages (`stage` parameter):
  *   dt    : check the device tree windows against the SoC row and log them. No mapping, no MMIO.
@@ -19,6 +20,8 @@
  *           IORVBAR is exactly the value iBoot leaves (ane_h18_soc.c). Then write CPU_CONTROL |= RUN, watch CPU_STATUS and the status words
  *           of the three candidate Postoffice channels for boot_wait_ms, read at most 8 outbox messages (raw words are logged), write
  *           CPU_CONTROL &= ~RUN and wait for STOPPED. If the core does not stop, the PSD slots stay on and a reboot is required.
+ *           Options: alias_mbox=1 (status of the alias-bank channel before RUN and on every poll), read_dart=1 (twelve read-only DART words
+ *           before RUN, needs both slots), rtkit_hello=1 (answer the RTKit HELLO and endpoint map, needs alias_mbox=1).
  *
  * Nothing autoloads: there is no MODULE_DEVICE_TABLE, and probe returns -EPERM unless optin=t8152.
  *   insmod ane_h18.ko optin=t8152 stage=psd
@@ -402,8 +405,9 @@ static int ane_h18_po_pop(struct ane_h18 *ane, u32 chan_off, const char *tag, u3
 	return 1;
 }
 
-/* Offsets of the ANE DART words read before RUN: config, version, a reserved word, the stream-enable word, stream configuration and TTBR words of
- * stream 0, 10 and 13 (the macOS Gen3 layout as decoded for this board: ENABLE_STREAMS +0xc00, TCR +0x1000 + 4 * stream, TTBR +0x1400 + 4 * stream).
+/* Offsets of the ANE DART words read before RUN: config (+0x0), +0x4, version (+0x8), the stream-enable word (+0xc00), the stream configuration
+ * words of streams 0, 10 and 13 (+0x1000 + 4 * stream) and the TTBR words of streams 0, 1, 10, 13 and 14 (+0x1400 + 4 * stream, one TTBR word per
+ * stream as in the T8152 table of drivers/iommu/apple-dart.c that the USB DARTs of this board already run on).
  * Nothing is written. Every read is logged before it is done, so a hang names the word. */
 static const u32 ane_h18_dart_off[ANE_H18_DART_NREAD] = { 0x0, 0x4, 0x8, 0xc00, 0x1000, 0x1028, 0x1034, 0x1400, 0x1404, 0x1428, 0x1434, 0x1438 };
 
@@ -423,41 +427,64 @@ static int ane_h18_read_dart_words(struct ane_h18 *ane)
 	return ret;
 }
 
-/* One RTKit management exchange on a Postoffice channel at window offset chan_off. Reads the status; with a message waiting it reads both
- * halves (raw words logged), takes the half that holds data as the outbox and answers HELLO and EPMAP in the other half. Returns 1 if a message was
- * read, and counts replies in *sent. It never sends anything for an unknown message type or a message for another endpoint. */
+/* One 16 byte message moved as a pair, the way the kernel mailbox driver moves it on the T8152 counted FIFO. The userspace sim has no arm64 and moves
+ * the four words one by one. */
+static void ane_h18_po_load16(void __iomem *p, u32 w[4])
+{
+#ifdef CONFIG_ARM64
+	u64 lo, hi;
+
+	asm volatile("ldp %0, %1, [%2]" : "=&r" (lo), "=&r" (hi) : "r" (p) : "memory");
+	rmb();
+	w[0] = (u32)lo;
+	w[1] = (u32)(lo >> 32);
+	w[2] = (u32)hi;
+	w[3] = (u32)(hi >> 32);
+#else
+	unsigned int i;
+
+	for (i = 0; i < 4; i++)
+		w[i] = readl(p + 4 * i);
+#endif
+}
+
+static void ane_h18_po_store16(void __iomem *p, const u32 w[4])
+{
+#ifdef CONFIG_ARM64
+	u64 lo = ((u64)w[1] << 32) | w[0], hi = ((u64)w[3] << 32) | w[2];
+
+	wmb();
+	asm volatile("stp %0, %1, [%2]" : : "r" (lo), "r" (hi), "r" (p) : "memory");
+#else
+	unsigned int i;
+
+	for (i = 0; i < 4; i++)
+		writel(w[i], p + 4 * i);
+#endif
+}
+
+/* One RTKit management exchange on a Postoffice channel at window offset chan_off. Reads the status; with a message waiting it reads RX (raw words
+ * logged) and answers HELLO and EPMAP in TX. Returns 1 if a message was read, and counts replies in *sent. It never sends anything for an unknown message
+ * type or a message for another endpoint. */
 static int ane_h18_rtkit_step(struct ane_h18 *ane, u32 chan_off, const char *tag, unsigned int *sent)
 {
 	const struct ane_h18_soc *s = ane->soc;
-	u32 st, w[2][4] = { { 0 }, { 0 } }, i, rx, tx;
+	u32 st, w[4] = { 0 }, r[4] = { 0 };
 	u64 msg0, msg1, reply = 0;
 	unsigned int type;
-	bool a_has, b_has;
 
 	if ((u64)chan_off + ANE_H18_PO_STATUS + 4 > s->mbox_size)
 		return 0;
 	st = readl(ane->mbox + chan_off + ANE_H18_PO_STATUS);
 	if (!(st & 0xf))
 		return 0;
-	dev_crit(ane->dev, "ane_h18 read both halves of %s pa=%#llx and +0x10 (status %#x)\n", tag, s->mbox_pa + chan_off, st);
-	for (i = 0; i < 4; i++)
-		w[0][i] = readl(ane->mbox + chan_off + ANE_H18_PO_HALF_A + 4 * i);
-	for (i = 0; i < 4; i++)
-		w[1][i] = readl(ane->mbox + chan_off + ANE_H18_PO_HALF_B + 4 * i);
-	dev_info(ane->dev, "ane_h18 msg %s half+0x00=%#x,%#x,%#x,%#x half+0x10=%#x,%#x,%#x,%#x\n", tag, w[0][0], w[0][1], w[0][2], w[0][3],
-		 w[1][0], w[1][1], w[1][2], w[1][3]);
-	a_has = w[0][0] || w[0][1] || w[0][2] || w[0][3];
-	b_has = w[1][0] || w[1][1] || w[1][2] || w[1][3];
-	if (a_has == b_has) {
-		dev_warn(ane->dev, "ane_h18 rtkit: cannot tell the outbox half (both %s), no reply\n", a_has ? "hold data" : "empty");
-		return 1;
-	}
-	rx = a_has ? 0 : 1;
-	tx = a_has ? ANE_H18_PO_HALF_B : ANE_H18_PO_HALF_A;
-	msg0 = ((u64)w[rx][1] << 32) | w[rx][0];
-	msg1 = ((u64)w[rx][3] << 32) | w[rx][2];
+	dev_crit(ane->dev, "ane_h18 read RX of %s pa=%#llx (status %#x)\n", tag, s->mbox_pa + chan_off + ANE_H18_PO_RX, st);
+	ane_h18_po_load16(ane->mbox + chan_off + ANE_H18_PO_RX, w);
+	dev_info(ane->dev, "ane_h18 msg %s rx=%#x,%#x,%#x,%#x\n", tag, w[0], w[1], w[2], w[3]);
+	msg0 = ((u64)w[1] << 32) | w[0];
+	msg1 = ((u64)w[3] << 32) | w[2];
 	type = (msg0 >> ANE_H18_RTK_TYPE_SHIFT) & 0xff;
-	dev_info(ane->dev, "ane_h18 rtkit rx outbox=half+%#x ep=%#llx type=%u msg0=%#llx\n", rx ? ANE_H18_PO_HALF_B : ANE_H18_PO_HALF_A, msg1 & 0xff, type, msg0);
+	dev_info(ane->dev, "ane_h18 rtkit rx type=%u ep=%#llx msg0=%#llx\n", type, msg1 & 0xff, msg0);
 	if ((msg1 & 0xff) || !rtkit_hello)
 		return 1;
 	if (type == ANE_H18_RTK_HELLO) {
@@ -480,14 +507,13 @@ static int ane_h18_rtkit_step(struct ane_h18 *ane, u32 chan_off, const char *tag
 	}
 	st = readl(ane->mbox + chan_off + ANE_H18_PO_STATUS);
 	if (!(st & 0xf00)) {
-		dev_warn(ane->dev, "ane_h18 rtkit: no inbox credit (status %#x), no reply\n", st);
+		dev_warn(ane->dev, "ane_h18 rtkit: no free TX slot (status %#x), no reply\n", st);
 		return 1;
 	}
-	dev_crit(ane->dev, "ane_h18 write inbox half+%#x of %s: msg0=%#llx msg1=0\n", tx, tag, reply);
-	writel((u32)reply, ane->mbox + chan_off + tx);
-	writel((u32)(reply >> 32), ane->mbox + chan_off + tx + 4);
-	writel(0, ane->mbox + chan_off + tx + 8);
-	writel(0, ane->mbox + chan_off + tx + 12);
+	r[0] = (u32)reply;
+	r[1] = (u32)(reply >> 32);
+	dev_crit(ane->dev, "ane_h18 write TX of %s pa=%#llx: msg0=%#llx msg1=0 (one paired 16 byte store)\n", tag, s->mbox_pa + chan_off + ANE_H18_PO_TX, reply);
+	ane_h18_po_store16(ane->mbox + chan_off + ANE_H18_PO_TX, r);
 	(*sent)++;
 	return 1;
 }

@@ -28,12 +28,16 @@ else in the ASC, IORVBAR or mailbox windows.
   raw 16 bytes logged), writes CPU_CONTROL with RUN clear and waits for STOPPED. If the core does not stop, the PSD slots stay on
   and a reboot is required. The module sends no mailbox message unless `rtkit_hello=1` is given.
   - `alias_mbox=1`: also read the status word of the alias-bank Postoffice channel (window + 0x10000, channel 2 * mailbox number, 0x316010c20 for
-    ANE0) once before RUN and on every poll, and read the message when its count is not zero. Both 16 byte halves of the channel are logged raw.
+    ANE0) once before RUN and on every poll, and read the message when its count is not zero. The channel layout is the one the kernel mailbox driver
+    uses on this SoC: RX at +0x00, TX at +0x10, status at +0x20. A message moves as one paired 16 byte access. The raw words are logged.
   - `read_dart=1` (needs `psd_slots=2`): before RUN, read twelve words of the ANE DART (instance 0): config, version, the stream-enable word, and
-    the stream configuration and TTBR words of streams 0, 10 and 13. Read only, each address logged before its read, so a hang names the word.
+    the stream configuration words of streams 0, 10 and 13 and the TTBR words of streams 0, 1, 10, 13 and 14. Read only, each address is
+    logged before its read, so a hang names the word. It can wedge the machine: the block has manual availability, the macOS driver does not
+    touch it before forcing it available, and a read of such a block hung the USB DARTs on this board before their power chain was up. The
+    gate on both PSD slots is a hypothesis, not a measured safe condition. Only the first word is read before anything else runs.
   - `rtkit_hello=1` (needs `alias_mbox=1`): answer the firmware's RTKit management HELLO with version 12 and its endpoint map, nothing else. The
-    half of the channel that holds the first message is taken as the outbox, and the reply goes to the other half. No reply is sent without an
-    inbox credit, for a message of another type or endpoint, or when the firmware's version range excludes 12. At most four replies per run.
+    reply goes to TX as one paired 16 byte store. No reply is sent without a free TX slot, for a message of another type or endpoint, or when the
+    firmware's version range excludes 12. At most four replies per run.
 
 ## Why the ANE is powered by PSD slots
 
@@ -52,8 +56,8 @@ GPU (`t8152-j873-psd.dtsi`, `t8152-j873-psd-gpu.dtsi`). The ADT has no PMGR powe
   328 and 375, which this module does not touch.
 - The Postoffice channel of this ANE. Two decodes of the macOS wrapper driver agree on the alias bank. The node has a postoffice
   property and no alias property. That puts the channel at window + 0x10000 + 2 * 12 * 0x80 = 0x316010c00, with status at +0x20. The plain-bank
-  channels 12, 24 and 25 that `read_mbox=1` reads are other apertures, so their zero status said nothing. The two decodes disagree on the outbox half (+0x00 or +0x10).
-  So `rtkit_hello=1` decides from the first message.
+  channels 12, 24 and 25 that `read_mbox=1` reads are other apertures, so their zero status said nothing. Which half is RX and which is TX comes from the kernel
+  mailbox driver's T8152 layout (RX +0x00, TX +0x10). A third decode of the macOS driver names the halves the other way round.
 - Whether the core can fetch its firmware at all: nothing here programs the ANE DART. The macOS driver maps the two preloaded firmware
   segments through it before RUN. `read_dart=1` shows what iBoot left in it. If it holds no mapping, an iommu domain for the ANE
   has to map the two segments at the addresses in `segment-ranges`.

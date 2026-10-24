@@ -51,13 +51,13 @@
 /* The alias bank: the same Postoffice window at +0x10000, channel 2 * msgbox-mailbox-num. For this ANE the ADT has msgbox-using-postoffice and no
  * msgbox-using-alias, which the AppleASCWrapV8 constructor turns into base + 0x10000 and channel 2 * num (0x316010c00 for ANE0). */
 #define ANE_H18_PO_ALIAS_OFF	0x10000
-/* ANE DART (dart,gen3, instance 0): read only liveness words, see ane_h18_stage_boot(). */
+/* ANE DART (dart,gen3, instance 0): read only liveness words, see ane_h18_read_dart_words(). */
 #define ANE_H18_DART_NREAD	12
-/* Postoffice channel layout used for the RTKit exchange: two 16 byte halves at +0x00 and +0x10 (one is the outbox, one the inbox; the lab receipts
- * disagree which, so the half that holds the first message is taken as the outbox and the other as the inbox), status at +0x20: outbox count in
- * bits 3:0, inbox credits in bits 11:8. */
-#define ANE_H18_PO_HALF_A	0x00
-#define ANE_H18_PO_HALF_B	0x10
+/* Postoffice channel layout used for the RTKit exchange, as drivers/soc/apple/mailbox.c has it for the T8152 counted FIFO: RX (the outbox, firmware to host)
+ * at +0x00, TX (the inbox) at +0x10, status at +0x20 with the RX occupancy in bits 3:0 and the free TX slots in bits 11:8. A message is 16 bytes and is
+ * moved with one paired access (ldp from RX, stp to TX); four separate 32-bit accesses are not what that driver does on this SoC. */
+#define ANE_H18_PO_RX		0x00
+#define ANE_H18_PO_TX		0x10
 #define ANE_H18_PO_MAXSEND	4	/* at most this many management replies per run */
 /* RTKit management protocol (the Linux apple-rtkit dialect): message type in bits 59:52 of the first 64-bit word, endpoint in the low byte of the second. */
 #define ANE_H18_RTK_TYPE_SHIFT	52

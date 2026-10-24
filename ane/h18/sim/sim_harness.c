@@ -529,7 +529,7 @@ static void pos_boot(void)
 	sim_start_chan = 536;
 	sim_start_msgs = 1;
 	ret = probe_now();
-	chk(ret == 0 && log_count("ane_h18 msg alias24 half+0x00=0x1000,0,0x100,0") == 1, "A2 boot alias_mbox: a message on the alias channel is read and logged raw");
+	chk(ret == 0 && log_count("ane_h18 msg alias24 rx=0x1000,0,0x100,0") == 1, "A2 boot alias_mbox: a message on the alias channel is read and logged raw");
 	{
 		int k, st = 0;
 
@@ -539,9 +539,8 @@ static void pos_boot(void)
 		chk(st >= 1 && events_in(sim_mbox_pa, sim_mbox_size, 1) == 0, "A2 boot alias_mbox: the status word at window + 0x10c20 is read, the mailbox is never written");
 	}
 
-	/* RTKit exchange: HELLO answered with version 12, the last EPMAP answered with the same flag, in the half that is not the outbox */
-	for (i = 0; i < 2; i++) {
-		u32 out = i ? 0x10 : 0, in = i ? 0 : 0x10;
+	/* RTKit exchange: HELLO answered with version 12 and the last EPMAP answered with the same flag, in TX (+0x10) only; RX is +0x00 */
+	{
 		int k, hello_w = 0, epmap_w = 0, wrong_half = 0;
 
 		boot_setup();
@@ -549,7 +548,6 @@ static void pos_boot(void)
 		rtkit_hello = true;
 		sim_start_chan = 536;
 		sim_start_hello = 1;
-		sim_po_out_off = out;
 		ret = probe_now();
 		chk(ret == 0 && result("boot", "PASS", "core-ran-and-stopped"), "H1 boot rtkit_hello: PASS");
 		for (k = 0; k < sim_n_events; k++) {
@@ -557,20 +555,20 @@ static void pos_boot(void)
 
 			if (!sim_events[k].write || !sim_in(pa, sim_mbox_pa, sim_mbox_size))
 				continue;
-			if (pa >= sim_mbox_pa + 0x10c00 + out && pa < sim_mbox_pa + 0x10c00 + out + 0x10)
+			if (pa >= sim_mbox_pa + 0x10c00 && pa < sim_mbox_pa + 0x10c10)
 				wrong_half++;
-			if (pa == sim_mbox_pa + 0x10c00 + in && sim_events[k].val == 0x000c000c)
+			if (pa == sim_mbox_pa + 0x10c10 && sim_events[k].val == 0x000c000c)
 				hello_w++;
-			if (pa == sim_mbox_pa + 0x10c00 + in + 4 && sim_events[k].val == 0x00200000)
+			if (pa == sim_mbox_pa + 0x10c14 && sim_events[k].val == 0x00200000)
 				hello_w++;
-			if (pa == sim_mbox_pa + 0x10c00 + in + 4 && sim_events[k].val == 0x00880000)
+			if (pa == sim_mbox_pa + 0x10c14 && sim_events[k].val == 0x00880000)
 				epmap_w++;
 		}
-		chk(hello_w == 2 && epmap_w == 1 && wrong_half == 0, i ? "H1 boot rtkit_hello (outbox at +0x10): HELLO_REPLY version 12 and EPMAP reply go to the +0x00 half only" : "H1 boot rtkit_hello (outbox at +0x00): HELLO_REPLY version 12 and EPMAP reply go to the +0x10 half only");
-		chk(events_in(sim_mbox_pa, sim_mbox_size, 1) == 8 && log_count("CRIT: ane_h18 write inbox half") == 2, "H1 boot rtkit_hello: two replies of four words, each logged before");
-		if (log_count("ane_h18 rtkit rx outbox=half") != 2 || sim_faults)
-			printf("    rx lines %d, faults %d\n%s\n", log_count("ane_h18 rtkit rx outbox=half"), sim_faults, sim_log + (sim_log_len > 2500 ? sim_log_len - 2500 : 0));
-		chk(log_count("ane_h18 rtkit rx outbox=half") == 2 && sim_faults == 0, "H1 boot rtkit_hello: both messages decoded and logged, zero faults");
+		chk(hello_w == 2 && epmap_w == 1 && wrong_half == 0, "H1 boot rtkit_hello: HELLO_REPLY version 12 and the EPMAP reply go to TX (+0x10) only, never to RX");
+		chk(events_in(sim_mbox_pa, sim_mbox_size, 1) == 8 && log_count("CRIT: ane_h18 write TX of alias24 pa=0x316010c10") == 2, "H1 boot rtkit_hello: two replies of four words, each logged before");
+		if (log_count("ane_h18 rtkit rx type=") != 2 || sim_faults)
+			printf("    rx lines %d, faults %d\n", log_count("ane_h18 rtkit rx type="), sim_faults);
+		chk(log_count("ane_h18 rtkit rx type=") == 2 && sim_faults == 0, "H1 boot rtkit_hello: both messages decoded and logged, zero faults");
 	}
 	/* without rtkit_hello the messages are only logged */
 	boot_setup();
@@ -578,7 +576,7 @@ static void pos_boot(void)
 	sim_start_chan = 536;
 	sim_start_hello = 1;
 	ret = probe_now();
-	chk(ret == 0 && events_in(sim_mbox_pa, sim_mbox_size, 1) == 0 && log_count("ane_h18 rtkit rx outbox=half") == 2, "H2 boot alias_mbox without rtkit_hello: messages logged, nothing written");
+	chk(ret == 0 && events_in(sim_mbox_pa, sim_mbox_size, 1) == 0 && log_count("ane_h18 rtkit rx type=") == 2, "H2 boot alias_mbox without rtkit_hello: messages logged, nothing written");
 	/* unknown type, another endpoint, firmware versions without 12, no inbox credit: no reply */
 	for (i = 0; i < 4; i++) {
 		boot_setup();

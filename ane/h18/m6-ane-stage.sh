@@ -9,7 +9,7 @@
 # Step 4 = stage boot: starts the ANE core (CPU_CONTROL.RUN), watches it for wait_ms (default 300), reads at most 8 mailbox messages,
 # clears RUN again. It also reads the status word of the alias-bank mailbox channel before RUN and watches that channel for messages.
 # dart=1 reads twelve words of the ANE DART before RUN (needs two slots); hello=1 answers the firmware's RTKit management HELLO
-# (version 12) and endpoint map in the half of that channel that is not the outbox, nothing else.
+# (version 12) and endpoint map in the TX half of that channel (RX +0x00, TX +0x10), one paired 16 byte access per message, nothing else.
 # It needs GO, a step 3 PASS on this boot, and runs once per boot: reboot before anything else after it.
 # The state defaults to 1: the AppleT8152PMGR kext decode in the lab receipts reads "on" as request 1 (or 2) for these slots,
 # and names 1 as the first experiment. 0 is the value proven for the ATC USB slot 71 and GPU slot 3, 2 is the GPU ASC value.
@@ -32,7 +32,7 @@ fi
 
 WORK=${WORK:-/var/tmp/m6-ane}
 KO=${KO:-$WORK/ane_h18.ko}
-KO_SHA256=${KO_SHA256:-d84803112cae3a84933fb413787fdbfc4859ffe8e260de9f2a013081b44def0a}
+KO_SHA256=${KO_SHA256:-270984ad2c1a2867ead220c144d012de7d40ed57fed859ad78d004968d918a68}
 WANT_UNAME=${WANT_UNAME:-7.1.12-aurora-m6usb-ARCH}
 UNAME_R=${UNAME_R:-$(uname -r)}
 BOOT_ID_FILE=${BOOT_ID_FILE:-/proc/sys/kernel/random/boot_id}

@@ -98,9 +98,9 @@ sim-mutation-nohalt:
 sim-mutation-nocredit:
 	$(call mutant,nocredit,s/if (!(st \& 0xf00)) {/if (0 \/* NEG: credit ignored *\/) {/,NEG: credit ignored,pos)
 
-# the reply goes to the half that holds the firmware's message
+# the reply is written to RX, the half the firmware's message came from
 sim-mutation-wronghalf:
-	$(call mutant,wronghalf,s/tx = a_has ? ANE_H18_PO_HALF_B : ANE_H18_PO_HALF_A;/tx = a_has ? ANE_H18_PO_HALF_A : ANE_H18_PO_HALF_B; \/* NEG: wrong half *\//,NEG: wrong half,pos)
+	$(call mutant,wronghalf,s/ane_h18_po_store16(ane->mbox + chan_off + ANE_H18_PO_TX$(COMMA) r);/ane_h18_po_store16(ane->mbox + chan_off + ANE_H18_PO_RX$(COMMA) r); \/* NEG: wrong half *\//,NEG: wrong half,pos)
 
 # a HELLO whose version range excludes 12 is answered anyway
 sim-mutation-nover:
