@@ -65,6 +65,8 @@ struct device_node {
 	u32 ane_type;
 	bool has_num;
 	u32 mbox_num;
+	bool has_power_domains;
+	bool has_iommus;
 };
 
 struct device { struct device_node *of_node; };
@@ -79,6 +81,18 @@ static inline int of_property_read_u32(const struct device_node *n, const char *
 	if (!strcmp(name, "msgbox-mailbox-num") && n->has_num) { *v = n->mbox_num; return 0; }
 	return -EINVAL;
 }
+
+static inline bool of_property_present(const struct device_node *n, const char *name)
+{
+	return (!strcmp(name, "power-domains") && n->has_power_domains) || (!strcmp(name, "iommus") && n->has_iommus);
+}
+
+#define ERR_PTR(e) ((void *)(intptr_t)(e))
+#define PTR_ERR(p) ((long)(intptr_t)(p))
+#define IS_ERR(p) ((uintptr_t)(p) >= (uintptr_t)-4095)
+#ifndef ARRAY_SIZE
+#define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
+#endif
 
 static inline int of_property_match_string(const struct device_node *n, const char *prop, const char *s)
 {
@@ -326,6 +340,73 @@ static inline void iounmap(void *p) { (void)p; sim_n_iounmap++; }
 
 #define readl(a) bus_read((u64)(uintptr_t)(a))
 #define writel(v, a) bus_write((u64)(uintptr_t)(a), (v))
+
+/* ---- runtime PM and iommu stubs: calls are recorded, ordered against the MMIO events by event index ---- */
+extern int sim_rpm_enabled, sim_rpm_gets, sim_rpm_puts, sim_rpm_get_fail;
+static inline int devm_pm_runtime_enable(struct device *d) { (void)d; sim_rpm_enabled++; return 0; }
+static inline int pm_runtime_resume_and_get(struct device *d)
+{
+	(void)d;
+	sim_event(2, 0xe0, 0);
+	if (sim_rpm_get_fail)
+		return -ETIMEDOUT;
+	sim_rpm_gets++;
+	return 0;
+}
+static inline int pm_runtime_put(struct device *d) { (void)d; sim_rpm_puts++; return 0; }
+
+#define IOMMU_READ 1
+#define IOMMU_WRITE 2
+struct iommu_domain { int dummy; };
+enum { SIM_IO_ALLOC = 1, SIM_IO_ATTACH, SIM_IO_MAP, SIM_IO_UNMAP, SIM_IO_DETACH, SIM_IO_FREE };
+struct sim_iocall { int code; u64 iova, pa, size; int prot; int ev; };
+extern struct sim_iocall sim_iocalls[64];
+extern int sim_n_iocalls, sim_io_fail;		/* sim_io_fail: 1 alloc fails, 2 attach fails, 3 the second map fails */
+extern int sim_n_dom_live;
+static inline void sim_iorec(int code, u64 iova, u64 pa, u64 size, int prot)
+{
+	if (sim_n_iocalls < 64)
+		sim_iocalls[sim_n_iocalls] = (struct sim_iocall){ code, iova, pa, size, prot, sim_n_events };
+	sim_n_iocalls++;
+}
+static inline bool device_iommu_mapped(struct device *d) { return d->of_node && d->of_node->has_iommus; }
+static inline struct iommu_domain *iommu_paging_domain_alloc(struct device *d)
+{
+	(void)d;
+	sim_iorec(SIM_IO_ALLOC, 0, 0, 0, 0);
+	if (sim_io_fail == 1)
+		return ERR_PTR(-ENOMEM);
+	sim_n_dom_live++;
+	return calloc(1, sizeof(struct iommu_domain));
+}
+static inline int iommu_attach_device(struct iommu_domain *dom, struct device *d)
+{
+	(void)dom; (void)d;
+	sim_iorec(SIM_IO_ATTACH, 0, 0, 0, 0);
+	return sim_io_fail == 2 ? -EBUSY : 0;
+}
+static inline int iommu_map(struct iommu_domain *dom, unsigned long iova, u64 pa, size_t size, int prot, int gfp)
+{
+	(void)dom; (void)gfp;
+	sim_iorec(SIM_IO_MAP, iova, pa, size, prot);
+	if (sim_io_fail == 3) {
+		int maps = 0, k;
+
+		for (k = 0; k < sim_n_iocalls && k < 64; k++)
+			maps += sim_iocalls[k].code == SIM_IO_MAP;
+		if (maps == 2)
+			return -ENOMEM;
+	}
+	return 0;
+}
+static inline size_t iommu_unmap(struct iommu_domain *dom, unsigned long iova, size_t size)
+{
+	(void)dom;
+	sim_iorec(SIM_IO_UNMAP, iova, 0, size, 0);
+	return size;
+}
+static inline void iommu_detach_device(struct iommu_domain *dom, struct device *d) { (void)dom; (void)d; sim_iorec(SIM_IO_DETACH, 0, 0, 0, 0); }
+static inline void iommu_domain_free(struct iommu_domain *dom) { sim_iorec(SIM_IO_FREE, 0, 0, 0, 0); sim_n_dom_live--; free(dom); }
 
 /* ---- virtual clock: 1 jiffy = 1 ms ---- */
 extern unsigned long sim_jiffies;
