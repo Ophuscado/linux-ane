@@ -74,9 +74,10 @@
 		target-path = "/soc";
 
 		__overlay__ {
-			/* The four ANE DART nodes are disabled. The DART driver probes an enabled node at boot. On a T6030,
-			 * equivalent enabled nodes hung the machine before display or network, because the ANE hardware behind
-			 * them was not powered. That was not measured with this exact overlay. Stages 0 and 1 of ane_h15 need no DART. Enable the nodes when the DART work lands. */
+			/* Instance 0 of the ANE DART is enabled, instances 1 to 3 stay disabled. The DART driver probes an enabled node
+			 * at boot, reading DART registers (the node has no apple,static-topology). On a T6030, equivalent enabled nodes
+			 * hung the machine before display or network, because the ANE hardware behind them was not powered. This node
+			 * lists power-domains to prevent that. That was not measured with this exact overlay: keep a way to boot without it. */
 			ane_dart0: iommu@309800000 {
 				compatible = "apple,t6030-dart", "apple,t8110-dart";
 				reg = <0x3 0x09800000 0x0 0x4000>;
