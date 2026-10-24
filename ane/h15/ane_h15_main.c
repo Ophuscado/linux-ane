@@ -44,6 +44,9 @@
  *              stream from the same scan stage 4 does (run_unmapped=1 overrides). See the
  *              comment above ane_h15_stage_run().
  *
+ *   6 rtkit  : confirm_run=1 and confirm_rtkit=1 required. Stage 5 plus an RTKit management session on the ASC
+ *              mailbox: the first stage that writes the mailbox send registers. See ane_h15_rtk_* below.
+ *
  * No MODULE_DEVICE_TABLE: nothing autoloads. probe() returns
  * -EPERM unless `optin=<soc>` matches. Insmod line:
  *   insmod ane_h15.ko optin=t8122 stage=status
@@ -91,7 +94,7 @@ MODULE_PARM_DESC(optin,
 static char *stage = "status";
 module_param(stage, charp, 0444);
 MODULE_PARM_DESC(stage,
-		 "0/1/2/3/4/5 or name (dt/status/wrapper/boot/dart/run). 1/status (default): power up and log ps ACTUAL. 0/dt: parse the DT only. 2/wrapper: REFUSED on H15 without confirm_read=1. 3/boot: refused without fw_path=. 4/dart: read-only DART liveness, needs confirm_read=1. 5/run: refused without confirm_run=1 and without a live DART stream; starts the core once behind a preflight.");
+		 "0/1/2/3/4/5/6 or name (dt/status/wrapper/boot/dart/run/rtkit). 1/status (default): power up and log ps ACTUAL. 0/dt: parse the DT only. 2/wrapper: REFUSED on H15 without confirm_read=1. 3/boot: refused without fw_path=. 4/dart: read-only DART liveness, needs confirm_read=1. 5/run: refused without confirm_run=1 and without a live DART stream; starts the core once behind a preflight. 6/rtkit: stage 5 plus an RTKit session over the ASC mailbox, needs confirm_rtkit=1 as well.");
 
 static unsigned int ps_wait_ms = 500;
 module_param(ps_wait_ms, uint, 0444);
@@ -122,6 +125,21 @@ static char *fw_seg;
 module_param(fw_seg, charp, 0444);
 MODULE_PARM_DESC(fw_seg,
 		 "stage=run map_fw=1: TEXT and DATA of the preloaded firmware as hex physical:size pairs, \"TEXTPA:SIZE,DATAPA:SIZE\", from the live ADT /arm-io/ane segment-ranges of this boot. 16 KiB aligned, outside system RAM. TEXT is mapped read only at the RVBAR entry address, DATA read+write right after it.");
+
+static bool confirm_rtkit;
+module_param(confirm_rtkit, bool, 0444);
+MODULE_PARM_DESC(confirm_rtkit,
+		 "stage=rtkit only: required. Stage 6 is stage 5 plus an RTKit management session on the ASC mailbox: it WRITES the mailbox send registers (HELLO reply, endpoint map, STARTEP, power states) and then runs the shutdown handshake. Nobody has run it on an H15 part.");
+
+static unsigned int rtkit_wait_ms = 2000;
+module_param(rtkit_wait_ms, uint, 0444);
+MODULE_PARM_DESC(rtkit_wait_ms,
+		 "stage=rtkit: how long to wait for the session to reach AP power ON and the application endpoints (100 to 10000 ms, default 2000)");
+
+static unsigned int rtkit_stop = 1;
+module_param(rtkit_stop, uint, 0444);
+MODULE_PARM_DESC(rtkit_stop,
+		 "stage=rtkit: shutdown before RUN is cleared. 1 (default): AP QUIESCED then IOP SLEEP, restartable (apple_rtkit_shutdown). 2: OFF then OFF, the core cannot be restarted until a reboot (apple_rtkit_poweroff).");
 
 static bool confirm_run;
 module_param(confirm_run, bool, 0444);
@@ -250,6 +268,7 @@ static int ane_h15_stage_idx(const char *name, unsigned int *out)
 	if (!strcmp(name, "boot") || !strcmp(name, "3")) { *out = 3; return 0; }
 	if (!strcmp(name, "dart") || !strcmp(name, "4")) { *out = 4; return 0; }
 	if (!strcmp(name, "run") || !strcmp(name, "5")) { *out = 5; return 0; }
+	if (!strcmp(name, "rtkit") || !strcmp(name, "6")) { *out = 6; return 0; }
 	return -EINVAL;
 }
 
@@ -918,64 +937,287 @@ static bool ane_h15_core_stopped(u32 st)
 	return !(st & ANE_H15_ST_RUNNING) && (st & ANE_H15_ST_STOPPED);
 }
 
-static int ane_h15_stage_run(struct ane_h15 *ane)
+/* ---- stage 6: an RTKit management session over the ASC mailbox ----
+ *
+ * The M6 module (ane/h18, PR 186 and 190) runs this session on the M6's Postoffice: the firmware sent HELLO (version
+ * 12), an endpoint map (endpoints 0, 1 and 0x20), and acknowledged the power states; the host answered HELLO, the
+ * map, started the system endpoints, answered the IOP power ON acknowledgement with AP power ON, started the
+ * application endpoint, and shut the session down with AP QUIESCED then IOP SLEEP (restartable) before it cleared RUN.
+ * That is the Linux apple-rtkit message sequence (drivers/soc/apple/rtkit.c, management endpoint 0): message type in
+ * bits 59:52 of msg0, the endpoint in the low byte of msg1.
+ *
+ * What differs here: the transport. The M6 ANE (ascwrap-v8) uses a Postoffice window. The H15 ANE is
+ * `iop,ascwrap-v6`, the ASC wrapper has its own mailbox at wrapper + 0x8000, and its two CTRL words read 0x20001 (empty)
+ * on a T6030 (PR 175). The send and receive registers used here are the apple-mailbox v4 layout the other T6030 ASCs
+ * use: A2I_SEND0 +0x800, A2I_SEND1 +0x808 (64-bit, SEND0 first), I2A_RECV0 +0x830, I2A_RECV1 +0x838 (64-bit, pop on
+ * read). INFERRED for the ANE, never written on an H15 part. Whether the H15 ANE firmware talks RTKit on this mailbox
+ * at all is what stage 5's raw message log would show: run stage 6 only after a stage 5 result with a message in it.
+ *
+ * Writes of this stage beyond stage 5: ONLY the two send registers, 16 messages at most, never when A2I_CTRL reads
+ * FULL, never anything but the management endpoint (msg1 = 0). It answers no buffer request (the firmware's crash log
+ * request on endpoint 1 stays unanswered, as on the M6) and nothing it does not recognise. Sources:
+ * ane/h15/run-stage-sources.md and the h18 module.
+ */
+#define ANE_H15_MBOX_FULL	BIT(16)
+#define ANE_H15_MBOX_A2I_SEND0	0x800u
+#define ANE_H15_MBOX_A2I_SEND1	0x808u
+#define ANE_H15_RTK_TYPE_SHIFT	52
+#define ANE_H15_RTK_HELLO	1
+#define ANE_H15_RTK_HELLO_REPLY	2
+#define ANE_H15_RTK_STARTEP	5
+#define ANE_H15_RTK_SET_IOP_PWR	6
+#define ANE_H15_RTK_IOP_PWR_ACK	7
+#define ANE_H15_RTK_EPMAP	8
+#define ANE_H15_RTK_AP_PWR	0xb
+#define ANE_H15_RTK_IOP_IDLE	0xc
+#define ANE_H15_RTK_PWR_OFF	0x00
+#define ANE_H15_RTK_PWR_SLEEP	0x01
+#define ANE_H15_RTK_PWR_QUIESCED 0x10
+#define ANE_H15_RTK_PWR_ON	0x20
+#define ANE_H15_RTK_APP_EP	0x20
+#define ANE_H15_RTK_VERSION	12
+#define ANE_H15_RTK_MAXSEND	16
+#define ANE_H15_RTK_MAXRX_TICK	4
+#define ANE_H15_RTK_SHUTDOWN_MS	600
+
+struct ane_h15_rtk {
+	bool hello, epmap_last, ap_sent, ap_on, app_started, shutdown, ap_acked, iop_acked, iop_idle;
+	u32 eps[8];
+	u32 ap_state, iop_state;
+	unsigned int sent, rx;
+};
+
+static int ane_h15_rtk_send(struct ane_h15 *ane, struct ane_h15_rtk *k, u64 m0)
+{
+	const struct ane_h15_soc *s = ane->soc;
+	u32 a2i = 0;
+	unsigned int tries;
+	int ret = 0;
+
+	if (k->sent >= ANE_H15_RTK_MAXSEND) {
+		dev_warn(ane->dev, "ane_h15 rtkit: send cap reached, not sending %#llx\n", m0);
+		return -EBUSY;
+	}
+	if ((u64)s->mbox + ANE_H15_MBOX_A2I_SEND1 + 8 > s->engine_size || s->mbox + ANE_H15_MBOX_A2I_SEND0 < ANE_H15_WRAP_OFF ||
+	    (u64)s->mbox + ANE_H15_MBOX_A2I_SEND1 + 8 > (u64)ANE_H15_WRAP_OFF + ANE_H15_WRAP_SIZE)
+		return -EPERM;
+	for (tries = 0; tries < 10; tries++) {
+		ret = ane_h15_read_word(ane, "MBOX_A2I_CTRL", s->mbox + 0x110, &a2i);
+		if (ret)
+			return ret;
+		if (!(a2i & ANE_H15_MBOX_FULL))
+			break;
+		usleep_range(1000, 2000);
+	}
+	if (a2i & ANE_H15_MBOX_FULL) {
+		dev_warn(ane->dev, "ane_h15 rtkit: A2I mailbox stays FULL, not sending %#llx\n", m0);
+		return -EBUSY;
+	}
+	dev_crit(ane->dev, "ane_h15 write MBOX_A2I_SEND0=%#llx pa=%#llx then SEND1=0 (management endpoint)\n", m0,
+		 s->engine_pa + s->mbox + ANE_H15_MBOX_A2I_SEND0);
+	writeq_relaxed(m0, ane->engine + s->mbox + ANE_H15_MBOX_A2I_SEND0);
+	writeq_relaxed(0, ane->engine + s->mbox + ANE_H15_MBOX_A2I_SEND1);
+	k->sent++;
+	return 0;
+}
+
+static bool ane_h15_rtk_system_ep(unsigned int ep)
+{
+	return ep == 1 || ep == 2 || ep == 3 || ep == 4 || ep == 8 || ep == 0xa;
+}
+
+/* One received message: reply to HELLO and the endpoint map, start the endpoints, walk the power states. */
+static void ane_h15_rtk_handle(struct ane_h15 *ane, struct ane_h15_rtk *k, u64 m0, u64 m1)
+{
+	unsigned int type = (m0 >> ANE_H15_RTK_TYPE_SHIFT) & 0xff, i;
+
+	dev_info(ane->dev, "ane_h15 rtkit rx type=%u ep=%#llx msg0=%#llx\n", type, m1 & 0xff, m0);
+	if (m1 & 0xff)
+		return;			/* not the management endpoint: logged, never answered */
+	if (type == ANE_H15_RTK_HELLO) {
+		unsigned int minv = m0 & 0xffff, maxv = (m0 >> 16) & 0xffff;
+
+		k->hello = true;
+		if (minv > ANE_H15_RTK_VERSION || maxv < ANE_H15_RTK_VERSION) {
+			dev_warn(ane->dev, "ane_h15 rtkit: firmware versions %u..%u do not include %u, no reply\n", minv, maxv, ANE_H15_RTK_VERSION);
+			return;
+		}
+		ane_h15_rtk_send(ane, k, ((u64)ANE_H15_RTK_HELLO_REPLY << ANE_H15_RTK_TYPE_SHIFT) |
+				 ((u64)ANE_H15_RTK_VERSION << 16) | ANE_H15_RTK_VERSION);
+	} else if (type == ANE_H15_RTK_EPMAP) {
+		unsigned int base = (m0 >> 32) & 7;
+		bool last = m0 & (1ULL << 51);
+
+		for (i = 0; i < 32; i++)
+			if (m0 & (1ULL << i)) {
+				dev_info(ane->dev, "ane_h15 rtkit endpoint %#x discovered\n", base * 32 + i);
+				k->eps[base] |= 1u << i;
+			}
+		if (ane_h15_rtk_send(ane, k, ((u64)ANE_H15_RTK_EPMAP << ANE_H15_RTK_TYPE_SHIFT) | (m0 & (7ULL << 32)) |
+				     (last ? (1ULL << 51) : 1ULL)))
+			return;
+		if (last) {
+			k->epmap_last = true;
+			for (i = 0; i < 256; i++) {
+				if (!(k->eps[i / 32] & (1u << (i % 32))) || !ane_h15_rtk_system_ep(i))
+					continue;
+				if (ane_h15_rtk_send(ane, k, ((u64)ANE_H15_RTK_STARTEP << ANE_H15_RTK_TYPE_SHIFT) | ((u64)i << 32) | (1ULL << 1)))
+					break;
+			}
+		}
+	} else if (type == ANE_H15_RTK_IOP_PWR_ACK) {
+		dev_info(ane->dev, "ane_h15 rtkit: IOP power state acknowledged: %#llx\n", m0 & 0xffff);
+		if (k->shutdown && (m0 & 0xffff) == k->iop_state)
+			k->iop_acked = true;
+		else if (!k->shutdown && !k->ap_sent && (m0 & 0xff) == ANE_H15_RTK_PWR_ON &&
+			 !ane_h15_rtk_send(ane, k, ((u64)ANE_H15_RTK_AP_PWR << ANE_H15_RTK_TYPE_SHIFT) | ANE_H15_RTK_PWR_ON))
+			k->ap_sent = true;
+	} else if (type == ANE_H15_RTK_AP_PWR) {
+		dev_info(ane->dev, "ane_h15 rtkit: AP power state acknowledged: %#llx\n", m0 & 0xffff);
+		if (k->shutdown && (m0 & 0xffff) == k->ap_state) {
+			k->ap_acked = true;
+			ane_h15_rtk_send(ane, k, ((u64)ANE_H15_RTK_SET_IOP_PWR << ANE_H15_RTK_TYPE_SHIFT) | k->iop_state);
+		} else if (!k->shutdown && (m0 & 0xff) == ANE_H15_RTK_PWR_ON && !k->app_started) {
+			k->ap_on = true;
+			k->app_started = true;
+			for (i = ANE_H15_RTK_APP_EP; i < 256; i++) {
+				if (!(k->eps[i / 32] & (1u << (i % 32))))
+					continue;
+				if (ane_h15_rtk_send(ane, k, ((u64)ANE_H15_RTK_STARTEP << ANE_H15_RTK_TYPE_SHIFT) | ((u64)i << 32) | (1ULL << 1)))
+					break;
+			}
+		}
+	} else if (type == ANE_H15_RTK_IOP_IDLE) {
+		dev_info(ane->dev, "ane_h15 rtkit: the firmware reports IOP idle\n");
+		if (k->shutdown)
+			k->iop_idle = true;
+	}
+}
+
+/* Drain at most ANE_H15_RTK_MAXRX_TICK messages: I2A_CTRL, then RECV0 and RECV1 as 64-bit reads. */
+static int ane_h15_rtk_poll_once(struct ane_h15 *ane, struct ane_h15_rtk *k)
+{
+	const struct ane_h15_soc *s = ane->soc;
+	u32 i2a = 0;
+	u64 m0, m1;
+	unsigned int n = 0;
+	int ret;
+
+	ret = ane_h15_read_word(ane, "MBOX_I2A_CTRL", s->mbox + 0x114, &i2a);
+	while (!ret && !(i2a & ANE_H15_MBOX_EMPTY) && n < ANE_H15_RTK_MAXRX_TICK) {
+		m0 = m1 = 0;
+		ret = ane_h15_read_word64(ane, "MBOX_I2A_RECV0", s->mbox + ANE_H15_MBOX_I2A_RECV0, &m0);
+		if (!ret)
+			ret = ane_h15_read_word64(ane, "MBOX_I2A_RECV1", s->mbox + ANE_H15_MBOX_I2A_RECV1, &m1);
+		if (ret)
+			break;
+		dev_info(ane->dev, "ane_h15 msg%u raw0=%#llx raw1=%#llx\n", k->rx++, m0, m1);
+		ane_h15_rtk_handle(ane, k, m0, m1);
+		n++;
+		ret = ane_h15_read_word(ane, "MBOX_I2A_CTRL", s->mbox + 0x114, &i2a);
+	}
+	return ret;
+}
+
+/* Start phase until AP power ON is acknowledged and the application endpoints are started (plus 100 ms to log what
+ * follows), then the shutdown phase. The caller clears RUN afterwards. */
+static void ane_h15_rtk_session(struct ane_h15 *ane, struct ane_h15_rtk *k)
+{
+	unsigned int waited, settle = 0;
+
+	for (waited = 0; waited < rtkit_wait_ms && settle < 100; waited += 10) {
+		usleep_range(10000, 11000);
+		if (ane_h15_rtk_poll_once(ane, k))
+			return;
+		if (k->app_started)
+			settle += 10;
+	}
+	dev_info(ane->dev, "ane_h15 rtkit session: hello=%d epmap_last=%d ap_on=%d app_started=%d sent=%u after %ums\n",
+		 k->hello, k->epmap_last, k->ap_on, k->app_started, k->sent, waited);
+	if (!k->ap_on)
+		return;			/* no session to shut down */
+	k->shutdown = true;
+	k->ap_state = rtkit_stop == 2 ? ANE_H15_RTK_PWR_OFF : ANE_H15_RTK_PWR_QUIESCED;
+	k->iop_state = rtkit_stop == 2 ? ANE_H15_RTK_PWR_OFF : ANE_H15_RTK_PWR_SLEEP;
+	k->sent = 0;			/* the shutdown has its own send budget */
+	if (ane_h15_rtk_send(ane, k, ((u64)ANE_H15_RTK_AP_PWR << ANE_H15_RTK_TYPE_SHIFT) | k->ap_state))
+		return;
+	for (waited = 0; waited < ANE_H15_RTK_SHUTDOWN_MS && !k->iop_acked && !k->iop_idle; waited += 10) {
+		usleep_range(10000, 11000);
+		if (ane_h15_rtk_poll_once(ane, k))
+			return;
+	}
+	dev_info(ane->dev, "ane_h15 rtkit shutdown: ap_acked=%d iop_acked=%d iop_idle=%d after %ums\n", k->ap_acked, k->iop_acked,
+		 k->iop_idle, waited);
+}
+
+static int ane_h15_run_common(struct ane_h15 *ane, unsigned int stg)
 {
 	const struct ane_h15_soc *s = ane->soc;
 	u32 st = 0, ctrl = 0, rv_lo = 0, rv_hi = 0, a2i = 0, i2a = 0, last = 0xffffffffu;
 	u64 m0, m1;
 	unsigned int waited, i, msgs = 0, started_seen = 0, posted = 0, live = 0, locked = 0;
 	bool stopped = false;
+	struct ane_h15_rtk rtk = { 0 };
 	int ret;
 
 	if (!confirm_run) {
-		ane_h15_result(ane, 5, "REFUSED", "confirm_run=1 required");
+		ane_h15_result(ane, stg, "REFUSED", "confirm_run=1 required");
 		return -EPERM;
 	}
 	if (run_wait_ms < 10 || run_wait_ms > 2000) {
-		ane_h15_result(ane, 5, "REFUSED", "run_wait_ms 10 to 2000");
+		ane_h15_result(ane, stg, "REFUSED", "run_wait_ms 10 to 2000");
+		return -EINVAL;
+	}
+	if (stg == 6 && !confirm_rtkit) {
+		ane_h15_result(ane, stg, "REFUSED", "confirm_rtkit=1 required");
+		return -EPERM;
+	}
+	if (stg == 6 && (rtkit_wait_ms < 100 || rtkit_wait_ms > 10000 || rtkit_stop < 1 || rtkit_stop > 2)) {
+		ane_h15_result(ane, stg, "REFUSED", "rtkit_wait_ms 100 to 10000, rtkit_stop 1 or 2");
 		return -EINVAL;
 	}
 	if (!s->rvbar_expect) {
-		ane_h15_result(ane, 5, "REFUSED", "no measured RVBAR for this SoC row: run stage 2 and report it");
+		ane_h15_result(ane, stg, "REFUSED", "no measured RVBAR for this SoC row: run stage 2 and report it");
 		return -ENODEV;
 	}
 	if (map_fw) {
 		if (!device_iommu_mapped(ane->dev)) {
 			dev_err(ane->dev, "ane_h15 map_fw: the node has no iommus (no DART client): use the DART overlay\n");
-			ane_h15_result(ane, 5, "REFUSED", "map_fw needs iommus in the node");
+			ane_h15_result(ane, stg, "REFUSED", "map_fw needs iommus in the node");
 			return -ENODEV;
 		}
 		ret = ane_h15_parse_segs(ane);
 		if (ret) {
-			ane_h15_result(ane, 5, "REFUSED", "fw_seg missing or unsafe");
+			ane_h15_result(ane, stg, "REFUSED", "fw_seg missing or unsafe");
 			return ret;
 		}
 	}
 	if (!ane_h15_window_ok(ane, 0, "engine", s->engine_pa, s->engine_size) ||
 	    !ane_h15_window_ok(ane, 1, "pmgr", s->pmgr_pa, s->pmgr_size)) {
-		ane_h15_result(ane, 5, "FAIL", "window-mismatch");
+		ane_h15_result(ane, stg, "FAIL", "window-mismatch");
 		return -EINVAL;
 	}
 	ret = ane_h15_ps_wait(ane);
 	if (ret) {
-		ane_h15_result(ane, 5, "FAIL", "pmgr-actual-stuck");
+		ane_h15_result(ane, stg, "FAIL", "pmgr-actual-stuck");
 		return ret;
 	}
 	if (map_fw) {
 		/* Attaching replaces the DART state a running core is fetching through: look first, and only on a stopped core. */
 		ret = ane_h15_read_word(ane, "CPU_STATUS", s->cpu_status, &st);
 		if (ret) {
-			ane_h15_result(ane, 5, "FAIL", "read-refused");
+			ane_h15_result(ane, stg, "FAIL", "read-refused");
 			return ret;
 		}
 		if (!ane_h15_core_stopped(st)) {
 			dev_err(ane->dev, "ane_h15 map_fw: cpu_status=%#x, the core is not stopped: not touching the DART\n", st);
-			ane_h15_result(ane, 5, "FAIL", "core-not-stopped-before-map");
+			ane_h15_result(ane, stg, "FAIL", "core-not-stopped-before-map");
 			return -EBUSY;
 		}
 		ret = ane_h15_map_firmware(ane);
 		if (ret) {
-			ane_h15_result(ane, 5, "FAIL", "fw-map-failed");
+			ane_h15_result(ane, stg, "FAIL", "fw-map-failed");
 			return ret;
 		}
 	}
@@ -983,14 +1225,14 @@ static int ane_h15_stage_run(struct ane_h15 *ane)
 	ret = ane_h15_dart_scan(ane, &live, &locked);
 	if (ret) {
 		ane_h15_unmap_firmware(ane);
-		ane_h15_result(ane, 5, "FAIL", "dart-read-refused-or-not-a-dart");
+		ane_h15_result(ane, stg, "FAIL", "dart-read-refused-or-not-a-dart");
 		return ret;
 	}
 	dev_info(ane->dev, "ane_h15 dart summary live_streams=%u locked_windows=%u\n", live, locked);
 	if (!live && !run_unmapped) {
 		dev_err(ane->dev, "ane_h15 no ANE DART stream is enabled and mapped: the core could not fetch its firmware; nothing written (run_unmapped=1 overrides)\n");
 		ane_h15_unmap_firmware(ane);
-		ane_h15_result(ane, 5, "FAIL", "no-dart-stream-enabled");
+		ane_h15_result(ane, stg, "FAIL", "no-dart-stream-enabled");
 		return -ENODEV;
 	}
 	/* Preflight, read only. */
@@ -1007,7 +1249,7 @@ static int ane_h15_stage_run(struct ane_h15 *ane)
 		ret = ane_h15_read_word(ane, "MBOX_I2A_CTRL", s->mbox + 0x114, &i2a);
 	if (ret) {
 		ane_h15_unmap_firmware(ane);
-		ane_h15_result(ane, 5, "FAIL", "read-refused");
+		ane_h15_result(ane, stg, "FAIL", "read-refused");
 		return ret;
 	}
 	if ((st & ANE_H15_ST_RUNNING) || !(st & ANE_H15_ST_STOPPED) || (ctrl & ANE_H15_CPU_RUN) ||
@@ -1017,7 +1259,7 @@ static int ane_h15_stage_run(struct ane_h15 *ane)
 			"ane_h15 preflight: cpu_status=%#x cpu_control=%#x rvbar=%#llx a2i_ctrl=%#x i2a_ctrl=%#x (want stopped, RUN clear, rvbar %#llx, both mailbox words EMPTY)\n",
 			st, ctrl, ((u64)rv_hi << 32) | rv_lo, a2i, i2a, s->rvbar_expect);
 		ane_h15_unmap_firmware(ane);
-		ane_h15_result(ane, 5, "FAIL", "preflight-not-as-iboot-left-it");
+		ane_h15_result(ane, stg, "FAIL", "preflight-not-as-iboot-left-it");
 		return -EBUSY;
 	}
 
@@ -1029,10 +1271,16 @@ static int ane_h15_stage_run(struct ane_h15 *ane)
 		ane->fw_started = false;
 		ane->fw_touched = false;
 		ane_h15_unmap_firmware(ane);
-		ane_h15_result(ane, 5, "FAIL", "write-refused");
+		ane_h15_result(ane, stg, "FAIL", "write-refused");
 		return ret;
 	}
-	for (waited = 0; waited < run_wait_ms; waited += 10) {
+	if (stg == 6) {
+		ane_h15_rtk_session(ane, &rtk);
+		ret = ane_h15_read_word(ane, "CPU_STATUS", s->cpu_status, &st);
+		if (!ret && !(st & ANE_H15_ST_STOPPED))
+			started_seen = 1;
+	}
+	for (waited = 0; stg == 5 && waited < run_wait_ms; waited += 10) {
 		usleep_range(10000, 11000);
 		ret = ane_h15_read_word(ane, "CPU_STATUS", s->cpu_status, &st);
 		if (!ret)
@@ -1077,7 +1325,7 @@ static int ane_h15_stage_run(struct ane_h15 *ane)
 	if (!stopped) {
 		dev_emerg(ane->dev,
 			  "ane_h15 the core did not report STOPPED after RUN was cleared: power domains stay on, do NOT unload, reboot required\n");
-		ane_h15_result(ane, 5, "FAIL", "core-not-stopped");
+		ane_h15_result(ane, stg, "FAIL", "core-not-stopped");
 		/* Pin the module: ane_h15_remove() is void and cannot refuse an rmmod, and unloading would free the code that
 		 * owns the power claim, the windows and (map_fw) the DART domain under a core that may still be running. The
 		 * reference is never dropped: reboot to park the ANE. */
@@ -1088,8 +1336,34 @@ static int ane_h15_stage_run(struct ane_h15 *ane)
 	ane->fw_started = false;
 	ane->fw_touched = false;
 	ane_h15_unmap_firmware(ane);
-	ane_h15_result(ane, 5, "PASS", started_seen ? "core-started-and-stopped" : "core-never-left-stopped");
+	if (stg == 6) {
+		if (!rtk.hello) {
+			ane_h15_result(ane, stg, "FAIL", "rtkit-no-hello");
+			return -ETIMEDOUT;
+		}
+		if (!(rtk.epmap_last && rtk.ap_on && rtk.app_started)) {
+			ane_h15_result(ane, stg, "FAIL", "rtkit-session-incomplete");
+			return -EIO;
+		}
+		if (!(rtk.ap_acked && rtk.iop_acked)) {
+			ane_h15_result(ane, stg, "FAIL", "rtkit-shutdown-incomplete");
+			return -EIO;
+		}
+		ane_h15_result(ane, stg, "PASS", "rtkit-session-and-shutdown");
+		return 0;
+	}
+	ane_h15_result(ane, stg, "PASS", started_seen ? "core-started-and-stopped" : "core-never-left-stopped");
 	return 0;
+}
+
+static int ane_h15_stage_run(struct ane_h15 *ane)
+{
+	return ane_h15_run_common(ane, 5);
+}
+
+static int ane_h15_stage_rtkit(struct ane_h15 *ane)
+{
+	return ane_h15_run_common(ane, 6);
 }
 
 /* ---- driver ---- */
@@ -1192,6 +1466,7 @@ static int ane_h15_probe(struct platform_device *pdev)
 	else if (stage_idx == 2)  ret = ane_h15_stage_wrapper(ane);
 	else if (stage_idx == 4)  ret = ane_h15_stage_dart(ane);
 	else if (stage_idx == 5)  ret = ane_h15_stage_run(ane);
+	else if (stage_idx == 6)  ret = ane_h15_stage_rtkit(ane);
 	else                      ret = ane_h15_stage_boot(ane);
 
 	/* A started core that did not stop keeps its power claim (and its windows, see remove()). */
@@ -1243,5 +1518,5 @@ static struct platform_driver ane_h15_driver = {
 module_platform_driver(ane_h15_driver);
 
 MODULE_AUTHOR("Joshua Warren");
-MODULE_DESCRIPTION("OPT-IN EXPERIMENTAL Apple H15-family ANE bring-up module (dt/status/wrapper/boot/dart/run; no inference)");
+MODULE_DESCRIPTION("OPT-IN EXPERIMENTAL Apple H15-family ANE bring-up module (dt/status/wrapper/boot/dart/run/rtkit; no inference)");
 MODULE_LICENSE("Dual MIT/GPL");

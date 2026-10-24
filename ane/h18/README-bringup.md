@@ -53,12 +53,20 @@ else in the ASC, IORVBAR or mailbox windows.
     is acknowledged, the module reads the eight words, allocates the surfaces the macOS kext allocates (an IPC surface of `SCRATCH1 + 1` bytes rounded up to a
     page, a HEAP surface of `SCRATCH3` bytes, and a 0x40000 byte pool surface that holds the 0x174 byte init block), fills the block with the layout of `ane/t6021/ane_t6021_boot.h`,
     writes the block address to SCRATCH0 (low) and SCRATCH1 (high), and then writes the wake word 0xf7fbdff9 to SCRATCH7. It waits up to `hs_wait_ms` for a new
-    address in SCRATCH1:SCRATCH0 together with 0x08042006 in SCRATCH7, and dumps the first 0x200 bytes at that address when one of its own surfaces holds it.
+    address in SCRATCH1:SCRATCH0 together with 0x08042006 in SCRATCH7, and dumps the first 0x800 bytes at that address (all-zero lines of 16 bytes are counted, not printed) when one of its own surfaces holds it.
     The firmware shows 0x08042006 before the wake, so the answer is judged by the new address. With this option the two firmware segments are mapped into the
     default DMA domain of the ANE (no own domain is attached), because the surfaces come from the DMA API. The config size at block +0x10 is 0x380000, the value the M6 kext sets (`hs_cfg_size`; T6021 uses 0x500000). Two words the decode
     does not give is zero: the template word. The pool qword at +0x60 is 0x40000 as in the T6021 sequencer. The handshake refuses unless SCRATCH7 already shows READY. SCRATCH6 is not
     written (the kext writes 1 there before RUN, the firmware showed 0). A hang, a reset or a DART fault is possible, and what the firmware does with the
     surfaces is not known. The surfaces are freed only after the core stopped. Nothing here has run on the board.
+  - `hs_chan=1` (needs `handshake=1`): the step the kext does after it created its channels. The module checks the eight entries of the published table (type 0
+    to 2, bit below 32, a ring inside the surface that holds the table) and writes nothing if one entry is wrong. Then it sets every host-to-firmware slot header to 1
+    (host owned, as `ane/t6021/ane_t6021_boot.h` does before the wake), writes 0x08042006 to SCRATCH3 and waits up to `hs_wait_ms` for the firmware to clear it.
+    The firmware's own restartable stop got no IOP acknowledgement after the handshake alone, and this step may be what it waits for. Not known.
+  - `hs_cmds=1` (needs `hs_chan=1`): PRINT_ENABLE (0) and CONFIG_GET as 64 byte slots on the IO ring. The slot header is the DMA address of a 0x4000 byte command block
+    (id at +4, argument at +8), the doorbell is BIT(bit of the IO entry) written to engine + 0x18a4000, and the answer is the slot header with bit 0 set and a zero
+    acknowledgement at +6. The doorbell address comes from the decode of the M6 kext and has never been written on this board. CONFIG_GET returns the tick rate at +8.
+    START is not sent, because the firmware may ask for memory on the shared-memory ring and this module does not answer that ring.
   - `rtkit_hello=1` (needs `alias_mbox=1`): answer the firmware's RTKit management HELLO with version 12 and its endpoint map, nothing else. The
     reply goes to TX as one paired 16 byte store. No reply is sent without a free TX slot, for a message of another type or endpoint, or when the
     firmware's version range excludes 12. At most four replies per run.

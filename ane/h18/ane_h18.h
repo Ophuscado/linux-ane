@@ -72,6 +72,20 @@
 #define ANE_H18_HS_POOL_SIZE	0x40000	/* the pool surface the block is taken from, and the qword at block +0x60: the T6021 values (ane_t6021_boot.c, confirmed there) */
 #define ANE_H18_HS_IPC_MAX	0x100000	/* refuse a firmware request above these before allocating */
 #define ANE_H18_HS_HEAP_MAX	0x4000000
+/* Channel step after the handshake (kext decode): the table the firmware publishes has CH_COUNT entries of CH_ENTRY bytes (name[0x40], type u32 +0x40, bit u32
+ * +0x44, size u64 +0x48 in 64 byte slots, ring u64 +0x50), the same layout as ane/t6021/ane_t6021_boot.h. Type 0 is host to firmware, 1 firmware to host, 2 the
+ * terminal. The host sets every H2T slot header to 1 (host owned), writes READY to SCRATCH3 and waits for the firmware to clear it. A command is a 64 byte slot
+ * on the IO ring: header = the DMA address of a command block (bit 0 clear hands it to the firmware), size words, doorbell BIT(bit) at engine + 0x18a4000. The
+ * firmware answers by setting bit 0 of the header and a zero acknowledgement at +6 of the block. The command block has the u16 id at +4 and the payload from +8. */
+#define ANE_H18_CH_COUNT	8
+#define ANE_H18_CH_ENTRY	0x100
+#define ANE_H18_CH_NAME_LEN	0x40
+#define ANE_H18_CH_SLOT		0x40
+#define ANE_H18_CH_MAX_SLOTS	0x400
+#define ANE_H18_DOORBELL_OFF	0x18a4000
+#define ANE_H18_CMD_BLOCK	0x4000
+#define ANE_H18_CSNE_PRINT_ENABLE	0x04
+#define ANE_H18_CSNE_CONFIG_GET		0x03
 /* ANE DART (dart,gen3, instance 0): read only liveness words, see ane_h18_read_dart_words(). */
 #define ANE_H18_DART_NREAD	12
 /* Postoffice channel layout used for the RTKit exchange, as drivers/soc/apple/mailbox.c has it for the T8152 counted FIFO: RX (the outbox, firmware to host)

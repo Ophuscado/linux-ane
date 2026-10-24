@@ -525,7 +525,6 @@ static int json_read_top(const char *p, const char **end,
 			 * bracket-balanced skip rather than a full parse
 			 * so sidecar additions do not break us. */
 			int depth = 0;
-			int opened = 0;
 			const char *q;
 			int in_str = 0;
 
@@ -544,15 +543,20 @@ static int json_read_top(const char *p, const char **end,
 				}
 				if (c == '{' || c == '[') {
 					depth++;
-					opened = 1;
 					continue;
 				}
 				if (c == '}' || c == ']') {
+					/* A close outside any nested value of
+					 * the skipped member is the enclosing
+					 * object's close (the member was a
+					 * scalar and the last one): stop
+					 * without consuming it. */
+					if (depth == 0) {
+						break;
+					}
 					depth--;
 					if (depth == 0) {
-						if (opened) {
-							q++;
-						}
+						q++;
 						break;
 					}
 					continue;

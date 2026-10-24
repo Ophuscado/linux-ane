@@ -317,6 +317,24 @@ static inline u64 bus_read64(u64 pa)
 	return ((u64)hi << 32) | lo;
 }
 #define readq_relaxed(a) bus_read64((u64)(uintptr_t)(a))
+/* One 64-bit store is ONE event (at the low address); the 64-bit hook sees the whole value. */
+extern void (*sim_write64_hook)(u64 pa, u64 v);
+static inline void bus_write64(u64 pa, u64 v)
+{
+	struct sim_region *r = sim_region_find(pa);
+
+	if (!r || !sim_region_find(pa + 7)) {
+		sim_bus_faults++;
+		sim_event(1, pa, (u32)v);
+		return;
+	}
+	sim_event(1, pa, (u32)v);
+	r->mem[(pa - r->pa) >> 2] = (u32)v;
+	r->mem[((pa - r->pa) >> 2) + 1] = (u32)(v >> 32);
+	if (sim_write64_hook)
+		sim_write64_hook(pa, v);
+}
+#define writeq_relaxed(v, a) bus_write64((u64)(uintptr_t)(a), (v))
 #define readl(a) bus_read((u64)(uintptr_t)(a))
 #define readl_relaxed(a) bus_read((u64)(uintptr_t)(a))
 #define writel(v, a) bus_write((u64)(uintptr_t)(a), (v))

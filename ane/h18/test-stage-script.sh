@@ -159,6 +159,19 @@ expect "step 5 with handshake=1 and scratch=0 refused" 2 bash "$S" 5 0123abcd GO
 sleep 1
 FAKE_STAGE=boot expect "step 5 with handshake=1 passes" 0 bash "$S" 5 0123abcd GO 1 2 800 0 3 1 1
 grep -q 'map_fw=1 read_scratch=1 handshake=1 rtkit_hello=1 rtkit_start=1 rtkit_stop=1' "$T/insmod.args" && echo "  PASS handshake=1 args carry map_fw, read_scratch, handshake and stop=1" || { echo "  FAIL handshake args"; fails=$((fails + 1)); }
+rm -f "$T/work/step4-run-0123abcd"
+sleep 1
+# the chan flag: needs handshake=1
+expect "step 5 with chan=3 refused" 2 bash "$S" 5 0123abcd GO 1 2 800 0 3 1 1 3
+sleep 1
+expect "step 5 with chan=1 and handshake=0 refused" 2 bash "$S" 5 0123abcd GO 1 2 800 0 3 1 0 1
+sleep 1
+FAKE_STAGE=boot expect "step 5 with chan=2 passes" 0 bash "$S" 5 0123abcd GO 1 2 800 0 3 1 1 2
+grep -q 'handshake=1 hs_chan=1 hs_cmds=1 rtkit_hello=1' "$T/insmod.args" && echo "  PASS chan=2 args carry hs_chan and hs_cmds" || { echo "  FAIL chan args"; fails=$((fails + 1)); }
+rm -f "$T/work/step4-run-0123abcd"
+sleep 1
+FAKE_STAGE=boot expect "step 5 with chan=1 passes" 0 bash "$S" 5 0123abcd GO 1 2 800 0 3 1 1 1
+grep -q 'hs_chan=1' "$T/insmod.args" && ! grep -q 'hs_cmds' "$T/insmod.args" && echo "  PASS chan=1 args carry hs_chan only" || { echo "  FAIL chan=1 args"; fails=$((fails + 1)); }
 rm -f "$T/work/step4-run-0123abcd" "$T/dt/soc/ane@419600000/iommus" "$T/dt/soc/ane@419600000/power-domains"
 sleep 1
 # after a step 4 ran, no ANE step of any number may start until a reboot

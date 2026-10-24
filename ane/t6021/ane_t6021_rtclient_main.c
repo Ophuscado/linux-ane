@@ -98,6 +98,8 @@
 
 #include "ane_t6021.h"
 #include "ane_t6021_boot.h"
+#include "ane_t6021_legtab.h"
+#include "ane_t6021_mring.h"
 #include "ane_t6021_pool.h"
 #include "ane_t6021_progtab.h"
 
@@ -208,12 +210,6 @@ MODULE_PARM_DESC(dyn_pg,
 #define ANE_LEGACY_ALLOCS 8192
 #define ANE_LEGACY_BYTES SZ_512M
 
-struct ane_legacy_buffer {
-	void *cpu;
-	dma_addr_t dma;
-	size_t size;
-};
-
 struct ane_rtclient {
 	struct device *dev;
 	void __iomem *engine;
@@ -236,7 +232,8 @@ struct ane_rtclient {
 	/* ChMan descriptor table validated against the 'IPC ' surface. */
 	bool chman_ok;
 	struct ane_legacy_buffer *legacy_buffers;
-	u32 legacy_allocated;
+	struct ane_legacy_buffer *legacy_last;	/* the buffer the last ane_rtclient_legacy_alloc handed out */
+	u32 legacy_allocated;		/* high-water mark of the table: slots below it may be free (cpu NULL) */
 	size_t legacy_bytes;
 	u32 legacy_malloc_cursor;
 	u32 legacy_cmd_cursor[ANE_T6021_CHMAN_COUNT];
@@ -477,12 +474,15 @@ static int ane_rtclient_legacy_exchange(struct ane_rtclient *ane,
 static int ane_rtclient_legacy_alloc(struct ane_rtclient *ane, u64 size)
 {
 	struct ane_legacy_buffer *buffer;
+	int slot;
 
 	if (!size || !IS_ALIGNED(size, SZ_16K) || size > SZ_2M ||
-	    ane->legacy_allocated == ANE_LEGACY_ALLOCS ||
 	    size > ANE_LEGACY_BYTES - ane->legacy_bytes)
 		return -E2BIG;
-	buffer = &ane->legacy_buffers[ane->legacy_allocated];
+	slot = ane_legtab_pick(ane->legacy_buffers, ane->legacy_allocated, ANE_LEGACY_ALLOCS);
+	if (slot < 0)
+		return -E2BIG;
+	buffer = &ane->legacy_buffers[slot];
 	buffer->cpu = dma_alloc_coherent(ane->dev, size, &buffer->dma,
 					 GFP_KERNEL);
 	if (!buffer->cpu)
@@ -496,7 +496,9 @@ static int ane_rtclient_legacy_alloc(struct ane_rtclient *ane, u64 size)
 	memset(buffer->cpu, 0, size);
 	buffer->size = size;
 	ane->legacy_bytes += size;
-	ane->legacy_allocated++;
+	if ((u32)slot == ane->legacy_allocated)
+		ane->legacy_allocated++;
+	ane->legacy_last = buffer;
 	return 0;
 }
 
@@ -539,6 +541,96 @@ static void ane_rtclient_validate_chman(struct ane_rtclient *ane)
 		 bad ? "NOT VALIDATED" : "VALIDATED", bad);
 }
 
+/* Answer the entry of the firmware's SHAREDMALLOC ring at *cursor, if it posted one. Returns 1 when an entry was answered (the cursor moved on), 0
+ * when there is none, a negative errno for an entry that is not a request (the ring is not what we think) or an allocation that failed.
+ * A MALLOC gets a fresh buffer. A FREE or UNREMAP (header = the IOVA the firmware gives back, see ane_t6021_mring.h) gets the answer the firmware
+ * waits for without a timeout while it holds its shared-memory lock: body zero, header 1, doorbell bit 5. Ignoring it would wedge the firmware's
+ * program manager with the command already acknowledged. The buffer the firmware gave back is matched to its legacy table entry and freed after the answer is out (see ane_t6021_legtab.h). */
+static int ane_rtclient_malloc_service(struct ane_rtclient *ane, unsigned int *cursor)
+{
+	struct ane_t6021 *a = ane->fw;
+	u64 *slot = (u64 *)((u8 *)a->boot_ipc + ane_t6021_chman_layout[5].off) + *cursor * 8;
+	void __iomem *ipi = ane->engine + ANE_IPI_OFF;
+	u64 hdr = READ_ONCE(slot[0]), size, mode;
+	struct ane_legacy_buffer *buf;
+	int freed;
+
+	if (hdr & 1)
+		return 0;
+	dma_rmb();
+	size = READ_ONCE(slot[1]);
+	mode = READ_ONCE(slot[2]);
+	switch (ane_t6021_mring_classify(hdr, size, mode)) {
+	case ANE_T6021_MRING_MALLOC:
+		if (ane_rtclient_legacy_alloc(ane, size))
+			return -ENOMEM;
+		buf = ane->legacy_last;
+		WRITE_ONCE(slot[1], 0);
+		WRITE_ONCE(slot[2], (u32)(buf - ane->legacy_buffers) + 1);
+		dma_wmb();
+		WRITE_ONCE(slot[0], buf->dma | 1);
+		break;
+	case ANE_T6021_MRING_FREE:
+		WRITE_ONCE(slot[1], 0);
+		WRITE_ONCE(slot[2], 0);
+		dma_wmb();
+		WRITE_ONCE(slot[0], 1);
+		dma_wmb();
+		writel(BIT(5), ipi);
+		/* The firmware unmapped it before it asked, so the buffer can go back to the kernel now that the answer is out. The command buffer is never matched. */
+		freed = ane_legtab_find(ane->legacy_buffers, ane->legacy_allocated, hdr, ane->cmd_buf);
+		if (freed >= 0) {
+			struct ane_legacy_buffer *fb = &ane->legacy_buffers[freed];
+
+			dma_free_coherent(ane->dev, fb->size, fb->cpu, fb->dma);
+			ane->legacy_bytes -= fb->size;
+			memset(fb, 0, sizeof(*fb));
+		}
+		dev_info(ane->dev, "fw returned iova %#llx, answered, %s (legacy table: %u slots high water, %zu bytes)\n", hdr,
+			 freed >= 0 ? "buffer released" : "no table entry", ane->legacy_allocated, ane->legacy_bytes);
+		*cursor = (*cursor + 1) % ane_t6021_chman_layout[5].size;
+		return 1;
+	case ANE_T6021_MRING_IDLE:
+	case ANE_T6021_MRING_ANSWERED:
+		return 0;
+	default:
+		dev_info(ane->dev, "malloc ring slot %u not a request: %#llx %#llx %#llx\n", *cursor, hdr, size, mode);
+		return -EOPNOTSUPP;
+	}
+	dma_wmb();
+	writel(BIT(5), ipi);
+	*cursor = (*cursor + 1) % ane_t6021_chman_layout[5].size;
+	return 1;
+}
+
+/* After a command that makes the firmware free memory (0x203, 0x201) its FREE request can land after the acknowledgement. Keep answering the
+ * ring until it was quiet for quiet_ms, at most 64 answers (a firmware that never goes quiet is -EBUSY). Caller holds the firmware lock. */
+static int ane_rtclient_malloc_settle(struct ane_rtclient *ane, unsigned int quiet_ms)
+{
+	unsigned int cursor = ane->legacy_malloc_cursor;
+	unsigned long until = jiffies + msecs_to_jiffies(quiet_ms);
+	int ret = 0, served;
+	unsigned int answered = 0;
+
+	while (time_before(jiffies, until)) {
+		served = ane_rtclient_malloc_service(ane, &cursor);
+		if (served < 0) {
+			ret = served;
+			break;
+		}
+		if (served) {
+			if (++answered > 64) {
+				ret = -EBUSY;
+				break;
+			}
+			until = jiffies + msecs_to_jiffies(quiet_ms);
+		} else
+			usleep_range(200, 400);
+	}
+	ane->legacy_malloc_cursor = cursor;
+	return ret;
+}
+
 /* Legacy ChMan exchange (post-DONE 13.5 transport). Resends to the same
  * 64-byte IO slot would wedge the ring; cursor advances after each
  * completed command (selene fw decodes bit0 = host-owned). */
@@ -549,13 +641,13 @@ static int ane_rtclient_legacy_exchange(struct ane_rtclient *ane,
 				       unsigned int timeout_ms)
 {
 	struct ane_t6021 *a = ane->fw;
-	u64 *io, *malloc_ring, header;
+	u64 *io, header;
 	u64 *t2h_buf, *t2h_ioq;
 	void __iomem *ipi = ane->engine + ANE_IPI_OFF;
-	unsigned int cursor = ane->legacy_malloc_cursor;
+	unsigned int cursor = ane->legacy_malloc_cursor, ring_guard = 0;
 	unsigned long deadline;
 	u32 *reply;
-	int result = -ETIMEDOUT;
+	int result = -ETIMEDOUT, served;
 
 	if (!ane->held || !ane->chman_ok ||
 	    ane_t6021_chman_check(a->boot_ipc, a->boot_ipc_iova))
@@ -567,13 +659,20 @@ static int ane_rtclient_legacy_exchange(struct ane_rtclient *ane,
 	}
 	io = a->boot_ipc + ane_t6021_chman_layout[channel].off +
 	     (size_t)ane->legacy_cmd_cursor[channel] * 64;
-	malloc_ring = a->boot_ipc + ane_t6021_chman_layout[5].off;
 	t2h_buf = a->boot_ipc + ane_t6021_chman_layout[4].off;
 	t2h_ioq = a->boot_ipc + ane_t6021_chman_layout[6].off;
 
 	if (!(READ_ONCE(io[0]) & 1)) {
 		result = -EBUSY;
 		goto out;
+	}
+	/* a request that arrived since the last exchange (a FREE after an idle pool shrink) is answered before this command goes out */
+	for (served = 1; served > 0 && ring_guard++ < ane_t6021_chman_layout[5].size;) {
+		served = ane_rtclient_malloc_service(ane, &cursor);
+		if (served < 0) {
+			result = served;
+			goto out;
+		}
 	}
 	reply = command->cpu;
 	((u16 *)reply)[2] = opcode;
@@ -593,39 +692,12 @@ static int ane_rtclient_legacy_exchange(struct ane_rtclient *ane,
 		}
 		header = READ_ONCE(io[0]);
 		if (!(header & 1)) {
-			/* malloc-ring service: the fw may ask for an
-			 * allocation while we wait; service those until
-			 * the command slot flips back. */
-			u64 *slot = malloc_ring + cursor * 8;
-			u64 alloc_hdr = READ_ONCE(slot[0]);
+			/* malloc-ring service: the fw may ask for an allocation or give one back while we wait. */
+			int served = ane_rtclient_malloc_service(ane, &cursor);
 
-			if (!(alloc_hdr & 1)) {
-				u64 size, tag;
-				struct ane_legacy_buffer *buf;
-
-				dma_rmb();
-				size = READ_ONCE(slot[1]);
-				tag = READ_ONCE(slot[2]);
-				/* Lab rule: a valid MALLOC slot carries
-				 * header 0 and a u32 tag; anything else
-				 * is a malformed ring and we stop. */
-				if (alloc_hdr || tag > U32_MAX) {
-					result = -EOPNOTSUPP;
-					goto out;
-				}
-				if (ane_rtclient_legacy_alloc(ane, size)) {
-					result = -ENOMEM;
-					goto out;
-				}
-				buf = &ane->legacy_buffers[ane->legacy_allocated - 1];
-				WRITE_ONCE(slot[1], 0);
-				WRITE_ONCE(slot[2], ane->legacy_allocated);
-				dma_wmb();
-				WRITE_ONCE(slot[0], buf->dma | 1);
-				dma_wmb();
-				writel(BIT(5), ipi);
-				cursor = (cursor + 1) %
-					ane_t6021_chman_layout[5].size;
+			if (served < 0) {
+				result = served;
+				goto out;
 			}
 		}
 		header = READ_ONCE(io[0]);
@@ -843,7 +915,7 @@ static const void *ane_rtclient_fw_cpu(struct ane_rtclient *ane, u64 iova,
 	for (i = 0; i < ane->legacy_allocated; i++) {
 		const struct ane_legacy_buffer *b = &ane->legacy_buffers[i];
 
-		if (iova >= b->dma && iova - b->dma + len <= b->size)
+		if (b->cpu && iova >= b->dma && iova - b->dma + len <= b->size)
 			return b->cpu + (iova - b->dma);
 	}
 	if (iova >= ane->fw->boot_ipc_iova &&
@@ -1089,10 +1161,10 @@ static int ane_rtclient_command(struct ane_rtclient *ane,
  * ane_t6021_fw_lock. */
 static struct ane_t6021_progtab ane_t6021_progtab;
 
-static bool unload_on_close = true;
+static bool unload_on_close;
 module_param(unload_on_close, bool, 0644);
 MODULE_PARM_DESC(unload_on_close,
-		 "Unload a firmware program and free its section buffers when the last file that loaded or looked it up closes (default 1). 0 keeps every program loaded until reboot, the behaviour before unload existed");
+		 "1: unload a firmware program and free its section buffers when the last file that loaded or looked it up closes. Default 0: keep every program loaded until reboot, the behaviour before unload existed. The unload failed on its first run on an M2 (the first terminate-process command aborted) and left the device quarantined until reboot, so it is off");
 
 static struct ane_t6021_prog *ane_t6021_prog_find(const u8 *digest)
 {
@@ -1121,12 +1193,21 @@ static int ane_t6021_prog_unload_op(void *ctx, struct ane_t6021_prog *p)
 		*(u32 *)((u8 *)command->cpu + 0x08) = cpu_to_le32(p->prog_id);
 		*(u32 *)((u8 *)command->cpu + 0x0c) = cpu_to_le32(p->proc_id);
 		ret = ane_rtclient_command(ane, command, 0x10, CSNE_CMD_TERMINATE_PROCESS, 1, 3000);
-		if (ret)
+		if (!ret)
+			ret = ane_rtclient_malloc_settle(ane, 10);	/* the FREE of the l2 spill buffers lands after the acknowledgement */
+		if (ret) {
+			atomic_set(&ane_t6021_quarantined, 1);
 			return ret;
+		}
 	}
 	memset(command->cpu, 0, SZ_16K);
 	*(u32 *)((u8 *)command->cpu + 0x08) = cpu_to_le32(p->prog_id);
-	return ane_rtclient_command(ane, command, 0x0c, CSNE_CMD_DESTROY_PROGRAM, 1, 3000);
+	ret = ane_rtclient_command(ane, command, 0x0c, CSNE_CMD_DESTROY_PROGRAM, 1, 3000);
+	if (!ret)
+		ret = ane_rtclient_malloc_settle(ane, 10);
+	if (ret)
+		atomic_set(&ane_t6021_quarantined, 1);
+	return ret;
 }
 
 /* The firmware dropped the program: give its section buffers back. A BO that no other loaded program uses stops being a firmware BO (an io
@@ -2583,7 +2664,7 @@ static int ane_rtclient_probe_inner(struct platform_device *pdev,
 			 * for fw MALLOC replies only. */
 			if (ane_rtclient_legacy_alloc(ane, SZ_16K) == 0)
 				ane->cmd_buf =
-					&ane->legacy_buffers[ane->legacy_allocated - 1];
+					ane->legacy_last;
 			else
 				cfg_err = -ENOMEM;
 		}

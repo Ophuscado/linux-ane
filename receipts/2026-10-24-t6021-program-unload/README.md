@@ -29,3 +29,19 @@ So the acknowledged unload of a program is 0x203 for every process of it, then 0
 ## Not proven
 
 The firmware unmaps the section buffers when the program image is destroyed. That edge, from 0x36adc to the unmap call at 0x4746c (strings "Unmap genericSection failed ...", 0xbaeee), goes through virtual calls built at run time, so it is not visible statically. The driver therefore treats the buffers as free only after both commands were acknowledged, and a board run has to confirm that no later fault follows.
+
+## The free request (found by the first board run)
+
+The first run of the unload on a 14-inch M2 failed at the first 0x203. The driver returned -95 (EOPNOTSUPP) from its own check of the firmware's shared-memory ring. The firmware did not return it. A decode of the same image explains it (selene 13v5, sha256 a9c4b771294a6b115624d9480a6248d0899a1681a575e865070b87a3248427bc).
+
+- When 0x203 drains the L2 spill buffer pool, the firmware calls CSharedMemory::Free (0x21658). It is reached from freeUnusedL2SpillBufferPool (0x42164) inside TerminateProcess (0x41a24).
+- Free unmaps the buffer on the firmware side and posts one slot on the SHAREDMALLOC ring. The header is the IOVA it gives back (bit 0 clear, not 0). Size and mode are 0. The slot writer is at 0x2580c and the send at 0x21780.
+- The acknowledgement of 0x203 is already written by then. The request lands while the host still waits for the command.
+- The firmware waits for the host's answer with no timeout (semaphore wait at 0x2178c). It holds its shared-memory lock and the program manager lock meanwhile.
+- With no answer, 0x203 looks finished on the wire and the program manager stays wedged. The answer is the one a MALLOC gets: body words 0, header 1, doorbell bit 5.
+- The driver took the slot for a malformed MALLOC and aborted. That is why the program stayed held and the device was quarantined.
+- Any pool shrink in the firmware can post the same request. It is not limited to 0x203.
+
+The driver now answers it. `ane_rtclient_malloc_service` classifies every ring slot with `ane_t6021_mring_classify` and answers a FREE without allocating. A host test covers the classifier (`tools/test_t6021_mring.c`). The ring is served before each command is sent, while the driver waits, and for 10 ms of quiet after 0x203 and after 0x201. The driver matches the buffer the firmware gave back to its table entry and frees it once the answer is out.
+
+Proven by the decode: the slot shape, the wait, the lock span and the call chain. Inferred: that the doorbell write on the firmware side is the interrupt the host sees. Also inferred: that the SHAREDMALLOC channel is the ring the driver already uses (checked against the firmware-built table at every boot). Not run: any device. `unload_on_close` stays 0 until the proof passes twice on an M2.

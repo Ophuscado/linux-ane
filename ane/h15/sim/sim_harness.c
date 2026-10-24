@@ -232,6 +232,10 @@ static void reset_all(void)
 	run_wait_ms = 300;
 	sim_write_hook = NULL;
 	sim_read_hook = NULL;
+	sim_write64_hook = NULL;
+	confirm_rtkit = false;
+	rtkit_wait_ms = 2000;
+	rtkit_stop = 1;
 	fw_path = NULL;
 }
 
@@ -1171,6 +1175,7 @@ static int neg_pd_eacces_alone(void)
  */
 void (*sim_write_hook)(u64 pa, u32 v);
 u32 (*sim_read_hook)(u64 pa, u32 v);
+void (*sim_write64_hook)(u64 pa, u64 v);
 
 #define DM_RUN 0x10u
 #define DM_STOPPED 0x2u
@@ -1775,6 +1780,294 @@ static int neg_map(void)
 	return fails;
 }
 
+/* ---- stage 6 (confirm_run=1 confirm_rtkit=1): the RTKit session over the wrapper mailbox ----
+ *
+ * Firmware model: RUN queues a HELLO (versions 11..12); the host's HELLO reply queues two endpoint-map messages
+ * (endpoints 0 and 1, then 0x20 with the last flag); STARTEP of endpoint 1 queues a crash-log buffer request (endpoint 1,
+ * never answered) and the IOP power ON acknowledgement; the host's AP power ON is acknowledged; STARTEP of 0x20 queues
+ * an application message (never answered); AP QUIESCED/OFF and IOP SLEEP/OFF are acknowledged. The I2A words and the
+ * RECV registers are derived from the queue; RECV1 is pop on read.
+ */
+struct fwmsg { u64 m0, m1; };
+static struct fwmsg fq[64];
+static int fq_n;
+static u64 fw_pend0;
+static u64 sent0[64], sent1[64];
+static int n_sent, fw_ep1, fw_ep20;
+static struct {
+	bool silent, no_ap_ack, no_iop_ack, flood, a2i_full, no_epmap, quirk_ver;
+} fwo;
+
+#define RT(t) ((u64)(t) << 52)
+
+static void fw_regs(void)
+{
+	const struct ane_h15_soc *s = dm_soc;
+
+	eng_set(s, s->mbox + 0x114, fq_n ? 0x1 : DM_EMPTY_WORD);
+	eng_set(s, s->mbox + 0x830, fq_n ? (u32)fq[0].m0 : 0);
+	eng_set(s, s->mbox + 0x834, fq_n ? (u32)(fq[0].m0 >> 32) : 0);
+	eng_set(s, s->mbox + 0x838, fq_n ? (u32)fq[0].m1 : 0);
+	eng_set(s, s->mbox + 0x83c, fq_n ? (u32)(fq[0].m1 >> 32) : 0);
+}
+
+static void fw_push(u64 m0, u64 m1)
+{
+	if (fq_n < 64)
+		fq[fq_n++] = (struct fwmsg){ m0, m1 };
+	fw_regs();
+}
+
+static void fw_host_msg(u64 m0, u64 m1)
+{
+	unsigned int type = (m0 >> 52) & 0xff, ep, i;
+
+	if (n_sent < 64) {
+		sent0[n_sent] = m0;
+		sent1[n_sent] = m1;
+	}
+	n_sent++;
+	if (type == 2 && !fwo.no_epmap) {
+		fw_push(RT(8) | 0x3, 0);
+		fw_push(RT(8) | (1ULL << 32) | 1 | (1ULL << 51), 0);
+		if (fwo.flood)
+			for (i = 0; i < 30; i++)
+				fw_push(RT(8) | (2ULL << 32) | 2, 0);
+	} else if (type == 5) {
+		ep = (m0 >> 32) & 0xff;
+		if (ep == 1) {
+			fw_ep1++;
+			fw_push(RT(1) | 0x23c000, 1);		/* crash log buffer request on endpoint 1 */
+			fw_push(RT(7) | 0x20, 0);		/* IOP power state ON acknowledged */
+		} else if (ep == 0x20) {
+			fw_ep20++;
+			fw_push(RT(1) | (12ULL << 16) | 11, 0x20);	/* an application endpoint message that looks like a HELLO: must stay unanswered */
+		}
+	} else if (type == 0xb && !fwo.no_ap_ack) {
+		fw_push(RT(0xb) | (m0 & 0xffff), 0);
+	} else if (type == 6 && !fwo.no_iop_ack) {
+		fw_push(RT(7) | (m0 & 0xffff), 0);
+	}
+}
+
+static void rt_write(u64 pa, u32 v)
+{
+	const struct ane_h15_soc *s = dm_soc;
+	bool run = pa == s->engine_pa + s->cpu_control && (v & DM_RUN) && !dm_nostart;
+
+	dm_write(pa, v);
+	if (run) {
+		if (fwo.a2i_full)
+			eng_set(s, s->mbox + 0x110, 0x10000);
+		if (!fwo.silent)
+			fw_push(RT(1) | ((u64)(fwo.quirk_ver ? 14 : 12) << 16) | (fwo.quirk_ver ? 13 : 11), 0);
+	}
+}
+
+static void rt_write64(u64 pa, u64 v)
+{
+	const struct ane_h15_soc *s = dm_soc;
+
+	if (pa == s->engine_pa + s->mbox + 0x800)
+		fw_pend0 = v;
+	else if (pa == s->engine_pa + s->mbox + 0x808)
+		fw_host_msg(fw_pend0, v);
+}
+
+static u32 rt_read(u64 pa, u32 v)
+{
+	const struct ane_h15_soc *s = dm_soc;
+
+	if (pa == s->engine_pa + s->mbox + 0x838 && fq_n) {	/* pop on the read of RECV1 */
+		int i;
+
+		for (i = 1; i < fq_n; i++)
+			fq[i - 1] = fq[i];
+		fq_n--;
+		fw_regs();
+	}
+	return v;
+}
+
+static void rt_setup(const struct ane_h15_soc *s, const char *compat)
+{
+	run_setup(s, compat, 0);
+	stage = "rtkit";
+	confirm_rtkit = true;
+	fq_n = n_sent = fw_ep1 = fw_ep20 = 0;
+	memset(&fwo, 0, sizeof(fwo));
+	sim_write_hook = rt_write;
+	sim_write64_hook = rt_write64;
+	sim_read_hook = rt_read;
+}
+
+static int mbox_writes(const struct ane_h15_soc *s)
+{
+	return events_in(s->engine_pa + s->mbox + 0x800, 0x10, 1);
+}
+
+static void pos_rtkit_case(const char *tag, unsigned int stop, const u64 *want, int n_want, int map)
+{
+	const struct ane_h15_soc *s = &ane_t6030_soc;
+	unsigned int rstage;
+	char verdict[32], reason[128], name[160];
+	u32 w[8];
+	int ret, first, i, ok, cw;
+
+	if (map) {
+		map_setup(s, "apple,t6030-ane");
+		stage = "rtkit";
+		confirm_rtkit = true;
+		fq_n = n_sent = fw_ep1 = fw_ep20 = 0;
+		memset(&fwo, 0, sizeof(fwo));
+		sim_write_hook = rt_write;
+		sim_write64_hook = rt_write64;
+		sim_read_hook = rt_read;
+	} else {
+		rt_setup(s, "apple,t6030-ane");
+	}
+	rtkit_stop = stop;
+	ret = probe_now();
+	snprintf(name, sizeof(name), "%s: probe 0, RESULT stage=6 PASS rtkit-session-and-shutdown", tag);
+	chk(ret == 0 && parse_result(&rstage, verdict, sizeof(verdict), reason, sizeof(reason)) &&
+	    rstage == 6 && !strcmp(verdict, "PASS") && !strcmp(reason, "rtkit-session-and-shutdown"), name);
+	ok = n_sent == n_want;
+	for (i = 0; ok && i < n_want; i++)
+		ok = sent0[i] == want[i] && sent1[i] == 0;
+	snprintf(name, sizeof(name), "%s: the host sent exactly these %d management messages, SEND1 always 0", tag, n_want);
+	chk(ok, name);
+	cw = run_writes(s, w, 8, &first);
+	snprintf(name, sizeof(name), "%s: every engine write is CPU_CONTROL [0x10, 0] or a send register (SEND0 then SEND1), nothing else", tag);
+	{
+		int cpu = events_in(s->engine_pa + s->cpu_control, 4, 1), mb = mbox_writes(s);
+
+		chk(cpu == 2 && mb == 2 * n_want && cw == cpu + mb && events_in(0, ~0ULL, 1) == cw && sim_bus_faults == 0 &&
+		    eng_get(s, s->cpu_control) == 0, name);
+	}
+	snprintf(name, sizeof(name), "%s: the crash-log request and the application message were not answered", tag);
+	chk(fw_ep1 == 1 && fw_ep20 == 1 && n_sent == n_want, name);
+	snprintf(name, sizeof(name), "%s: first mailbox write comes after the RUN write; core stopped; claim released", tag);
+	{
+		int run_idx = -1, mb_idx = -1;
+
+		for (i = 0; i < sim_n_events && i < SIM_MAX_EVENTS; i++) {
+			if (!sim_events[i].write)
+				continue;
+			if (run_idx < 0 && sim_events[i].pa == s->engine_pa + s->cpu_control)
+				run_idx = i;
+			if (mb_idx < 0 && sim_events[i].pa == s->engine_pa + s->mbox + 0x800)
+				mb_idx = i;
+		}
+		chk(run_idx >= 0 && mb_idx > run_idx && (eng_get(s, s->cpu_status) & DM_STOPPED) && sim_pm_get == 1 && sim_pm_put == 1 &&
+		    sim_module_gets == 0, name);
+	}
+	ane_h15_remove(&pdev);
+}
+
+static void pos_rtkit(void)
+{
+	const u64 base[] = {
+		RT(2) | (12ULL << 16) | 12,			/* HELLO reply */
+		RT(8) | 1,					/* map reply, base 0, more */
+		RT(8) | (1ULL << 32) | (1ULL << 51),		/* map reply, base 1, last */
+		RT(5) | (1ULL << 32) | 2,			/* STARTEP 1 */
+		RT(0xb) | 0x20,				/* AP power ON */
+		RT(5) | (0x20ULL << 32) | 2,			/* STARTEP 0x20 */
+		RT(0xb) | 0x10,				/* AP QUIESCED */
+		RT(6) | 0x01,				/* IOP SLEEP */
+	};
+	u64 off[8];
+
+	memcpy(off, base, sizeof(off));
+	off[6] = RT(0xb);				/* AP OFF */
+	off[7] = RT(6);					/* IOP OFF */
+	pos_rtkit_case("S1 rtkit_stop=1 (QUIESCED, SLEEP)", 1, base, 8, 0);
+	pos_rtkit_case("S2 rtkit_stop=2 (OFF, OFF)", 2, off, 8, 0);
+	pos_rtkit_case("S3 with map_fw=1", 1, base, 8, 1);
+}
+
+static void rt_refused(const char *tag, const char *want_verdict, const char *want_reason, int want_ret_nonzero, bool no_mbox, bool no_events)
+{
+	const struct ane_h15_soc *s = &ane_t6030_soc;
+	unsigned int rstage;
+	char verdict[32], reason[128], name[160];
+	int ret = probe_now();
+
+	snprintf(name, sizeof(name), "%s: RESULT stage=6 %s %s", tag, want_verdict, want_reason);
+	chk((ret != 0) == want_ret_nonzero && parse_result(&rstage, verdict, sizeof(verdict), reason, sizeof(reason)) &&
+	    rstage == 6 && !strcmp(verdict, want_verdict) && strstr(reason, want_reason), name);
+	snprintf(name, sizeof(name), "%s: no mailbox write%s", tag, no_events ? ", zero bus events" : "");
+	chk((!no_mbox || mbox_writes(s) == 0) && (!no_events || sim_n_events == 0) && sim_bus_faults == 0, name);
+}
+
+static int neg_rtkit(void)
+{
+	const struct ane_h15_soc *s = &ane_t6030_soc;
+	u32 w[8];
+	int first, i;
+
+	/* NR1 no confirm_rtkit */
+	rt_setup(s, "apple,t6030-ane");
+	confirm_rtkit = false;
+	rt_refused("NR1 no confirm_rtkit", "REFUSED", "confirm_rtkit=1", 1, true, true);
+	/* NR2 out-of-range budget and stop mode */
+	for (i = 0; i < 3; i++) {
+		rt_setup(s, "apple,t6030-ane");
+		if (i == 0)
+			rtkit_wait_ms = 50;
+		else if (i == 1)
+			rtkit_wait_ms = 20000;
+		else
+			rtkit_stop = 3;
+		rt_refused("NR2 bad rtkit parameter", "REFUSED", "rtkit_wait_ms", 1, true, true);
+	}
+	/* NR3 silent firmware: only CPU_CONTROL is written, the verdict says so */
+	rt_setup(s, "apple,t6030-ane");
+	fwo.silent = true;
+	rtkit_wait_ms = 300;
+	rt_refused("NR3 silent firmware", "FAIL", "rtkit-no-hello", 1, true, false);
+	chk(run_writes(s, w, 8, &first) == 2 && w[0] == 0x10 && w[1] == 0 && sim_pm_put == 1,
+	    "NR3 silent firmware: RUN set and cleared, nothing else written, claim released");
+	/* NR4 firmware versions that exclude 12: no reply */
+	rt_setup(s, "apple,t6030-ane");
+	fwo.quirk_ver = true;
+	rtkit_wait_ms = 300;
+	rt_refused("NR4 HELLO 13..14", "FAIL", "rtkit-session-incomplete", 1, true, false);
+	chk(n_sent == 0, "NR4 HELLO 13..14: not one message sent");
+	/* NR5 A2I mailbox FULL: nothing may be written to the send registers */
+	rt_setup(s, "apple,t6030-ane");
+	fwo.a2i_full = true;
+	rtkit_wait_ms = 300;
+	rt_refused("NR5 A2I FULL", "FAIL", "rtkit-session-incomplete", 1, true, false);
+	/* NR6 the firmware never acknowledges the AP power state: shutdown incomplete, core still stopped */
+	rt_setup(s, "apple,t6030-ane");
+	fwo.no_ap_ack = true;
+	rtkit_wait_ms = 300;
+	rt_refused("NR6 no AP ack", "FAIL", "rtkit-session-incomplete", 1, false, false);
+	/* NR7 no IOP ack at shutdown */
+	rt_setup(s, "apple,t6030-ane");
+	fwo.no_iop_ack = true;
+	rt_refused("NR7 no IOP ack", "FAIL", "rtkit-shutdown-incomplete", 1, false, false);
+	chk(eng_get(s, s->cpu_control) == 0 && (eng_get(s, s->cpu_status) & DM_STOPPED), "NR7 no IOP ack: RUN cleared and the core stopped regardless");
+	/* NR8 an endpoint-map flood: the send cap holds */
+	rt_setup(s, "apple,t6030-ane");
+	fwo.flood = true;
+	rtkit_wait_ms = 500;
+	probe_now();
+	chk(n_sent <= 16 + 2 && mbox_writes(s) <= 2 * (16 + 2), "NR8 map flood: at most 16 messages in the start phase and the shutdown budget");
+	/* NR9 a stuck core after a complete session: kept, pinned, no PASS */
+	rt_setup(s, "apple,t6030-ane");
+	dm_stuck = true;
+	rt_refused("NR9 stuck core", "FAIL", "core-not-stopped", 0, false, false);
+	chk(sim_module_gets == 1 && sim_pm_put == 0, "NR9 stuck core: module pinned, power claim kept");
+	/* NR10 stage 5 never writes the mailbox, with the same firmware model */
+	rt_setup(s, "apple,t6030-ane");
+	stage = "run";
+	probe_now();
+	chk(mbox_writes(s) == 0 && n_sent == 0, "NR10 stage 5 on a talking firmware: zero mailbox writes");
+	return fails;
+}
+
 int main(int argc, char **argv)
 {
 	const char *mode = argc > 1 ? argv[1] : "pos";
@@ -1791,6 +2084,7 @@ int main(int argc, char **argv)
 		pos_run();
 		pos_dart();
 		pos_map();
+		pos_rtkit();
 		printf("%s\n", fails ? "SIM-TEST: FAILED"
 				     : "SIM-TEST: all positive controls PASS");
 	} else if (!strcmp(mode, "neg-ps-stuck")) {
@@ -1833,6 +2127,9 @@ int main(int argc, char **argv)
 	} else if (!strcmp(mode, "neg-pd-eacces-alone")) {
 		printf("sim-h15 negative control: -EACCES with zero or one domain\n");
 		fails = neg_pd_eacces_alone();
+	} else if (!strcmp(mode, "neg-rtkit")) {
+		printf("sim-h15 negative control: stage 6 refusals, a silent or odd firmware, the stuck core\n");
+		fails = neg_rtkit();
 	} else if (!strcmp(mode, "neg-map")) {
 		printf("sim-h15 negative control: stage 5 map_fw refusals, undo on each failure, the stuck core\n");
 		fails = neg_map();
@@ -1844,7 +2141,7 @@ int main(int argc, char **argv)
 		fails = neg_run();
 	} else {
 		fprintf(stderr,
-			"usage: sim_h15 [pos|neg-run|neg-dart|neg-map|neg-ps-stuck|neg-wrong-stage|neg-truncated-dt|neg-rpm-fail|neg-pd-attach-fail|neg-pd-link-fail|neg-pd-rpm-err|neg-pd-eacces-alone|neg-read-ps-stuck|neg-read-window|neg-read-forbidden]\n");
+			"usage: sim_h15 [pos|neg-run|neg-dart|neg-map|neg-rtkit|neg-ps-stuck|neg-wrong-stage|neg-truncated-dt|neg-rpm-fail|neg-pd-attach-fail|neg-pd-link-fail|neg-pd-rpm-err|neg-pd-eacces-alone|neg-read-ps-stuck|neg-read-window|neg-read-forbidden]\n");
 		return 2;
 	}
 	return fails ? 1 : 0;
