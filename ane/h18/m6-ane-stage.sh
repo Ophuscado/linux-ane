@@ -3,7 +3,7 @@
 # m6-ane-stage.sh: run ONE ane_h18 stage on the M6 (T8152), as root, and collect the log.
 #   m6-ane-stage.sh <1|2|3> <boot-id prefix> [GO [state [slots [mbox [ctrl]]]]]
 #   m6-ane-stage.sh 4 <boot-id prefix> GO [state [slots [wait_ms [dart [hello [scratch]]]]]]
-#   m6-ane-stage.sh 5 <boot-id prefix> GO [state [slots [wait_ms [dart [hello [scratch [handshake [chan]]]]]]]]   (chan 0 to 3)
+#   m6-ane-stage.sh 5 <boot-id prefix> GO [state [slots [wait_ms [dart [hello [scratch [handshake [chan]]]]]]]]   (chan 0 to 4)
 # Step 1 = stage dt (no MMIO), step 2 = stage psd (read-only PSD slots 30 and 31), step 3 = stage power with
 # confirm_power=1 (requests PSD state <state> on the first <slots> slots, default 1 = slot 30 only, then reads CPU_STATUS,
 # ASC_STATUS and IORVBAR; mbox=1 also reads the Postoffice status words of three candidate channels, ctrl=1 also reads CPU_CONTROL).
@@ -22,6 +22,8 @@
 # surfaces and the init block, writes SCRATCH0, SCRATCH1 and the wake word, and waits for the firmware's table address. It WRITES the SCRATCH words.
 # chan=1 (needs handshake=1) then checks the table, hands the host-to-firmware rings to the host, writes READY to SCRATCH3 and waits for the firmware to clear it.
 # chan=2 also sends PRINT_ENABLE and CONFIG_GET on the IO ring (it WRITES ring slots and the doorbell page). chan=3 sends START and RESOURCE_INFO_GET as well.
+# chan=4 also loads the program file $WORK/ane_h18_prog.bin (pinned by sha256 below, copied to /lib/firmware) and runs the program on the IO ring: LOAD_PROGRAM,
+# CREATE_PROCESS, PROCEDURE_CALL, then TERMINATE_PROCESS and DESTROY_PROGRAM. The core runs the firmware's own handling of a program: a refusal is logged, a hang costs a reboot.
 # All of them write; a hang or reset is possible.
 # The state defaults to 1: the AppleT8152PMGR kext decode in the lab receipts reads "on" as request 1 (or 2) for these slots,
 # and names 1 as the first experiment. 0 is the value proven for the ATC USB slot 71 and GPU slot 3, 2 is the GPU ASC value.
@@ -37,14 +39,17 @@
 set -u
 
 if [ "${M6_ANE_TEST:-}" != 1 ]; then
-  for v in WORK KO KO_SHA256 WANT_UNAME UNAME_R BOOT_ID_FILE DT_NODE INSMOD RMMOD DMESG LSMOD; do
+  for v in WORK KO KO_SHA256 PROG PROG_SHA256 FWDIR WANT_UNAME UNAME_R BOOT_ID_FILE DT_NODE INSMOD RMMOD DMESG LSMOD; do
     if [ -n "${!v+x}" ]; then echo "m6-ane-stage: REFUSED: $v is set in the environment" >&2; exit 2; fi
   done
 fi
 
 WORK=${WORK:-/var/tmp/m6-ane}
 KO=${KO:-$WORK/ane_h18.ko}
-KO_SHA256=${KO_SHA256:-bc6e0db1193b85c9cd67421ed27674317743b9881df8ce770d98874af0fe82c5}
+KO_SHA256=${KO_SHA256:-7d75f262b69d3bc6be99a26aaea914e01b2ae27a165bd9034453d0a109e40d13}
+PROG=${PROG:-$WORK/ane_h18_prog.bin}
+PROG_SHA256=${PROG_SHA256:-dcd6c5b87e92458e855031c70772121963ceb463cea08e212170ffa4bc2d3bfc}
+FWDIR=${FWDIR:-/lib/firmware}
 WANT_UNAME=${WANT_UNAME:-7.1.12-aurora-m6usb-ARCH}
 UNAME_R=${UNAME_R:-$(uname -r)}
 BOOT_ID_FILE=${BOOT_ID_FILE:-/proc/sys/kernel/random/boot_id}
@@ -79,7 +84,7 @@ if [ "$step" = 4 ]; then
   [ "$wait_ms" -ge 10 ] && [ "$wait_ms" -le 2000 ] || die "wait_ms must be 10 to 2000"
   case "$scratch" in 0|1) ;; *) die "scratch must be 0 or 1" ;; esac
   case "$handshake" in 0|1) ;; *) die "handshake must be 0 or 1" ;; esac
-  case "$chan" in 0|1|2|3) ;; *) die "chan must be 0 to 3" ;; esac
+  case "$chan" in 0|1|2|3|4) ;; *) die "chan must be 0 to 4" ;; esac
   [ "$chan" = 0 ] || [ "$handshake" = 1 ] || die "chan=1 or 2 needs handshake=1"
   if [ "$handshake" = 1 ]; then
     [ "$fw" = 1 ] && [ "$scratch" = 1 ] && { [ "$hello" = 3 ] || [ "$hello" = 4 ]; } || die "handshake=1 needs step 5, scratch=1 and hello 3 or 4"
@@ -100,6 +105,11 @@ case "$(tr -d '-' < "$BOOT_ID_FILE")" in "$bid"*) ;; *) die "boot id $boot does 
 [ "$(tr -d '\0' < "$DT_NODE/compatible")" = "apple,t8152-ane" ] || die "ANE node compatible is not apple,t8152-ane"
 [ -f "$KO" ] || die "no module at $KO"
 [ "$(sha256sum "$KO" | cut -c1-64)" = "$KO_SHA256" ] || die "module sha256 is not the pinned $KO_SHA256"
+if [ "$step" = 4 ] && [ "$chan" = 4 ]; then
+  [ -f "$PROG" ] || die "no program file at $PROG"
+  [ "$(sha256sum "$PROG" | cut -c1-64)" = "$PROG_SHA256" ] || die "program file sha256 is not the pinned $PROG_SHA256"
+  [ -d "$FWDIR" ] && [ -w "$FWDIR" ] || die "$FWDIR is not a writable directory"
+fi
 if $LSMOD | grep -q '^ane_h18 '; then die "ane_h18 is already loaded; rmmod it and reboot if step 3 ran"; fi
 mkdir -p "$WORK"
 [ ! -e "$WORK/step4-run-$boot" ] || die "step 4 already ran on boot $boot: reboot before any ANE step, the core may still be running"
@@ -138,13 +148,19 @@ case "$step" in
      [ "$handshake" = 1 ] && args="$args handshake=1"
      [ "$chan" -ge 1 ] && args="$args hs_chan=1"
      [ "$chan" -ge 2 ] && args="$args hs_cmds=1"
-     [ "$chan" = 3 ] && args="$args hs_start=1"
+     [ "$chan" -ge 3 ] && args="$args hs_start=1"
+     [ "$chan" = 4 ] && args="$args hs_prog=1"
      [ "$hello" = 0 ] || args="$args rtkit_hello=1"
      [ "$hello" -ge 2 ] && args="$args rtkit_start=1"
      [ "$hello" = 3 ] && args="$args rtkit_stop=1"
      [ "$hello" = 4 ] && args="$args rtkit_stop=2"
      : > "$WORK/step4-run-$boot" ;;
 esac
+if [ "$step" = 4 ] && [ "$chan" = 4 ]; then
+  cp "$PROG" "$FWDIR/ane_h18_prog.bin" && sync || die "cannot install the program file into $FWDIR"
+  [ "$(sha256sum "$FWDIR/ane_h18_prog.bin" | cut -c1-64)" = "$PROG_SHA256" ] || die "the installed program file does not match the pin"
+  echo "program file $PROG_SHA256 installed as $FWDIR/ane_h18_prog.bin" | tee -a "$run/header.txt"
+fi
 case "$step" in 1) want_stage=dt ;; 2) want_stage=psd ;; 3) want_stage=power ;; 4) want_stage=boot ;; esac
 n0=$($DMESG 2>&1 | grep -c 'ane_h18 RESULT')
 echo "insmod $KO $args (RESULT lines already in the kernel log: $n0)" | tee -a "$run/header.txt"

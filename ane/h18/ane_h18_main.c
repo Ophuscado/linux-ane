@@ -31,6 +31,7 @@
 #include <linux/device.h>
 #include <linux/err.h>
 #include <linux/errno.h>
+#include <linux/firmware.h>
 #include <linux/io.h>
 #include <linux/iommu.h>
 #include <linux/pm_runtime.h>
@@ -119,6 +120,14 @@ static bool hs_start;
 module_param(hs_start, bool, 0444);
 MODULE_PARM_DESC(hs_start, "Stage=boot with hs_cmds=1: send the commands in the kext's order, PRINT_ENABLE, START, CONFIG_GET, RESOURCE_INFO_GET, and log the RESOURCE_INFO_GET reply. START starts the firmware's services and can bring more memory requests. Default off: PRINT_ENABLE and CONFIG_GET only.");
 
+static bool hs_prog;
+module_param(hs_prog, bool, 0444);
+MODULE_PARM_DESC(hs_prog, "Stage=boot with hs_start=1: load the program file prog_fw (made by ane-prog-pack from an ANEC), LOAD_PROGRAM, CREATE_PROCESS and PROCEDURE_CALL on the IO ring with the T6021 wire format, wait for the IO_T2H events, then TERMINATE_PROCESS and DESTROY_PROGRAM. The file is checked and the buffers are allocated before the first command. Default off.");
+
+static char *prog_fw = "ane_h18_prog.bin";
+module_param(prog_fw, charp, 0444);
+MODULE_PARM_DESC(prog_fw, "hs_prog=1: the program file name under /lib/firmware. Default ane_h18_prog.bin.");
+
 static bool map_fw;
 module_param(map_fw, bool, 0444);
 MODULE_PARM_DESC(map_fw, "Stage=boot: before RUN, attach the ANE to its DART through the iommu API and map the two preloaded firmware segments at their IOVAs. Needs power-domains and iommus in the node. Default off.");
@@ -190,6 +199,14 @@ struct ane_h18 {
 	u32 rtk_ap_state, rtk_iop_state;	/* the states the shutdown asked for */
 	bool psd_on[ANE_H18_NPSD];
 	bool fw_started;
+	/* hs_prog: the validated program file and the buffers made from it, freed with the surfaces after the core stopped */
+	const struct firmware *prog_blob;
+	struct ane_h18_pdesc {
+		unsigned int nsec, nio;
+		struct { u32 id; u64 size, off; } sec[ANE_H18_PROG_MAX_SECS];
+		struct { u32 id, dir; u64 size, doff, dsize; } io[ANE_H18_PROG_MAX_IO];
+	} pd;
+	struct ane_h18_hs_buf pg_sec[ANE_H18_PROG_MAX_SECS], pg_io[ANE_H18_PROG_MAX_IO];
 };
 
 static void ane_h18_result(struct ane_h18 *ane, const char *stg, const char *verdict, const char *reason)
@@ -286,6 +303,7 @@ static void ane_h18_unmap(struct ane_h18 *ane)
 	if (ane->mbox) { iounmap(ane->mbox); ane->mbox = NULL; }
 	if (ane->dart) { iounmap(ane->dart); ane->dart = NULL; }
 	if (ane->scratch) { iounmap(ane->scratch); ane->scratch = NULL; }
+	if (ane->prog_blob) { release_firmware(ane->prog_blob); ane->prog_blob = NULL; }
 	if (ane->doorbell) { iounmap(ane->doorbell); ane->doorbell = NULL; }
 	if (ane->ipi_pending) { iounmap(ane->ipi_pending); ane->ipi_pending = NULL; }
 	if (ane->ipi_ack) { iounmap(ane->ipi_ack); ane->ipi_ack = NULL; }
@@ -698,6 +716,20 @@ static void ane_h18_hs_free(struct ane_h18 *ane)
 	ane->hs_mal_n = 0;
 	ane->mal_ring = NULL;
 	memset(ane->ch_rings, 0, sizeof(ane->ch_rings));
+	for (i = 0; i < ANE_H18_PROG_MAX_SECS; i++)
+		if (ane->pg_sec[i].va) {
+			dma_free_coherent(ane->dev, ane->pg_sec[i].size, ane->pg_sec[i].va, ane->pg_sec[i].iova);
+			ane->pg_sec[i].va = NULL;
+		}
+	for (i = 0; i < ANE_H18_PROG_MAX_IO; i++)
+		if (ane->pg_io[i].va) {
+			dma_free_coherent(ane->dev, ane->pg_io[i].size, ane->pg_io[i].va, ane->pg_io[i].iova);
+			ane->pg_io[i].va = NULL;
+		}
+	if (ane->prog_blob) {
+		release_firmware(ane->prog_blob);
+		ane->prog_blob = NULL;
+	}
 }
 
 /* One zeroed surface from the DMA API, in the default domain the firmware segments are mapped in. It must not overlap a firmware segment. */
@@ -778,7 +810,7 @@ static int ane_h18_chan_poll(struct ane_h18 *ane, unsigned int t, u64 *digest, u
 
 /* One command on the IO ring: the command block (id at +4, optional u32 argument at +8), slot header = its DMA address, doorbell BIT(bit), then wait for the
  * firmware to give the slot back (header | 1) with a zero acknowledgement at +6. Returns the block in *blk for the reply. */
-static int ane_h18_cmd(struct ane_h18 *ane, struct ane_h18_ring *io, u16 op, u32 len, bool arg_set, u32 arg, u8 **blk)
+static int ane_h18_cmd_body(struct ane_h18 *ane, struct ane_h18_ring *io, u16 op, u32 len, bool arg_set, u32 arg, const u8 *body, u32 body_len, u8 **blk)
 {
 	u64 *slot = io->base + io->cursor * 8, hdr, dma = ane->hs_cmd.iova;
 	u8 *cmd = ane->hs_cmd.va;
@@ -793,10 +825,16 @@ static int ane_h18_cmd(struct ane_h18 *ane, struct ane_h18_ring *io, u16 op, u32
 		dev_err(ane->dev, "ane_h18 cmd %#x: IO slot %u is not host owned (%#llx)\n", op, io->cursor, READ_ONCE(slot[0]));
 		return -EBUSY;
 	}
-	memset(cmd, 0, ANE_H18_CMD_BLOCK);
+	if (len > ane->hs_cmd.size || body_len > len || (body_len && len - body_len < 8)) {
+		dev_err(ane->dev, "ane_h18 cmd %#x: length %#x does not fit the block (%#zx)\n", op, len, ane->hs_cmd.size);
+		return -EINVAL;
+	}
+	memset(cmd, 0, ane->hs_cmd.size);
 	memcpy(cmd + 4, &op, 2);
 	if (arg_set)
 		memcpy(cmd + 8, &arg, 4);
+	if (body_len)
+		memcpy(cmd + len - body_len, body, body_len);
 	WRITE_ONCE(slot[1], len);
 	WRITE_ONCE(slot[2], len);
 	dma_wmb();
@@ -821,6 +859,11 @@ static int ane_h18_cmd(struct ane_h18 *ane, struct ane_h18_ring *io, u16 op, u32
 	}
 	dev_err(ane->dev, "ane_h18 cmd %#x: no answer within %ums (header %#llx)\n", op, hs_wait_ms, READ_ONCE(slot[0]));
 	return -ETIMEDOUT;
+}
+
+static int ane_h18_cmd(struct ane_h18 *ane, struct ane_h18_ring *io, u16 op, u32 len, bool arg_set, u32 arg, u8 **blk)
+{
+	return ane_h18_cmd_body(ane, io, op, len, arg_set, arg, NULL, 0, blk);
 }
 
 /* Answer the entry of the SHAREDMALLOC ring at the cursor, if the firmware posted one. 1 = answered, 0 = nothing, negative = refused (the firmware then waits). */
@@ -1001,6 +1044,368 @@ static void ane_h18_chan_snapshot(struct ane_h18 *ane, const char *when, bool fu
 	}
 }
 
+
+/* The program file (ane-prog-pack), little endian:
+ *   +0x00 u32 magic 'ANEP', u32 version 1, u32 nsec (1 to 9), u32 nio (1 to 8), u64 file size, u64 reserved
+ *   +0x20 nsec records of 0x20 bytes: u32 section id (1 to 9, unique), u32 0, u64 size, u64 offset (16 byte aligned), u64 0
+ *   then  nio records of 0x20 bytes: u32 buffer id (unique), u32 direction (0 input, 1 output, 2 scratch), u64 size, u64 data offset, u64 data size (0 = zero filled)
+ * Every size and offset is checked against the file and the limits before anything is allocated. Returns 0 or -EINVAL with *why set. */
+static int ane_h18_prog_parse(const u8 *d, size_t n, struct ane_h18_pdesc *p, const char **why)
+{
+	u32 magic, version, nsec, nio, i, j;
+	u64 fsize, total = 0;
+	size_t pos;
+
+	memset(p, 0, sizeof(*p));
+	if (n < 0x20) {
+		*why = "file shorter than its header";
+		return -EINVAL;
+	}
+	memcpy(&magic, d, 4);
+	memcpy(&version, d + 4, 4);
+	memcpy(&nsec, d + 8, 4);
+	memcpy(&nio, d + 12, 4);
+	memcpy(&fsize, d + 16, 8);
+	if (magic != ANE_H18_PROG_MAGIC || version != ANE_H18_PROG_VERSION) {
+		*why = "not an ANEP version 1 file";
+		return -EINVAL;
+	}
+	if (fsize != n) {
+		*why = "the size in the header is not the file size";
+		return -EINVAL;
+	}
+	if (!nsec || nsec > ANE_H18_PROG_MAX_SECS || !nio || nio > ANE_H18_PROG_MAX_IO) {
+		*why = "section or buffer count out of range";
+		return -EINVAL;
+	}
+	pos = 0x20 + (size_t)(nsec + nio) * 0x20;
+	if (pos > n) {
+		*why = "the record tables do not fit in the file";
+		return -EINVAL;
+	}
+	p->nsec = nsec;
+	p->nio = nio;
+	for (i = 0; i < nsec; i++) {
+		const u8 *r = d + 0x20 + (size_t)i * 0x20;
+		u64 size, off;
+		u32 id;
+
+		memcpy(&id, r, 4);
+		memcpy(&size, r + 8, 8);
+		memcpy(&off, r + 16, 8);
+		if (id < 1 || id > ANE_H18_PROG_MAX_SECS || !size || size > ANE_H18_PROG_MAX_BUF || off % 16 || off < pos || off > n || size > n - off) {
+			*why = "a section record is out of range";
+			return -EINVAL;
+		}
+		for (j = 0; j < i; j++)
+			if (p->sec[j].id == id) {
+				*why = "two sections with the same id";
+				return -EINVAL;
+			}
+		p->sec[i].id = id;
+		p->sec[i].size = size;
+		p->sec[i].off = off;
+		total += size;
+	}
+	for (i = 0; i < nio; i++) {
+		const u8 *r = d + 0x20 + ((size_t)nsec + i) * 0x20;
+		u64 size, doff, dsize;
+		u32 id, dir;
+
+		memcpy(&id, r, 4);
+		memcpy(&dir, r + 4, 4);
+		memcpy(&size, r + 8, 8);
+		memcpy(&doff, r + 16, 8);
+		memcpy(&dsize, r + 24, 8);
+		if (dir > 2 || !size || size > ANE_H18_PROG_MAX_BUF || dsize > size || (dsize && (doff > n || dsize > n - doff))) {
+			*why = "a buffer record is out of range";
+			return -EINVAL;
+		}
+		for (j = 0; j < i; j++)
+			if (p->io[j].id == id) {
+				*why = "two buffers with the same id";
+				return -EINVAL;
+			}
+		p->io[i].id = id;
+		p->io[i].dir = dir;
+		p->io[i].size = size;
+		p->io[i].doff = doff;
+		p->io[i].dsize = dsize;
+		total += size;
+	}
+	if (total > ANE_H18_PROG_MAX_BYTES) {
+		*why = "the buffers together are over the limit";
+		return -EINVAL;
+	}
+	return 0;
+}
+
+/* Log the first `n` bytes of a reply or event, 16 bytes a line. */
+static void ane_h18_prog_dump(struct ane_h18 *ane, const char *what, const u8 *p, unsigned int n)
+{
+	unsigned int k;
+
+	for (k = 0; k < n; k += 16) {
+		u32 q[4] = { 0 };
+
+		memcpy(q, p + k, n - k < 16 ? n - k : 16);
+		dev_info(ane->dev, "ane_h18 prog: %s +%#x: %08x %08x %08x %08x\n", what, k, q[0], q[1], q[2], q[3]);
+	}
+}
+
+/* The CPU address of `len` bytes at a firmware address inside one of the buffers the firmware was given, or NULL. */
+static const u8 *ane_h18_prog_cpu(const struct ane_h18 *ane, u64 a, size_t len)
+{
+	const struct ane_h18_hs_buf *b[3] = { &ane->hs_pool, &ane->hs_ipc, &ane->hs_heap };
+	unsigned int i;
+
+	for (i = 0; i < ANE_H18_MAL_MAX_BUFS && i < ane->hs_mal_n; i++)
+		if (ane->hs_mal[i].va && a >= ane->hs_mal[i].iova && a - ane->hs_mal[i].iova + len <= ane->hs_mal[i].size)
+			return (u8 *)ane->hs_mal[i].va + (a - ane->hs_mal[i].iova);
+	for (i = 0; i < 3; i++)
+		if (b[i]->va && a >= b[i]->iova && a - b[i]->iova + len <= b[i]->size)
+			return (u8 *)b[i]->va + (a - b[i]->iova);
+	return NULL;
+}
+
+/* Give every firmware-owned slot of the IO_T2H ring back (header | 1, doorbell BIT(ring bit)), as the T6021 driver does, and log the event each one points to
+ * (0x28 bytes: u32 sequence, u32 0x300, u64 cookie, u32 program, u32 process, u32 0, u32 state; two per call, state 0 and then 1 when the procedure finished).
+ * Returns the number of events taken and sets *finished when an event of our cookie had state 1. Nothing is written unless the firmware posted a slot. */
+static unsigned int ane_h18_prog_t2h(struct ane_h18 *ane, unsigned int *cursor, bool *finished)
+{
+	const struct ane_h18_ring_copy *r = NULL;
+	unsigned int i, n = 0;
+
+	for (i = 0; i < ANE_H18_CH_COUNT; i++)
+		if (ane->ch_rings[i].base && ane->ch_rings[i].type == 1 && !strcmp(ane->ch_names[i], "IO_T2H"))
+			r = &ane->ch_rings[i];
+	if (!r)
+		return 0;
+	while (n < r->slots) {
+		u64 *slot = r->base + (size_t)*cursor * 8, hdr = READ_ONCE(slot[0]), len = READ_ONCE(slot[1]);
+		const u8 *ev;
+
+		if ((hdr & 1) || !(hdr | len))	/* host owned (given back) or never written: the firmware posts a slot by writing its event address with bit 0 clear */
+			break;
+		dma_rmb();
+		dev_info(ane->dev, "ane_h18 prog: IO_T2H slot %u header=%#llx len=%#llx\n", *cursor, hdr, len);
+		ev = len >= 0x20 && len <= 0x1000 ? ane_h18_prog_cpu(ane, hdr, len) : NULL;
+		if (ev) {
+			u64 cookie;
+			u32 state;
+
+			ane_h18_prog_dump(ane, "event", ev, len < 0x40 ? len : 0x40);
+			memcpy(&cookie, ev + 8, 8);
+			memcpy(&state, ev + 0x1c, 4);
+			if (cookie == ANE_H18_PROG_COOKIE && state == 1)
+				*finished = true;
+		} else {
+			dev_warn(ane->dev, "ane_h18 prog: the event address %#llx is not in a buffer the firmware was given, slot given back unread\n", hdr);
+		}
+		WRITE_ONCE(slot[0], hdr | 1);
+		dma_wmb();
+		dev_crit(ane->dev, "ane_h18 write doorbell BIT(%u) pa=%#llx to give IO_T2H slot %u back\n", r->bit, ane->soc->engine_pa + ANE_H18_DOORBELL_OFF, *cursor);
+		writel(BIT(r->bit), ane->doorbell);
+		*cursor = (*cursor + 1) % r->slots;
+		n++;
+	}
+	return n;
+}
+
+/* Keep answering the firmware for `ms` ms (memory requests, T2H events). */
+static void ane_h18_prog_settle(struct ane_h18 *ane, unsigned int ms, unsigned int *t2h_cursor)
+{
+	u64 digest = 0;
+	u32 last_pend = 0;
+	bool fin = false;
+	unsigned int k;
+
+	ane->snap_left = ANE_H18_SNAP_PER_WAIT;
+	for (k = 0; k < ms; k++) {
+		usleep_range(1000, 1100);
+		ane_h18_chan_poll(ane, k + 1, &digest, &last_pend);
+		ane_h18_prog_t2h(ane, t2h_cursor, &fin);
+	}
+}
+
+/* One program on the IO ring after START: allocate the section and buffer surfaces from the file, LOAD_PROGRAM, CREATE_PROCESS, PROCEDURE_CALL, wait for the
+ * finish event, then TERMINATE_PROCESS and DESTROY_PROGRAM. Every reply is logged whole. A command the firmware refuses (acknowledgement not zero) or does not
+ * answer ends the sequence; after an unanswered command nothing is unloaded and no buffer is freed before the core stopped (the module frees them with the
+ * surfaces). The wire format is the T6021's, as the decode of the T8152 kext gives the same command ids and sizes. Whether the T8152 firmware accepts it is
+ * what the first run shows. */
+static int ane_h18_prog_run(struct ane_h18 *ane, struct ane_h18_ring *io)
+{
+	const struct ane_h18_pdesc *p = &ane->pd;
+	const u8 *fw = ane->prog_blob->data;
+	u8 cmd[ANE_H18_PROG_BLOCK], *blk;
+	unsigned int i, t2h = 0, got = 0, waited;
+	u32 prog = ~0u, proc = ~0u, w;
+	bool fin = false, created = false, loaded = false;
+	int ret;
+
+	for (i = 0; i < p->nsec; i++) {
+		struct ane_h18_hs_buf *b = &ane->pg_sec[i];
+		char nm[24];
+
+		snprintf(nm, sizeof(nm), "PROG sec %u", p->sec[i].id);
+		ret = ane_h18_hs_alloc(ane, b, ALIGN(p->sec[i].size, SZ_16K), nm);
+		if (ret)
+			return ret;
+		memcpy(b->va, fw + p->sec[i].off, p->sec[i].size);
+	}
+	for (i = 0; i < p->nio; i++) {
+		struct ane_h18_hs_buf *b = &ane->pg_io[i];
+		char nm[24];
+
+		snprintf(nm, sizeof(nm), "PROG buf %u", p->io[i].id);
+		ret = ane_h18_hs_alloc(ane, b, ALIGN(p->io[i].size, SZ_16K), nm);
+		if (ret)
+			return ret;
+		if (p->io[i].dsize)
+			memcpy(b->va, fw + p->io[i].doff, p->io[i].dsize);
+	}
+	wmb();
+
+	/* LOAD_PROGRAM */
+	memset(cmd, 0, sizeof(cmd));
+	for (i = 0; i < p->nsec; i++) {
+		u8 *r = cmd + 8 + (size_t)(p->sec[i].id - 1) * 0x30;
+		u64 iova = ane->pg_sec[i].iova, size = p->sec[i].size;
+		u32 one = 1, id = p->sec[i].id;
+
+		memcpy(r, &one, 4);
+		memcpy(r + 4, &id, 4);
+		memcpy(r + 0x18, &iova, 8);
+		memcpy(r + 0x20, &size, 8);
+	}
+	w = ~0u;
+	memcpy(cmd + 0x1b8, &w, 4);
+	ret = ane_h18_cmd_body(ane, io, ANE_H18_CSNE_LOAD_PROGRAM, 0x1c0, false, 0, cmd + 8, 0x1c0 - 8, &blk);
+	ane_h18_prog_dump(ane, "LOAD_PROGRAM reply", (u8 *)ane->hs_cmd.va, 0x40);
+	if (ret)
+		goto fail;
+	memcpy(&prog, (u8 *)ane->hs_cmd.va + 0x1b8, 4);
+	dev_info(ane->dev, "ane_h18 prog: LOAD_PROGRAM program id %#x\n", prog);
+	if (prog == ~0u) {
+		dev_err(ane->dev, "ane_h18 prog: the firmware did not write a program id\n");
+		ret = -EPROTO;
+		goto fail;
+	}
+	loaded = true;
+	ane_h18_prog_settle(ane, 20, &t2h);
+
+	/* CREATE_PROCESS */
+	memset(cmd, 0, sizeof(cmd));
+	memcpy(cmd + 8, &prog, 4);
+	w = ~0u;
+	memcpy(cmd + 0xc, &w, 4);
+	ret = ane_h18_cmd_body(ane, io, ANE_H18_CSNE_CREATE_PROCESS, 0x10, false, 0, cmd + 8, 8, &blk);
+	ane_h18_prog_dump(ane, "CREATE_PROCESS reply", (u8 *)ane->hs_cmd.va, 0x20);
+	if (ret)
+		goto fail;
+	memcpy(&proc, (u8 *)ane->hs_cmd.va + 0xc, 4);
+	dev_info(ane->dev, "ane_h18 prog: CREATE_PROCESS process id %#x\n", proc);
+	if (proc == ~0u) {
+		ret = -EPROTO;
+		goto fail;
+	}
+	created = true;
+	ane_h18_prog_settle(ane, 20, &t2h);
+
+	/* PROCEDURE_CALL: one 0x30 byte element per buffer at +0x60 (flags 1, buffer id +4, type +8, iova +0x18, size +0x20) */
+	memset(cmd, 0, sizeof(cmd));
+	{
+		u32 prio = ANE_H18_PROG_PRIORITY, cnt = p->nio;
+		u64 cookie = ANE_H18_PROG_COOKIE;
+
+		memcpy(cmd + 8, &prog, 4);
+		memcpy(cmd + 0xc, &proc, 4);
+		memcpy(cmd + 0x18, &prio, 4);
+		memcpy(cmd + 0x20, &cookie, 8);
+		memcpy(cmd + 0x28, &cnt, 4);
+	}
+	for (i = 0; i < p->nio; i++) {
+		u8 *r = cmd + 0x60 + (size_t)i * 0x30;
+		u64 iova = ane->pg_io[i].iova, size = p->io[i].size;
+		u32 one = 1, id = p->io[i].id, type = p->io[i].dir == 1 ? 1 : 0;
+
+		memcpy(r, &one, 4);
+		memcpy(r + 4, &id, 4);
+		memcpy(r + 8, &type, 4);
+		memcpy(r + 0x18, &iova, 8);
+		memcpy(r + 0x20, &size, 8);
+	}
+	wmb();
+	ret = ane_h18_cmd_body(ane, io, ANE_H18_CSNE_PROCEDURE_CALL, 0x60 + p->nio * 0x30, false, 0, cmd + 8, 0x60 + p->nio * 0x30 - 8, &blk);
+	ane_h18_prog_dump(ane, "PROCEDURE_CALL reply", (u8 *)ane->hs_cmd.va, 0x40);
+	if (ret)
+		goto fail;
+	for (waited = 0; waited < hs_wait_ms && !fin; waited++) {
+		u64 digest = 0;
+		u32 last_pend = 0;
+
+		usleep_range(1000, 1100);
+		ane_h18_chan_poll(ane, waited + 1, &digest, &last_pend);
+		got += ane_h18_prog_t2h(ane, &t2h, &fin);
+	}
+	dev_info(ane->dev, "ane_h18 prog: PROCEDURE_CALL %s after %u ms, %u IO_T2H events\n", fin ? "finished" : "gave no finish event", waited, got);
+	for (i = 0; i < p->nio; i++) {
+		const u32 *o = ane->pg_io[i].va;
+		unsigned int k, nz = 0, words = p->io[i].size / 4;
+
+		for (k = 0; k < words; k++)
+			nz += o[k] != 0;
+		dev_info(ane->dev, "ane_h18 prog: buffer %u (%s, %#llx bytes): %u nonzero words, first %08x %08x %08x %08x\n", p->io[i].id, p->io[i].dir == 1 ? "output" : "input", p->io[i].size, nz,
+			 words > 0 ? o[0] : 0, words > 1 ? o[1] : 0, words > 2 ? o[2] : 0, words > 3 ? o[3] : 0);
+	}
+	if (!fin) {
+		ret = -ETIMEDOUT;
+		goto fail;
+	}
+	ret = 0;
+
+	/* unload: process first, then the program, each followed by 10 ms of answering */
+	memset(cmd, 0, sizeof(cmd));
+	memcpy(cmd + 8, &prog, 4);
+	memcpy(cmd + 0xc, &proc, 4);
+	i = ane_h18_cmd_body(ane, io, ANE_H18_CSNE_TERMINATE_PROCESS, 0x10, false, 0, cmd + 8, 8, &blk);
+	ane_h18_prog_dump(ane, "TERMINATE_PROCESS reply", (u8 *)ane->hs_cmd.va, 0x20);
+	created = false;
+	if (i) {
+		ret = i;
+		goto fail_nounload;
+	}
+	ane_h18_prog_settle(ane, 10, &t2h);
+	goto destroy;
+fail:
+	if (created) {
+		/* the call failed or was not answered: only unload when the firmware still answers commands, which a timeout says it does not */
+		if (ret == -ETIMEDOUT)
+			goto fail_nounload;
+		memset(cmd, 0, sizeof(cmd));
+		memcpy(cmd + 8, &prog, 4);
+		memcpy(cmd + 0xc, &proc, 4);
+		(void)ane_h18_cmd_body(ane, io, ANE_H18_CSNE_TERMINATE_PROCESS, 0x10, false, 0, cmd + 8, 8, &blk);
+		ane_h18_prog_dump(ane, "TERMINATE_PROCESS reply", (u8 *)ane->hs_cmd.va, 0x20);
+		ane_h18_prog_settle(ane, 10, &t2h);
+	}
+destroy:
+	if (loaded) {
+		int r2;
+
+		memset(cmd, 0, sizeof(cmd));
+		memcpy(cmd + 8, &prog, 4);
+		r2 = ane_h18_cmd_body(ane, io, ANE_H18_CSNE_DESTROY_PROGRAM, 0x0c, false, 0, cmd + 8, 4, &blk);
+		ane_h18_prog_dump(ane, "DESTROY_PROGRAM reply", (u8 *)ane->hs_cmd.va, 0x20);
+		ane_h18_prog_settle(ane, 10, &t2h);
+		if (!ret)
+			ret = r2;
+	}
+fail_nounload:
+	dev_info(ane->dev, "ane_h18 prog: sequence result %d\n", ret);
+	return ret == -EPROTO || ret == -ETIMEDOUT || ret == -EBUSY ? -EIO : ret;
+}
+
 /* The kext's step after it created its channels: the host owns every H2T slot, writes READY to SCRATCH3 and waits until the firmware clears it. With hs_cmds
  * then PRINT_ENABLE and CONFIG_GET. Nothing is written before the whole table checked out. Returns 0 only when every requested step worked. */
 static int ane_h18_chan_step(struct ane_h18 *ane, const struct ane_h18_hs_buf *tb, u64 table)
@@ -1098,9 +1503,9 @@ static int ane_h18_chan_step(struct ane_h18 *ane, const struct ane_h18_hs_buf *t
 	/* The kext takes every command block from the pool surface, the one that holds the init block and that the firmware was told about at block +0x58 and +0x60. */
 	ane->hs_cmd.va = (u8 *)ane->hs_pool.va + ANE_H18_CMD_POOL_OFF;
 	ane->hs_cmd.iova = ane->hs_pool.iova + ANE_H18_CMD_POOL_OFF;
-	ane->hs_cmd.size = ANE_H18_CMD_BLOCK;
+	ane->hs_cmd.size = hs_prog ? ANE_H18_PROG_BLOCK : ANE_H18_CMD_BLOCK;
 	ane->hs_cmd_in_pool = true;
-	dev_info(ane->dev, "ane_h18 hs surface CMD inside POOL at +%#x iova=%#llx size=%#x\n", ANE_H18_CMD_POOL_OFF, (u64)ane->hs_cmd.iova, ANE_H18_CMD_BLOCK);
+	dev_info(ane->dev, "ane_h18 hs surface CMD inside POOL at +%#x iova=%#llx size=%#zx\n", ANE_H18_CMD_POOL_OFF, (u64)ane->hs_cmd.iova, ane->hs_cmd.size);
 	{
 		/* the kext's order: PRINT_ENABLE, START, CONFIG_GET, RESOURCE_INFO_GET (the last two commands only with hs_start) */
 		static const struct { u16 op; u32 len; bool arg; const char *name; bool start_only; } seq[] = {
@@ -1133,6 +1538,13 @@ static int ane_h18_chan_step(struct ane_h18 *ane, const struct ane_h18_hs_buf *t
 					dev_info(ane->dev, "ane_h18 chan: RESOURCE_INFO_GET reply +%#x: %08x %08x %08x %08x\n", k, q[0], q[1], q[2], q[3]);
 				}
 			}
+		}
+	}
+	if (hs_prog) {
+		ret = ane_h18_prog_run(ane, &io);
+		if (ret) {
+			ane_h18_chan_snapshot(ane, "after the failed program", true);
+			return ret;
 		}
 	}
 	{
@@ -1457,9 +1869,31 @@ static int ane_h18_stage_boot(struct ane_h18 *ane)
 		ane_h18_result(ane, "boot", "REFUSED", "rtkit_start=1 needs rtkit_hello=1");
 		return -EINVAL;
 	}
-	if ((hs_chan && !handshake) || (hs_cmds && !hs_chan) || (hs_start && !hs_cmds)) {
-		ane_h18_result(ane, "boot", "REFUSED", "hs_chan=1 needs handshake=1, hs_cmds=1 needs hs_chan=1 and hs_start=1 needs hs_cmds=1");
+	if ((hs_chan && !handshake) || (hs_cmds && !hs_chan) || (hs_start && !hs_cmds) || (hs_prog && !hs_start)) {
+		ane_h18_result(ane, "boot", "REFUSED", "hs_chan=1 needs handshake=1, hs_cmds=1 needs hs_chan=1, hs_start=1 needs hs_cmds=1 and hs_prog=1 needs hs_start=1");
 		return -EINVAL;
+	}
+	if (hs_prog) {
+		const char *why = "";
+
+		if (!prog_fw || !prog_fw[0] || strchr(prog_fw, '/') || strstr(prog_fw, "..")) {
+			ane_h18_result(ane, "boot", "REFUSED", "hs_prog=1 needs prog_fw, a file name without a path");
+			return -EINVAL;
+		}
+		ret = request_firmware(&ane->prog_blob, prog_fw, ane->dev);
+		if (ret) {
+			dev_err(ane->dev, "ane_h18 prog: request_firmware(%s) failed: %d\n", prog_fw, ret);
+			ane->prog_blob = NULL;
+			ane_h18_result(ane, "boot", "REFUSED", "hs_prog=1: the program file could not be loaded");
+			return -ENOENT;
+		}
+		ret = ane_h18_prog_parse(ane->prog_blob->data, ane->prog_blob->size, &ane->pd, &why);
+		if (ret) {
+			dev_err(ane->dev, "ane_h18 prog: %s: %s\n", prog_fw, why);
+			ane_h18_result(ane, "boot", "REFUSED", "hs_prog=1: the program file is not valid");
+			return -EINVAL;
+		}
+		dev_info(ane->dev, "ane_h18 prog: %s is valid: %u sections, %u buffers\n", prog_fw, ane->pd.nsec, ane->pd.nio);
 	}
 	if (handshake && (!map_fw || !rtkit_start || !rtkit_stop || !read_scratch || hs_wait_ms < 10 || hs_wait_ms > 5000 || !hs_cfg_size || hs_cfg_size > 0x10000000)) {
 		ane_h18_result(ane, "boot", "REFUSED", "handshake=1 needs map_fw=1, rtkit_start=1, rtkit_stop=1 or 2, read_scratch=1, hs_wait_ms 10 to 5000, hs_cfg_size 1 to 0x10000000");

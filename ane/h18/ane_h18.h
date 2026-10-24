@@ -110,6 +110,21 @@ static inline enum ane_h18_mal_kind ane_h18_mal_classify(u64 hdr, u64 size, u64 
 #define ANE_H18_CSNE_PRINT_ENABLE	0x04
 #define ANE_H18_CSNE_CONFIG_GET		0x03
 #define ANE_H18_CSNE_START		0x00
+#define ANE_H18_CSNE_LOAD_PROGRAM	0x200	/* the T6021 wire: nine 0x30 byte section records at +8 (flags 1, id +4, iova +0x18, size +0x20), 0x1c0 bytes, the program id comes back at +0x1b8 */
+#define ANE_H18_CSNE_DESTROY_PROGRAM	0x201	/* 0x0c bytes, program id at +8, needs zero processes */
+#define ANE_H18_CSNE_CREATE_PROCESS	0x202	/* 0x10 bytes, program id at +8, the process id comes back at +0xc */
+#define ANE_H18_CSNE_TERMINATE_PROCESS	0x203	/* 0x10 bytes, program id at +8, process id at +0xc */
+#define ANE_H18_CSNE_PROCEDURE_CALL	0x204	/* 0x60 bytes plus one 0x30 byte element per buffer */
+/* hs_prog: the program file (ane-prog-pack) is validated before any write. Limits keep a wrong file from asking for the machine's memory. */
+#define ANE_H18_PROG_BLOCK	0x400	/* command block size with hs_prog: LOAD_PROGRAM is 0x1c0 bytes and a call with 8 buffers 0x1e0 */
+#define ANE_H18_PROG_MAGIC	0x50454e41	/* 'ANEP' */
+#define ANE_H18_PROG_VERSION	1
+#define ANE_H18_PROG_MAX_SECS	9
+#define ANE_H18_PROG_MAX_IO	8
+#define ANE_H18_PROG_MAX_BUF	0x4000000	/* one buffer, 64 MiB */
+#define ANE_H18_PROG_MAX_BYTES	0xc000000	/* all buffers together, 192 MiB */
+#define ANE_H18_PROG_COOKIE	0xADD0	/* the call cookie of the T6021 driver, returned in the IO_T2H events */
+#define ANE_H18_PROG_PRIORITY	2
 #define ANE_H18_CSNE_RESOURCE_INFO_GET	0x22	/* 100 byte command, the kext copies 16 bytes from +0x20 and +0x50 of the reply */
 /* ANE DART (dart,gen3, instance 0): read only liveness words, see ane_h18_read_dart_words(). */
 #define ANE_H18_DART_NREAD	12

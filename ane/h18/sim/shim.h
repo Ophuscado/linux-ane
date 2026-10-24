@@ -131,6 +131,30 @@ struct platform_driver {
 #define module_platform_driver(x) extern char __sim_kmod_noop
 
 #define GFP_KERNEL 0
+#define SZ_16K 0x4000UL
+/* request_firmware: the harness hands out sim_fw_data (sim_fw_size bytes) unless sim_fw_err is set */
+struct firmware { size_t size; const u8 *data; };
+extern const u8 *sim_fw_data;
+extern size_t sim_fw_size;
+extern int sim_fw_err, sim_fw_released, sim_fw_requests;
+static inline int request_firmware(const struct firmware **fw, const char *name, struct device *dev)
+{
+	static struct firmware f;
+
+	(void)name; (void)dev;
+	sim_fw_requests++;
+	if (sim_fw_err)
+		return sim_fw_err;
+	f.size = sim_fw_size;
+	f.data = sim_fw_data;
+	*fw = &f;
+	return 0;
+}
+static inline void release_firmware(const struct firmware *fw)
+{
+	(void)fw;
+	sim_fw_released++;
+}
 #define PAGE_SIZE 0x4000UL
 #define ALIGN(x, a) (((x) + (a) - 1) / (a) * (a))
 #define wmb() do { } while (0)
@@ -144,7 +168,8 @@ struct platform_driver {
 typedef u64 dma_addr_t;
 #define DMA_BIT_MASK(n) ((1ULL << (n)) - 1)
 struct sim_dma { void *va; dma_addr_t iova; size_t size; int live; };
-extern struct sim_dma sim_dma[8];
+#define SIM_NDMA 32
+extern struct sim_dma sim_dma[SIM_NDMA];
 extern int sim_n_dma, sim_dma_fail, sim_dma_mask_bits;
 static inline int dma_set_mask_and_coherent(struct device *d, u64 mask)
 {
@@ -155,7 +180,7 @@ static inline int dma_set_mask_and_coherent(struct device *d, u64 mask)
 static inline void *dma_alloc_coherent(struct device *d, size_t size, dma_addr_t *iova, int gfp)
 {
 	(void)d; (void)gfp;
-	if (sim_dma_fail == sim_n_dma + 1 || sim_n_dma >= 8)
+	if (sim_dma_fail == sim_n_dma + 1 || sim_n_dma >= SIM_NDMA)
 		return NULL;
 	sim_dma[sim_n_dma].va = calloc(1, size);
 	sim_dma[sim_n_dma].iova = 0x3ff00000000ULL - 0x4000000ULL * (sim_n_dma + 1);

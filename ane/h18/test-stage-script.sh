@@ -11,6 +11,9 @@ printf 'apple,t8152-ane\0' > "$T/dt/soc/ane@419600000/compatible"
 echo "0123abcd-4567-89ab-cdef-0123456789ab" > "$T/bootid"
 printf 'module-bytes' > "$T/work/ane_h18.ko"
 KSHA=$(sha256sum "$T/work/ane_h18.ko" | cut -c1-64)
+mkdir -p "$T/fw"
+printf 'program-bytes' > "$T/work/ane_h18_prog.bin"
+PSHA=$(sha256sum "$T/work/ane_h18_prog.bin" | cut -c1-64)
 printf '#!/bin/bash\necho "$@" > "%s/insmod.args"\n[ -n "${FAKE_NOOP:-}" ] && exit 0\necho "[1.0] ane_h18 x: ane_h18 RESULT stage=${FAKE_STAGE:-dt} soc=t8152 verdict=${FAKE_VERDICT:-PASS} reason=fake" >> "%s/dmesg.txt"\n[ -n "${FAKE_NOT6:-}" ] && echo "[1.1] ane_h18 x: ane_h18 psd0 did not return to state 6" >> "%s/dmesg.txt"\nexit 0\n' "$T" "$T" "$T" > "$T/insmod"
 printf '#!/bin/bash\ntrue\n' > "$T/rmmod"
 printf '#!/bin/bash\ncat "%s/dmesg.txt" 2>/dev/null\n' "$T" > "$T/dmesg"
@@ -18,7 +21,7 @@ printf '#!/bin/bash\nif [ -e "%s/loaded" ]; then echo "ane_h18 1 0"; fi\n' "$T" 
 chmod +x "$T"/insmod "$T"/rmmod "$T"/dmesg "$T"/lsmod
 fails=0
 run() {
-  env M6_ANE_TEST=1 WORK="$T/work" KO="$T/work/ane_h18.ko" KO_SHA256="$KSHA" WANT_UNAME=fake-kernel UNAME_R=fake-kernel BOOT_ID_FILE="$T/bootid" DT_NODE="$T/dt/soc/ane@419600000" \
+  env M6_ANE_TEST=1 WORK="$T/work" KO="$T/work/ane_h18.ko" KO_SHA256="$KSHA" PROG="${PROG_TEST:-$T/work/ane_h18_prog.bin}" PROG_SHA256="${PSHA_TEST:-$PSHA}" FWDIR="${FWDIR_TEST:-$T/fw}" WANT_UNAME=fake-kernel UNAME_R=fake-kernel BOOT_ID_FILE="$T/bootid" DT_NODE="$T/dt/soc/ane@419600000" \
     INSMOD="$T/insmod" RMMOD="$T/rmmod" DMESG="$T/dmesg" LSMOD="$T/lsmod" "$@" > "$T/out" 2>&1
 }
 expect() { # name, want rc, command...
@@ -162,7 +165,7 @@ grep -q 'map_fw=1 read_scratch=1 handshake=1 rtkit_hello=1 rtkit_start=1 rtkit_s
 rm -f "$T/work/step4-run-0123abcd"
 sleep 1
 # the chan flag: needs handshake=1
-expect "step 5 with chan=4 refused" 2 bash "$S" 5 0123abcd GO 1 2 800 0 3 1 1 4
+expect "step 5 with chan=5 refused" 2 bash "$S" 5 0123abcd GO 1 2 800 0 3 1 1 5
 sleep 1
 expect "step 5 with chan=1 and handshake=0 refused" 2 bash "$S" 5 0123abcd GO 1 2 800 0 3 1 0 1
 sleep 1
@@ -176,6 +179,19 @@ rm -f "$T/work/step4-run-0123abcd"
 sleep 1
 FAKE_STAGE=boot expect "step 5 with chan=1 passes" 0 bash "$S" 5 0123abcd GO 1 2 800 0 3 1 1 1
 grep -q 'hs_chan=1' "$T/insmod.args" && ! grep -q 'hs_cmds' "$T/insmod.args" && echo "  PASS chan=1 args carry hs_chan only" || { echo "  FAIL chan=1 args"; fails=$((fails + 1)); }
+rm -f "$T/work/step4-run-0123abcd"
+sleep 1
+# chan=4: the program file is pinned, installed into the firmware directory, and hs_prog=1 is passed
+PROG_TEST="$T/work/missing.bin" expect "step 5 with chan=4 and no program file refused" 2 bash "$S" 5 0123abcd GO 1 2 800 0 3 1 1 4
+sleep 1
+PSHA_TEST=0000000000000000000000000000000000000000000000000000000000000000 expect "step 5 with chan=4 and a program file that is not the pinned one refused" 2 bash "$S" 5 0123abcd GO 1 2 800 0 3 1 1 4
+sleep 1
+FWDIR_TEST="$T/nofwdir" expect "step 5 with chan=4 and no firmware directory refused" 2 bash "$S" 5 0123abcd GO 1 2 800 0 3 1 1 4
+sleep 1
+[ ! -e "$T/fw/ane_h18_prog.bin" ] && echo "  PASS a refused chan=4 installs nothing" || { echo "  FAIL refused chan=4 installed a file"; fails=$((fails + 1)); }
+FAKE_STAGE=boot expect "step 5 with chan=4 passes" 0 bash "$S" 5 0123abcd GO 1 2 800 0 3 1 1 4
+grep -q 'hs_chan=1 hs_cmds=1 hs_start=1 hs_prog=1' "$T/insmod.args" && echo "  PASS chan=4 args carry hs_start and hs_prog" || { echo "  FAIL chan=4 args"; fails=$((fails + 1)); }
+[ "$(sha256sum "$T/fw/ane_h18_prog.bin" | cut -c1-64)" = "$PSHA" ] && echo "  PASS chan=4 installed the pinned program file" || { echo "  FAIL chan=4 install"; fails=$((fails + 1)); }
 rm -f "$T/work/step4-run-0123abcd" "$T/dt/soc/ane@419600000/iommus" "$T/dt/soc/ane@419600000/power-domains"
 sleep 1
 # after a step 4 ran, no ANE step of any number may start until a reboot
