@@ -46,6 +46,9 @@ u32 sim_pend_val;
 int sim_ack_writes, sim_cmd_blk_in_pool, sim_posted, sim_term_tick;
 u32 sim_ack_last;
 u32 sim_cmd_ops[16];
+u32 sim_prop[8][3];	/* CH_PROPERTY_WRITE blocks seen: arg at +8, id at +0xc, value at +0x10 */
+int sim_nprops;
+u32 sim_prop_refuse;	/* a property id the modelled firmware refuses (ack 1), 0 = none */
 u32 sim_credits_now = 1;
 int sim_rpm_enabled, sim_rpm_gets, sim_rpm_puts, sim_rpm_get_fail;
 struct sim_iocall sim_iocalls[64];
@@ -480,6 +483,16 @@ void sim_db_react(u32 v)
 				return;
 			memcpy(blk + 6, &ack, 2);
 		}
+		if (op == ANE_H18_CSNE_CH_PROPERTY_WRITE && sim_nprops < 8) {
+			memcpy(sim_prop[sim_nprops], blk + 8, 4);
+			memcpy(sim_prop[sim_nprops] + 1, blk + 0xc, 8);
+			if (sim_prop[sim_nprops][1] == sim_prop_refuse && sim_prop_refuse) {
+				u16 one = 1;
+
+				memcpy(blk + 6, &one, 2);
+			}
+			sim_nprops++;
+		}
 		if (op == ANE_H18_CSNE_RESOURCE_INFO_GET) {
 			u32 a = 0xabcd0020, b = 0xabcd0050;
 
@@ -602,7 +615,9 @@ static void reset_all(void)
 	hs_cfg_size = 0x380000;
 	hs_wait_ms = 50;
 	sim_scr_model = sim_n_dma = sim_dma_fail = sim_default_dom_none = sim_hs_mode = sim_hs_block_ok = sim_hs_wakes = 0;
-	hs_chan = hs_cmds = hs_start = hs_prog = hs_premap = false;
+	hs_chan = hs_cmds = hs_start = hs_prog = hs_premap = hs_props = false;
+	sim_nprops = 0;
+	sim_prop_refuse = 0;
 	dart_inst = 0;
 	premap_second = 0;
 	sim_premapped = sim_pub_wait = sim_prog_mode = sim_prog_n = sim_prog_loaded = sim_prog_created = sim_t2h_back = sim_out_written = sim_t2h_posted = 0;
@@ -1412,7 +1427,7 @@ static void pos_boot(void)
 		int pass, k, w3 = -1, db = -1, nsc3, nh2t, ok;
 		u8 *ipc;
 
-		for (pass = 0; pass < 34; pass++) {
+		for (pass = 0; pass < 37; pass++) {
 			kboot_setup();
 			alias_mbox = true;
 			rtkit_hello = true;
@@ -1460,6 +1475,9 @@ static void pos_boot(void)
 			if (pass == 31) dart_inst = 0x2;
 			if (pass == 32) { read_dart = true; dart_inst = 0x10; }
 			if (pass == 33) { hs_premap = true; sim_prog_mode = 8; }
+			if (pass == 34) hs_props = true;
+			if (pass == 35) { hs_props = true; sim_prop_refuse = 0x10aa; }
+			if (pass == 36) { hs_start = false; hs_prog = false; hs_props = true; }
 			ret = probe_now();
 			ipc = sim_n_dma > 1 ? sim_dma[1].va : NULL;
 			nsc3 = 0;
@@ -1520,6 +1538,16 @@ static void pos_boot(void)
 				if (pass == 29)
 					chk(ret == 0 && ok && sim_prog_n == 6 && sim_prog_ops[0] == 0x20d && sim_prog_ops[1] == 0x200 && !sim_premapped && log_count("PREMAP_BUFFER was refused, going on with LOAD_PROGRAM") == 1,
 					    "PG21 PREMAP_BUFFER refused by the firmware (acknowledgement 3): logged, the program runs anyway");
+				if (pass == 34)
+					chk(ret == 0 && ok && sim_cmds_seen == 14 && sim_cmd_ops[3] == 0x1f && sim_cmd_ops[4] == 0x22 && sim_cmd_ops[5] == 0x1f && sim_cmd_ops[8] == 0x1f && sim_cmd_ops[9] == 0x200 && sim_nprops == 5 &&
+					    sim_prop[0][1] == 0x10a4 && sim_prop[0][2] == 1 && sim_prop[1][1] == 0x10a6 && sim_prop[1][2] == 1 && sim_prop[2][1] == 0xa1 && sim_prop[2][2] == 0 && sim_prop[3][1] == 0x10aa && sim_prop[3][2] == 1 &&
+					    sim_prop[4][1] == 0x1209 && sim_prop[4][2] == 1 && sim_prop[0][0] == 0 && sim_prop[4][0] == 0,
+					    "PR1 hs_props=1: PRINT_ENABLE, START, CONFIG_GET, property 0x10a4, RESOURCE_INFO_GET, properties 0x10a6, 0xa1, 0x10aa, 0x1209 (id at +0xc, value at +0x10), then the program");
+				if (pass == 35)
+					chk(ret == 0 && sim_cmds_seen == 14 && sim_nprops == 5 && log_count("the firmware refused PROPERTY 0x10aa") == 1 && sim_cmd_ops[9] == 0x200,
+					    "PR2 a refused property write is logged and the sequence goes on to the program");
+				if (pass == 36)
+					chk(ret == -EINVAL && result("boot", "REFUSED", "hs_props=1 needs hs_start=1") && writes() == 0, "PR3 hs_props=1 without hs_start=1 is refused before any write");
 				if (pass == 33)
 					chk(ret == -EIO && sim_prog_n == 1 && sim_prog_ops[0] == 0x20d && log_count("PREMAP_BUFFER was refused") == 0 && log_count("sequence result -71") == 1 && live == 0,
 					    "PG23 a malformed PREMAP_BUFFER answer (wrong id) is a protocol FAIL, not a refusal: no LOAD_PROGRAM follows");

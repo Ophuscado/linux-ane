@@ -107,6 +107,7 @@ static inline enum ane_h18_mal_kind ane_h18_mal_classify(u64 hdr, u64 size, u64 
 }
 #define ANE_H18_CMD_BLOCK	0x100	/* the commands here are 12 and 16 bytes, the reply fits in the block too: clear no more of the pool than that */
 #define ANE_H18_CMD_POOL_OFF	0x400	/* the command block lives in the pool surface, 0x100 aligned, as the kext takes every command block from the pool */
+#define ANE_H18_CSNE_CH_PROPERTY_WRITE	0x1f	/* 0x14 bytes: u32 0 at +8, property id at +0xc, u32 value at +0x10 (kext builder 0xfffffe0009363890, kernelcache 26A434) */
 #define ANE_H18_CSNE_PRINT_ENABLE	0x04
 #define ANE_H18_CSNE_CONFIG_GET		0x03
 #define ANE_H18_CSNE_START		0x00
