@@ -274,17 +274,21 @@ static int ane_h18_psd_request(struct ane_h18 *ane, unsigned int i, u32 state)
 	return -ETIMEDOUT;
 }
 
-static void ane_h18_psd_off(struct ane_h18 *ane)
+/* Request state 6 on every slot this module turned on, in reverse order. Returns how many slots did not acknowledge it. */
+static int ane_h18_psd_off(struct ane_h18 *ane)
 {
-	int i;
+	int i, failed = 0;
 
 	for (i = ANE_H18_NPSD - 1; i >= 0; i--) {
 		if (!ane->psd_on[i])
 			continue;
-		if (ane_h18_psd_request(ane, i, ANE_H18_PSD_P6_RAIL))
+		if (ane_h18_psd_request(ane, i, ANE_H18_PSD_P6_RAIL)) {
 			dev_warn(ane->dev, "ane_h18 psd%d did not return to state 6\n", i);
+			failed++;
+		}
 		ane->psd_on[i] = false;
 	}
+	return failed;
 }
 
 static int ane_h18_read(struct ane_h18 *ane, const char *name, void __iomem *base, u64 pa, u32 off, u32 size_win, u32 *v)
@@ -363,8 +367,10 @@ static int ane_h18_stage_power(struct ane_h18 *ane)
 	if (read_mbox)
 		dev_info(ane->dev, "ane_h18 po_status ch%u=%#x ch%u=%#x ch%u=%#x\n", ane_h18_po_chan(s, 0), po[0], ane_h18_po_chan(s, 1),
 			 po[1], ane_h18_po_chan(s, 2), po[2]);
-	if (!keep_on)
-		ane_h18_psd_off(ane);
+	if (!keep_on && ane_h18_psd_off(ane)) {
+		ane_h18_result(ane, "power", "FAIL", "psd-not-returned-to-state-6");
+		return -EIO;
+	}
 	ane_h18_result(ane, "power", "PASS", "psd-acked+asc-read");
 	return 0;
 }
