@@ -45,3 +45,11 @@ The first run of the unload on a 14-inch M2 failed at the first 0x203. The drive
 The driver now answers it. `ane_rtclient_malloc_service` classifies every ring slot with `ane_t6021_mring_classify` and answers a FREE without allocating. A host test covers the classifier (`tools/test_t6021_mring.c`). The ring is served before each command is sent, while the driver waits, and for 10 ms of quiet after 0x203 and after 0x201. The driver matches the buffer the firmware gave back to its table entry and frees it once the answer is out.
 
 Proven by the decode: the slot shape, the wait, the lock span and the call chain. Inferred: that the doorbell write on the firmware side is the interrupt the host sees. Also inferred: that the SHAREDMALLOC channel is the ring the driver already uses (checked against the firmware-built table at every boot). Not run: any device. `unload_on_close` stays 0 until the proof passes twice on an M2.
+
+## Board results on an M2 (three rounds)
+
+- Round 1: the first 0x203 aborted in the driver's own ring check. Cause: the firmware's FREE request, now answered. The device was quarantined and a second session could not open it.
+- Round 2 (free request answered): three decode sessions passed. The fourth and fifth failed in the middle of a LOAD. Cause: the table of firmware buffers kept freed entries. A FREE now releases its entry.
+- Round 3 (both fixes, `unload_on_close=1`, six decode sets as separate processes): every set returned 0 and the logits were byte identical to the first set. The step time stayed within 0.1 percent (0.1592 to 0.1594 s). `bo_total_bytes` after a pool drain was 50.6, 53.3, 53.7, 53.9, 53.9 and 53.9 MB. The table of firmware buffers stayed at 17 slots and 475,136 bytes at every returned buffer, against a limit of 512 MiB. There were no fault lines.
+
+One M2 and one decode workload. A different workload, a different number of programs per session or a firmware that frees in another pattern may behave differently. Not run on an M1 or M1 Max.

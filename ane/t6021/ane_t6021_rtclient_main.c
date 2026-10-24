@@ -1161,10 +1161,10 @@ static int ane_rtclient_command(struct ane_rtclient *ane,
  * ane_t6021_fw_lock. */
 static struct ane_t6021_progtab ane_t6021_progtab;
 
-static bool unload_on_close;
+static bool unload_on_close = true;
 module_param(unload_on_close, bool, 0644);
 MODULE_PARM_DESC(unload_on_close,
-		 "1: unload a firmware program and free its section buffers when the last file that loaded or looked it up closes. Default 0: keep every program loaded until reboot, the behaviour before unload existed. The unload failed on its first run on an M2 (the first terminate-process command aborted) and left the device quarantined until reboot, so it is off");
+		 "Unload a firmware program and free its section buffers when the last file that loaded or looked it up closes (default 1). 0 keeps every program loaded until reboot, the behaviour before unload existed. Six decode sessions in a row passed on an M2 with the default; two earlier runs failed on the firmware's free request and on the table of firmware buffers, both fixed");
 
 static struct ane_t6021_prog *ane_t6021_prog_find(const u8 *digest)
 {
