@@ -70,6 +70,7 @@ jobs:
           python3 tools/test_validate_ane_soc.py
           python3 tools/gen_coverage_table.py --check
           python3 tools/test_ane_constants_table.py
+          python3 tools/test_t6030_dart_overlay.py
 
   overlays:
     runs-on: ubuntu-24.04

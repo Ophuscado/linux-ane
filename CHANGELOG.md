@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `ane/h15/t6030-ane-dart-experimental.dts` now enables the three ANE DART translation instances of the T6030 (0x309800000, 0x309810000, 0x309820000: DARTLLT, DARTBRD, DARTBWR in a J516S's same-boot ADT) and lists all three in the ANE node's `iommus` (stream 0); the aperture window at 0x309804000 stays disabled. Before, only instance 0 was bound, and the first T6030 stage 5 ended with the core leaving STOPPED, no mailbox message and `core-not-stopped`. Whether the other instances matter for that is not known: on the M6 the first message and the whole handshake worked with instance 0 alone, and the instances mattered when the engine ran a program. `tools/test_t6030_dart_overlay.py` (dt-overlays workflow) checks the overlay against the ADT facts and fails on four mutations. The README now says that clearing RUN does not stop a core whose firmware runs (M6 logs), so `core-not-stopped` alone does not say whether the core ran.
+
 - `ane/h15/README-bringup.md` explains how to read the stage 4 DART output: `locked_windows` is bit 0 of PROTECT_LOCK (0x208), not of PROTECT (0x200); a T6030 tester's bank 0 PROTECT and PROTECT_LOCK `0x2` is bit 1, which on the M2 Max protects the aperture at bank base + 0x4000, the window the module skips as a different version. Carried over from the M2, not measured on an M3.
 
 - `ane/h18` names the source of the PREMAP_BUFFER layout (the kernelcache of build 26A434). A malformed answer to PREMAP_BUFFER is a protocol failure now, and only a well formed refusal lets the program stage go on. The stage script asks for `dart=1` only when a DART instance mask is given.
