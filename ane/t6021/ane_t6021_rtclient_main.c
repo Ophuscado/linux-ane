@@ -99,6 +99,7 @@
 #include "ane_t6021.h"
 #include "ane_t6021_boot.h"
 #include "ane_t6021_pool.h"
+#include "ane_t6021_progtab.h"
 
 #include "uapi/drm/ane_accel.h" /* quoted so the in-tree UAPI wins */
 
@@ -255,13 +256,14 @@ struct ane_rtclient {
  * them: a user mapping, or the firmware (see ane_t6021_bo_release). */
 struct ane_t6021_fd {
 	struct list_head bos;
+	struct ane_t6021_fdprogs progs;	/* programs this file loaded or looked up, protected by ane_t6021_fw_lock */
 };
 
 /* Per-file handle counter and every per-fd list against same-fd concurrent
  * ioctls. A BO whose IOVA reached the firmware (fw_ref) never goes back to
- * the kernel: a program section is held until reboot, an io BO is parked
- * for reuse (see ane_t6021_bo_release). Every other BO frees at its last
- * reference.
+ * the kernel: a program section is held while its program is loaded (and for
+ * good if the program's unload fails), an io BO is parked for reuse (see
+ * ane_t6021_bo_release). Every other BO frees at its last reference.
  *
  * Per-BO cap raised 2026-09-30: the 256 KiB Qwen-class matvec weights seen
  * by the H14 compiler are bounded by `reduction * columns * 2`, which
@@ -270,7 +272,7 @@ struct ane_t6021_fd {
  * softmax/reduction with an 8 MiB table. Total BO bytes across all fds are
  * capped separately (bo_total_max_mb) by an atomic counter, enforced at
  * alloc and released when the memory is really freed. Program sections stay
- * held until reboot, and the 38 Qwen programs alone hold about 2.6 GiB.
+ * held while their program is loaded, and the 38 Qwen programs alone hold about 2.6 GiB.
  * A cap of 0 refuses every BO_INIT with -ENOSPC; there is no unlimited
  * value. Every BO also needs IOVA below 4 GiB (32-bit DMA mask), so
  * allocations fail with -ENOMEM near that bound whatever the cap.
@@ -289,6 +291,8 @@ struct ane_t6021_bo {
 	size_t size;
 	bool fw_ref;			/* the firmware received this IOVA */
 	bool fw_program;		/* a loaded program keeps this IOVA */
+	bool fw_io;			/* an EXEC passed this IOVA as an io buffer */
+	u16 prog_refs;			/* loaded programs that use this BO as a section */
 	struct device *dev;
 };
 
@@ -1067,48 +1071,90 @@ static int ane_rtclient_command(struct ane_rtclient *ane,
 
 /* ---- LOAD / CREATE / CALL wrappers ---- */
 
-/* The firmware never frees a program or a process, and its program table
- * holds 256 entries: measured 2026-09-29, the 257th LOAD_PROGRAM on one
- * boot answered with a protocol error and quarantined the device. Two
- * loads of byte-identical sections therefore share one firmware program
- * and one process. The key is SHA-256 over every section's id, size and
- * bytes. PROG_LOOKUP lets any client of this device learn whether such
- * a digest is held and reuse its program identity (EXEC and CREATE
- * always accepted global ids, so this adds no new reach): a same-uid
- * single-tenant lab scope, NOT tenant isolation. Protected by
+/* The firmware's program table holds 256 entries: measured 2026-09-29, the
+ * 257th LOAD_PROGRAM on one boot answered with a protocol error and
+ * quarantined the device. Two loads of byte-identical sections therefore
+ * share one firmware program and one process. The key is SHA-256 over
+ * every section's id, size and bytes. PROG_LOOKUP lets any client of this
+ * device learn whether such a digest is loaded and reuse its program
+ * identity: a same-uid single-tenant lab scope, NOT tenant isolation.
+ *
+ * Each file holds a reference on every program it loaded or looked up
+ * (ane_t6021_progtab.h). EXEC and PROC_CREATE refuse a program the file
+ * holds no reference on, so a program cannot be unloaded under a client.
+ * When the last file closes, the firmware is told to terminate the
+ * program's process and destroy the program (selene 13.5: commands 0x203
+ * and 0x201, see ane_t6021_prog_unload_op), and only after both were
+ * acknowledged are the section buffers given back. Protected by
  * ane_t6021_fw_lock. */
-#define ANE_T6021_MAX_PROGRAMS 250
+static struct ane_t6021_progtab ane_t6021_progtab;
 
-struct ane_t6021_prog {
-	u8 digest[SHA256_DIGEST_SIZE];
-	u32 prog_id;
-	u32 proc_id;		/* U32_MAX until a process exists */
-};
-
-static struct ane_t6021_prog ane_t6021_progs[ANE_T6021_MAX_PROGRAMS];
-static unsigned int ane_t6021_nprogs;
+static bool unload_on_close = true;
+module_param(unload_on_close, bool, 0644);
+MODULE_PARM_DESC(unload_on_close,
+		 "Unload a firmware program and free its section buffers when the last file that loaded or looked it up closes (default 1). 0 keeps every program loaded until reboot, the behaviour before unload existed");
 
 static struct ane_t6021_prog *ane_t6021_prog_find(const u8 *digest)
 {
-	unsigned int i;
-
-	for (i = 0; i < ane_t6021_nprogs; i++)
-		if (!memcmp(ane_t6021_progs[i].digest, digest,
-			    SHA256_DIGEST_SIZE))
-			return &ane_t6021_progs[i];
-	return NULL;
+	return ane_t6021_progtab_find(&ane_t6021_progtab, digest);
 }
 
 static struct ane_t6021_prog *ane_t6021_prog_by_id(u32 prog_id)
 {
-	unsigned int i;
-
-	for (i = 0; i < ane_t6021_nprogs; i++)
-		if (ane_t6021_progs[i].prog_id == prog_id)
-			return &ane_t6021_progs[i];
-	return NULL;
+	return ane_t6021_progtab_by_id(&ane_t6021_progtab, prog_id);
 }
 
+/* Firmware side of an unload: terminate the program's process (0x203), then destroy the program (0x201). The firmware acknowledges both
+ * with a zero status; a program with a process still attached would make it halt, which is why the process goes first. A failure or timeout
+ * leaves the program HELD (and the device quarantined by the command path). Caller holds ane_t6021_fw_lock. */
+static int ane_t6021_prog_unload_op(void *ctx, struct ane_t6021_prog *p)
+{
+	struct ane_rtclient *ane = ctx;
+	struct ane_legacy_buffer *command;
+	int ret;
+
+	if (!ane || !ane->cmd_buf || atomic_read(&ane_t6021_quarantined))
+		return -ENODEV;
+	command = ane->cmd_buf;
+	if (p->proc_id != U32_MAX) {
+		memset(command->cpu, 0, SZ_16K);
+		*(u32 *)((u8 *)command->cpu + 0x08) = cpu_to_le32(p->prog_id);
+		*(u32 *)((u8 *)command->cpu + 0x0c) = cpu_to_le32(p->proc_id);
+		ret = ane_rtclient_command(ane, command, 0x10, CSNE_CMD_TERMINATE_PROCESS, 1, 3000);
+		if (ret)
+			return ret;
+	}
+	memset(command->cpu, 0, SZ_16K);
+	*(u32 *)((u8 *)command->cpu + 0x08) = cpu_to_le32(p->prog_id);
+	return ane_rtclient_command(ane, command, 0x0c, CSNE_CMD_DESTROY_PROGRAM, 1, 3000);
+}
+
+/* The firmware dropped the program: give its section buffers back. A BO that no other loaded program uses stops being a firmware BO (an io
+ * BO flag keeps it one), and the reference the program held goes, so the last put frees or parks it by the usual rule. */
+static void ane_t6021_prog_release_op(void *ctx, struct ane_t6021_prog *p)
+{
+	unsigned int i;
+
+	(void)ctx;
+	mutex_lock(&ane_t6021_bo_lock);
+	for (i = 0; i < ANE_T6021_PROG_SECS; i++) {
+		struct ane_t6021_bo *bo = p->sec[i];
+
+		if (!bo)
+			continue;
+		if (!--bo->prog_refs) {
+			bo->fw_program = false;
+			bo->fw_ref = bo->fw_io;
+		}
+		kref_put(&bo->refcount, ane_t6021_bo_release);
+	}
+	mutex_unlock(&ane_t6021_bo_lock);
+}
+
+static const struct ane_t6021_progtab_ops ane_t6021_progtab_ops = {
+	.unload = ane_t6021_prog_unload_op,
+	.release = ane_t6021_prog_release_op,
+};
 
 /* Build a LOAD_PROGRAM (0x200) message in a kernel-owned buffer. The
  * section bytes live in the BOs the user supplied (section_ptr), the
@@ -1125,6 +1171,7 @@ static int ane_rtclient_load_program(struct ane_rtclient *ane,
 	struct ane_legacy_buffer *command;
 	struct ane_t6021_fd *fd = file->driver_priv;
 	struct ane_t6021_prog *cached;
+	struct ane_t6021_bo *secs[ANE_T6021_PROG_SECS] = { NULL };
 	u8 digest[SHA256_DIGEST_SIZE];
 	size_t binds_size;
 	int ret, i, j;
@@ -1227,11 +1274,15 @@ static int ane_rtclient_load_program(struct ane_rtclient *ane,
 	}
 	cached = ane_t6021_prog_find(digest);
 	if (cached) {
+		if (!ane_t6021_fdprogs_ref(&fd->progs, cached)) {
+			ret = -ENOSPC;
+			goto out;
+		}
 		*prog_id = cached->prog_id;
 		ret = 0;
 		goto out;
 	}
-	if (ane_t6021_nprogs == ANE_T6021_MAX_PROGRAMS) {
+	if (!ane_t6021_progtab_has_room(&ane_t6021_progtab)) {
 		ret = -ENOSPC;
 		goto out;
 	}
@@ -1270,6 +1321,12 @@ static int ane_rtclient_load_program(struct ane_rtclient *ane,
 			 * away, so no kref is needed here. */
 			bo->fw_ref = true;
 			bo->fw_program = true;
+			/* The program keeps its own reference on the section buffer, so it outlives the file that supplied it. It is
+			 * taken here, before the exchange, because the buffer may not go away once the firmware can read it. On any
+			 * failure from here the reference is never given back and the buffer stays held. */
+			kref_get(&bo->refcount);
+			bo->prog_refs++;
+			secs[sections[i].id - 1] = bo;
 			iova = bo->dma + sections[i].offset;
 		} else {
 			bo = NULL;
@@ -1318,11 +1375,20 @@ static int ane_rtclient_load_program(struct ane_rtclient *ane,
 			ret = -EPROTO;
 			goto out;
 		}
-		memcpy(ane_t6021_progs[ane_t6021_nprogs].digest, digest,
-		       SHA256_DIGEST_SIZE);
-		ane_t6021_progs[ane_t6021_nprogs].prog_id = *prog_id;
-		ane_t6021_progs[ane_t6021_nprogs].proc_id = U32_MAX;
-		ane_t6021_nprogs++;
+		{
+			struct ane_t6021_prog *np = ane_t6021_progtab_add(&ane_t6021_progtab, digest, *prog_id);
+			unsigned int k;
+
+			/* has_room was checked before the exchange and the lock is held, so the slot exists */
+			if (WARN_ON(!np)) {
+				ret = -ENOSPC;
+				goto out;
+			}
+			for (k = 0; k < ANE_T6021_PROG_SECS; k++)
+				np->sec[k] = secs[k];
+			if (!ane_t6021_fdprogs_ref(&fd->progs, np))
+				ret = -ENOSPC;
+		}
 	}
 
 out:
@@ -1412,6 +1478,11 @@ static int ane_rtclient_procedure_call(struct ane_rtclient *ane,
 		kfree(ios);
 		return -ENODEV;
 	}
+	if (!ane_t6021_fdprogs_has(&fd->progs, user->prog_id)) {
+		mutex_unlock(&ane_t6021_fw_lock);
+		kfree(ios);
+		return -ENOENT;
+	}
 	memset(command->cpu, 0, SZ_16K);
 	{
 		u8 *cmd = command->cpu;
@@ -1444,6 +1515,7 @@ static int ane_rtclient_procedure_call(struct ane_rtclient *ane,
 			 * Under bo_lock the handle reference cannot go
 			 * away, so no kref is needed here. */
 			bo->fw_ref = true;
+			bo->fw_io = true;
 			iova = bo->dma;
 			mutex_unlock(&ane_t6021_bo_lock);
 			*(u32 *)(cmd + slot_base + 0x00) = cpu_to_le32(1);
@@ -1693,6 +1765,10 @@ static void ane_t6021_postclose(struct drm_device *drm, struct drm_file *file)
 
 	if (!fd)
 		return;
+	/* Drop this file's program references; a program nobody else holds is unloaded now, before the file's own buffers go. */
+	mutex_lock(&ane_t6021_fw_lock);
+	ane_t6021_progtab_fd_close(&ane_t6021_progtab, &fd->progs, unload_on_close, &ane_t6021_progtab_ops, to_ane_t6021_drm(drm)->ane);
+	mutex_unlock(&ane_t6021_fw_lock);
 	mutex_lock(&ane_t6021_bo_lock);
 	list_for_each_entry_safe(bo, tmp, &fd->bos, pool.node)
 		ane_t6021_bo_drop(bo);
@@ -1832,6 +1908,12 @@ static int ane_t6021_prog_lookup_ioctl(struct drm_device *drm, void *data,
 		return -ENODEV;
 	}
 	prog = ane_t6021_prog_find(digest);
+	/* The identity returned here is for this file to use, so the file holds a reference on the program until it closes: the program
+	 * is unloaded when the last such file is gone. */
+	if (prog && !ane_t6021_fdprogs_ref(&((struct ane_t6021_fd *)file->driver_priv)->progs, prog)) {
+		mutex_unlock(&ane_t6021_fw_lock);
+		return -ENOSPC;
+	}
 	args->found_out = prog ? 1 : 0;
 	args->prog_id_out = prog ? prog->prog_id : 0;
 	mutex_unlock(&ane_t6021_fw_lock);
@@ -1851,6 +1933,10 @@ static int ane_t6021_proc_create_ioctl(struct drm_device *drm, void *data,
 		return -ETIMEDOUT;
 	}
 	args->proc_id_out = 0;
+	if (!file->driver_priv || !ane_t6021_fdprogs_has(&((struct ane_t6021_fd *)file->driver_priv)->progs, args->prog_id)) {
+		mutex_unlock(&ane_t6021_fw_lock);
+		return -ENOENT;
+	}
 	ret = ane_rtclient_create_process(adrm->ane, args->prog_id,
 					  &args->proc_id_out);
 	mutex_unlock(&ane_t6021_fw_lock);

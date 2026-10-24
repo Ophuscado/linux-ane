@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- `ane_t6021` unloads a firmware program when the last file that loaded or looked it up closes. It terminates the program's process (command 0x203, programId at +8 and processId at +0xc) and destroys the program (0x201, programId at +8). It frees the section buffers only after both were acknowledged. The commands come from a decode of the selene 13.5 firmware. Command 0x201 halts the firmware if a process is still attached, so the process always goes first. Each file now holds a reference on the programs it loaded or looked up. `PROG_LOOKUP` takes that reference, and `EXEC` and `PROC_CREATE` refuse a program the file holds no reference on (`ENOENT`). A failed unload leaves the program held for good, and `unload_on_close=0` keeps the old behaviour. The program table and the unload rule live in `ane_t6021_progtab.h`, with a host unit test, `tools/test_t6021_progtab`. Nothing has run on a device yet.
+
 ## 0.4.10 (2026-10-23)
 
 - `ane_h15` attaches each of the ANE's five power domains by id and links them with `RPM_ACTIVE` device links, the pattern `ane_t6021` uses (#173). Before, only the driver core's automatic attach ran, which handles one domain, so stage 1 stopped at `pm_runtime_get_sync` with `-EACCES`. The contributor reports stage 0 and stage 1 passing on a 16-inch M3 Pro (T6030). We did not run it on hardware.

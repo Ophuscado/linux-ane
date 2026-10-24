@@ -6,5 +6,7 @@
 #include <stdbool.h>
 
 typedef signed long long s64;
+typedef unsigned char u8;
+typedef unsigned int u32;
 
 #endif /* ANE_POOL_SHIM_LINUX_TYPES_H */
