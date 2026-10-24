@@ -72,7 +72,7 @@ template is `ane/h16/`.
   (the DAPF): on that chip the same `0x2` stood at Linux boot, writes to the aperture were dropped,
   and the Linux DART driver programmed the translation registers of that bank without trouble. The fourth
   window is that aperture at the same address. This is carried over from the M2 by analogy; it was not
-  measured on an M3. Stage 5 writes no PROTECT, PROTECT_LOCK or aperture register, and stops only if bit 0 is set. On the M6 (T8152) the same kind of read (PR 183 and 185)
+  measured on an M3. Stage 5 writes no PROTECT, PROTECT_LOCK or aperture register. It prints locked_windows and does not act on it. On the M6 (T8152) the same kind of read (PR 183 and 185)
   found every ENABLE_STREAMS word 0: iBoot left no stream enabled.
 - `stage=5` or `stage=run`: refused without `confirm_run=1`, with
   `run_wait_ms` outside 10 to 2000 (default 300), and on any SoC row whose
