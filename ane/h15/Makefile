@@ -138,6 +138,30 @@ sim-mutation-read-nowindow:
 sim-mutation-read-noconfirm:
 	$(call pd_mutant,read-noconfirm,s/if (!confirm_read) {/if (0 \/* NEG: confirm_read ignored *\/) {/,NEG: confirm_read ignored,pos)
 
+# Stage 4 (confirm_run=1): the only stage with writes. neg-run = refusals + the stuck core.
+sim-negative-run: sim/sim_h15
+	./sim/sim_h15 neg-run
+
+# stage 4 runs without confirm_run=1
+sim-mutation-run-noconfirm:
+	$(call pd_mutant,run-noconfirm,s/if (!confirm_run) {/if (0 \/* NEG: confirm_run ignored *\/) {/,NEG: confirm_run ignored,neg-run)
+
+# stage 4 starts a core whose RVBAR is not the measured one
+sim-mutation-run-norvbar:
+	$(call pd_mutant,run-norvbar,s/(((u64)rv_hi << 32) | rv_lo) != s->rvbar_expect ||/0 \/* NEG: rvbar check skipped *\/ ||/,NEG: rvbar check skipped,neg-run)
+
+# stage 4 starts a core with stale mailbox state
+sim-mutation-run-nomboxcheck:
+	$(call pd_mutant,run-nomboxcheck,s/!(a2i \& ANE_H15_MBOX_EMPTY) || !(i2a \& ANE_H15_MBOX_EMPTY)/0 \/* NEG: mailbox check skipped *\//,NEG: mailbox check skipped,neg-run)
+
+# stage 4 never clears RUN again
+sim-mutation-run-noclear:
+	$(call pd_mutant,run-noclear,s/ctrl \& ~ANE_H15_CPU_RUN$(COMMA) "clear RUN"/ctrl$(COMMA) "clear RUN"/,ctrl$(COMMA) "clear RUN",pos)
+
+# stage 4 reports a core that never stopped as stopped (remove() would then unmap under it)
+sim-mutation-run-nostopcheck:
+	$(call pd_mutant,run-nostopcheck,s/if (!stopped) {/if (0 \/* NEG: stuck core accepted *\/) {/,NEG: stuck core accepted,neg-run)
+
 sim-negative-nopsguard:
 	rm -rf /tmp/ane_h15-nopsguard && mkdir -p /tmp/ane_h15-nopsguard
 	cp -r sim /tmp/ane_h15-nopsguard/sim
@@ -197,5 +221,8 @@ clean:
 	sim-negative-read-ps-stuck sim-negative-read-forbidden sim-negative-read-window \
 	sim-mutation-read-nowindow \
 	sim-mutation-read-noguard sim-mutation-read-nocheck \
-	sim-mutation-read-noconfirm sim-mutation-nofillrefusal clean
+	sim-mutation-read-noconfirm sim-mutation-nofillrefusal \
+	sim-negative-run sim-mutation-run-noconfirm sim-mutation-run-norvbar \
+	sim-mutation-run-nomboxcheck sim-mutation-run-noclear \
+	sim-mutation-run-nostopcheck clean
 endif

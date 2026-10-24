@@ -117,6 +117,9 @@ struct ane_h15_soc {
 	u32 cpu_control;	/* wrapper+0x44 (engine-relative) */
 	u32 cpu_status;		/* wrapper+0x48 */
 	u32 rvbar;		/* engine+0x1050000 */
+	u64 rvbar_expect;	/* IORVBAR a stage 2 run READ on this SoC (iBoot's preload); 0 = no
+				 * measurement yet, stage=run refuses. T6030: Chris Kearney, PR 175,
+				 * J516S, 0x0000010000000001 (RVBAR_LO 0x1, RVBAR_HI 0x100). */
 	u32 mbox;		/* wrapper+0x8000 (INFERENCE on H15) */
 	u64 engine_pa;		/* engine window base address */
 	u32 engine_size;	/* engine window size */

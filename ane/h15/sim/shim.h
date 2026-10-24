@@ -35,6 +35,7 @@ typedef int64_t s64;
 #define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
 #define FIELD_GET(m, v) (((v) & (m)) >> (__builtin_ctzll(m)))
 #define FIELD_PREP(m, v) ((((u64)(v)) << (__builtin_ctzll(m))) & (m))
+#define BIT(n) (1UL << (n))
 
 /* ---- annotations ---- */
 #define __iomem
@@ -220,18 +221,31 @@ static inline void sim_event(int write, u64 pa, u32 val)
 	sim_n_events++;
 }
 
+extern void (*sim_write_hook)(u64 pa, u32 v);
+extern u32 (*sim_read_hook)(u64 pa, u32 v);
+
 static inline u32 bus_read(u64 pa)
 {
 	struct sim_region *r = sim_region_find(pa);
+	u32 v;
 
 	if (!r) {
 		sim_bus_faults++;
 		sim_event(0, pa, 0);
 		return 0xdeadbeef;
 	}
-	sim_event(0, pa, r->mem[(pa - r->pa) >> 2]);
-	return r->mem[(pa - r->pa) >> 2];
+	v = r->mem[(pa - r->pa) >> 2];
+	if (sim_read_hook)
+		v = sim_read_hook(pa, v);
+	sim_event(0, pa, v);
+	return v;
 }
+
+/* Optional device model: the harness sets these for the stage 4 tests only. A write hook runs after the
+ * store (so it can change other registers, e.g. CPU_STATUS after a RUN write); a read hook sees the value
+ * the bus would return and may change it and the model state (e.g. popping a mailbox message). */
+extern void (*sim_write_hook)(u64 pa, u32 v);
+extern u32 (*sim_read_hook)(u64 pa, u32 v);
 
 static inline void bus_write(u64 pa, u32 v)
 {
@@ -244,6 +258,8 @@ static inline void bus_write(u64 pa, u32 v)
 	}
 	sim_event(1, pa, v);
 	r->mem[(pa - r->pa) >> 2] = v;
+	if (sim_write_hook)
+		sim_write_hook(pa, v);
 }
 
 #define ioremap_np(pa, size) sim_bus_map((pa), (size))

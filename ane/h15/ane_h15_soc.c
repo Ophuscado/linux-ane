@@ -155,6 +155,11 @@ const struct ane_h15_soc ane_t6030_soc = {
 	.cpu_control = 0x1400044,
 	.cpu_status  = 0x1400048,
 	.rvbar       = 0x1050000,
+	/* Measured by stage 2 on a 16-inch M3 Pro (J516S), PR 175 comment of 2026-10-23: RVBAR_LO 0x1,
+	 * RVBAR_HI 0x100. The same value the M2 Max macOS run and the M6 (T8152) carry: the firmware
+	 * entry IOVA 0x10000000000 with bit 0 set, i.e. iBoot already wrote it. The other rows have
+	 * no stage 2 result yet, so their rvbar_expect stays 0 and stage=run refuses on them. */
+	.rvbar_expect = 0x0000010000000001ull,
 	.mbox        = 0x1408000,	/* INFERENCE */
 	.engine_pa   = 0x308000000ull,
 	.engine_size = 0x2000000,

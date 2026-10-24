@@ -52,6 +52,20 @@ template is `ane/h16/`.
   preload + map + CPU-release path that the T6021 W-series uses
   is the only mechanically proven route, and a volunteer
   recording it is what fills the missing rows in the b0 table.
+- `stage=4` or `stage=run`: refused without `confirm_run=1`, with
+  `run_wait_ms` outside 10 to 2000 (default 300), and on any SoC row whose
+  `rvbar_expect` is 0 (only t6030 has a measured RVBAR, from stage 2 on a
+  16-inch M3 Pro: `0x0000010000000001`). It is the only stage that writes.
+  After the stage 1 ACTUAL=0xf gate it reads CPU_STATUS, CPU_CONTROL, RVBAR
+  and both mailbox CTRL words and writes only if the core is stopped (STOPPED
+  set, RUNNING clear), RUN is clear, RVBAR equals `rvbar_expect` and both
+  mailbox words read EMPTY. Then it sets CPU_CONTROL bit 4 (the macOS
+  `_runCPU(true)` read-OR-write), watches CPU_STATUS and `MBOX_I2A_CTRL` every
+  10 ms for `run_wait_ms`, pops at most four I2A messages and logs the raw
+  words (it sends nothing, never answers a HELLO), and stops the core the macOS
+  way (clear bit 4, then bit 5). It never writes RVBAR, the mailbox or the
+  DART. If the core does not report STOPPED afterwards it keeps the power
+  domains and mappings, logs `reboot required`, and `remove()` refuses.
 
 ## Build (host cross build)
 
@@ -187,7 +201,19 @@ the dmesg back.
    prints one line per unfilled row of the `ane_h15_facts` table
    (`ane_h15 hole=H… …`), then
    `verdict=REFUSED reason=unfilled-facts`. Send the dmesg.
-5. Remove the opt-in key and reboot before any other experiment.
+5. **stage=4** (`stage=4 confirm_run=1`, T6030 only today). Run it only after
+   stages 0, 1 and 2 passed on the same boot and the maintainers have said
+   GO on the issue. Expected, in dmesg: the pmgr lines, six `ane_h15 read`
+   lines (CPU_STATUS, CPU_CONTROL, RVBAR_LO, RVBAR_HI, the two mailbox CTRL
+   words), `ane_h15 write CPU_CONTROL=0x10 (RUN)`, a few `t+10ms
+   cpu_status=…` lines, optionally `ane_h15 msg0 raw0=… raw1=…`, then
+   `write CPU_CONTROL=… (clear RUN)` and one `ane_h15 run started_seen=…`
+   line. `verdict=PASS reason=core-started-and-stopped` (or
+   `core-never-left-stopped`) means the core is stopped again and the
+   module can be removed. `verdict=FAIL reason=core-not-stopped` means
+   reboot. `verdict=FAIL reason=preflight-not-as-iboot-left-it` means
+   nothing was written. Send the whole `dmesg | grep ane_h15`.
+6. Remove the opt-in key and reboot before any other experiment.
 
 ## Stop rules
 
@@ -222,6 +248,11 @@ Substitute `t6030` or `t6031` (or `t6034` with a t6031-style
 overlay). The other stages refuse; the runbook protocol above
 explains the refused verbiage.
 
+The run stage (writes CPU_CONTROL; T6030 only, after the maintainers' GO):
+
+    insmod ane/h15/ane_h15.ko optin=t6030 stage=4 confirm_run=1
+    dmesg | grep ane_h15
+
 ## Not verified (honest limits)
 
 - No M3 silicon has run any of this. The register map is
@@ -233,6 +264,15 @@ explains the refused verbiage.
   version as "unknown"); the module's stage=3 plan to map the
   preload at the ADT remap IOVAs is the same mechanical path
   the T6021 W-series proved, but on M3 it has not run.
+- Stage 4 reads CPU_CONTROL and writes it (bits 4 and 5 only). Nobody has run
+  that on an H15 part. The M6 (T8152) result it is modelled on: the same RUN
+  write cleared the STOPPED bit and left the core with no message, with the
+  DART unprogrammed. A started H15 core may do the same. A "core-started-and-
+  stopped" result with no message is a valid, useful result.
+- The mailbox message pop (wrapper + 0x8830 and + 0x8838) is the apple-mailbox
+  v4 layout inferred from the other T6030 ASCs. It is read only when
+  `MBOX_I2A_CTRL` loses its EMPTY bit, so a wrong layout costs nothing unless
+  the core posts a message.
 - The 27.0 CSNE host contract (init structure, channel-manager
   table, CONFIG_GET / PLATFORM_INFO / BUILDINFO opcodes) is not
   derived; the smoke stops at the boot stage refusal.
