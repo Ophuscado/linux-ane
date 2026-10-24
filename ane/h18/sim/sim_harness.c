@@ -32,6 +32,8 @@ int sim_tx_got;
 u64 sim_tx_msgs[32];
 int sim_n_tx_msgs, sim_idle_sent, sim_stop_needs_idle, sim_no_shutdown_reply;
 u32 sim_iop_ack_state = 0x20;
+int sim_credit_mode;
+u32 sim_credits_now = 1;
 int sim_rpm_enabled, sim_rpm_gets, sim_rpm_puts, sim_rpm_get_fail;
 struct sim_iocall sim_iocalls[64];
 int sim_n_iocalls, sim_io_fail, sim_n_dom_live;
@@ -127,6 +129,8 @@ static void reset_all(void)
 	rtkit_stop = 0;
 	sim_n_tx_msgs = sim_idle_sent = sim_stop_needs_idle = sim_no_shutdown_reply = 0;
 	sim_iop_ack_state = 0x20;
+	sim_credit_mode = 0;
+	sim_credits_now = 1;
 	map_fw = false;
 	sim_rpm_enabled = sim_rpm_gets = sim_rpm_puts = sim_rpm_get_fail = 0;
 	sim_n_iocalls = sim_io_fail = sim_n_dom_live = 0;
@@ -672,6 +676,22 @@ static void pos_boot(void)
 				printf("    tx[%d] = %#llx\n", k, (unsigned long long)sim_tx_msgs[k]);
 		chk(same, "R1 boot rtkit_start: HELLO_REPLY, two EPMAP replies, STARTEP ep 1, AP power ON, STARTEP ep 0x20, in that order and nothing else");
 		chk(sim_faults == 0 && log_count("rtkit endpoint 0x20 discovered") == 1 && log_count("AP power state acknowledged: 0xb0000000000020") + log_count("AP power state acknowledged: 0x20") == 1, "R1 boot rtkit_start: endpoint 0x20 discovered, the AP power acknowledgement seen, zero faults");
+		/* one TX slot that comes back one poll later: the same six messages, in the same order, none lost (a queue, not a drop) */
+		boot_setup();
+		alias_mbox = true;
+		rtkit_hello = true;
+		rtkit_start = true;
+		sim_start_chan = 536;
+		sim_start_hello = 3;
+		sim_credit_mode = 1;
+		ret = probe_now();
+		same = sim_n_tx_msgs == 6;
+		for (k = 0; k < 6 && k < sim_n_tx_msgs; k++)
+			same &= sim_tx_msgs[k] == want_start[k];
+		if (!same)
+			for (k = 0; k < sim_n_tx_msgs && k < 32; k++)
+				printf("    tx[%d] = %#llx\n", k, (unsigned long long)sim_tx_msgs[k]);
+		chk(ret == 0 && same, "Q1 boot rtkit_start with one TX slot returning each poll: the six messages go out in order, a message that finds no slot is queued and sent later");
 		/* an IOP acknowledgement for another state does not get AP power ON */
 		boot_setup();
 		alias_mbox = true;

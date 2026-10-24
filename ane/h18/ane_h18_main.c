@@ -128,6 +128,8 @@ struct ane_h18 {
 	bool kpsd;		/* the node has power-domains: the kernel's PSD driver owns the slots, this module only holds a runtime PM reference */
 	bool rpm_held;
 	u32 rtk_eps[8];		/* RTKit endpoints the firmware announced, one bit per endpoint number */
+	u64 rtk_txq[8];		/* management messages accepted but not yet stored in TX (no free slot at the time), in order */
+	unsigned int rtk_txq_n;
 	bool rtk_ap_sent;	/* AP power ON was sent */
 	bool rtk_ap_on;		/* the firmware acknowledged AP power ON */
 	bool rtk_app_started;
@@ -579,23 +581,50 @@ static void ane_h18_po_store16(void __iomem *p, const u32 w[4])
 #endif
 }
 
-/* Send one RTKit management message (endpoint 0) in TX as one paired store. Needs a free TX slot and stays under the per-run cap. */
-static int ane_h18_rtkit_send(struct ane_h18 *ane, u32 chan_off, const char *tag, u64 msg0, unsigned int *sent)
+/* Store one RTKit management message (endpoint 0) in TX as one paired store, if a TX slot is free. */
+static int ane_h18_rtkit_tx_now(struct ane_h18 *ane, u32 chan_off, const char *tag, u64 msg0)
 {
 	const struct ane_h18_soc *s = ane->soc;
 	u32 st, r[4] = { (u32)msg0, (u32)(msg0 >> 32), 0, 0 };
 
+	st = readl(ane->mbox + chan_off + ANE_H18_PO_STATUS);
+	if (!(st & 0xf00))
+		return -EBUSY;
+	dev_crit(ane->dev, "ane_h18 write TX of %s pa=%#llx: msg0=%#llx msg1=0 (one paired 16 byte store)\n", tag, s->mbox_pa + chan_off + ANE_H18_PO_TX, msg0);
+	ane_h18_po_store16(ane->mbox + chan_off + ANE_H18_PO_TX, r);
+	return 0;
+}
+
+/* Store the queued messages in order while TX slots are free. Called at every poll, so a message that found no free slot goes out when one returns. */
+static void ane_h18_rtkit_flush(struct ane_h18 *ane, u32 chan_off, const char *tag)
+{
+	unsigned int i;
+
+	while (ane->rtk_txq_n && !ane_h18_rtkit_tx_now(ane, chan_off, tag, ane->rtk_txq[0])) {
+		for (i = 1; i < ane->rtk_txq_n; i++)
+			ane->rtk_txq[i - 1] = ane->rtk_txq[i];
+		ane->rtk_txq_n--;
+	}
+}
+
+/* Accept one management message: stored now when a TX slot is free and nothing is queued ahead of it, queued otherwise. The per-run cap counts accepted
+ * messages. A message is refused (-EBUSY) only past the cap or when the queue is full. */
+static int ane_h18_rtkit_send(struct ane_h18 *ane, u32 chan_off, const char *tag, u64 msg0, unsigned int *sent)
+{
 	if (*sent >= ANE_H18_PO_MAXSEND) {
 		dev_warn(ane->dev, "ane_h18 rtkit: send cap reached, not sending %#llx\n", msg0);
 		return -EBUSY;
 	}
-	st = readl(ane->mbox + chan_off + ANE_H18_PO_STATUS);
-	if (!(st & 0xf00)) {
-		dev_warn(ane->dev, "ane_h18 rtkit: no free TX slot (status %#x), not sending %#llx\n", st, msg0);
+	if (!ane->rtk_txq_n && !ane_h18_rtkit_tx_now(ane, chan_off, tag, msg0)) {
+		(*sent)++;
+		return 0;
+	}
+	if (ane->rtk_txq_n == ARRAY_SIZE(ane->rtk_txq)) {
+		dev_warn(ane->dev, "ane_h18 rtkit: TX queue full, not sending %#llx\n", msg0);
 		return -EBUSY;
 	}
-	dev_crit(ane->dev, "ane_h18 write TX of %s pa=%#llx: msg0=%#llx msg1=0 (one paired 16 byte store)\n", tag, s->mbox_pa + chan_off + ANE_H18_PO_TX, msg0);
-	ane_h18_po_store16(ane->mbox + chan_off + ANE_H18_PO_TX, r);
+	dev_info(ane->dev, "ane_h18 rtkit: no free TX slot, queued %#llx behind %u\n", msg0, ane->rtk_txq_n);
+	ane->rtk_txq[ane->rtk_txq_n++] = msg0;
 	(*sent)++;
 	return 0;
 }
@@ -619,6 +648,7 @@ static int ane_h18_rtkit_step(struct ane_h18 *ane, u32 chan_off, const char *tag
 
 	if ((u64)chan_off + ANE_H18_PO_STATUS + 4 > s->mbox_size)
 		return 0;
+	ane_h18_rtkit_flush(ane, chan_off, tag);
 	st = readl(ane->mbox + chan_off + ANE_H18_PO_STATUS);
 	if (!(st & 0xf))
 		return 0;
@@ -825,11 +855,16 @@ static int ane_h18_stage_boot(struct ane_h18 *ane)
 	}
 	if (rtkit_stop && ane->rtk_ap_on) {
 		/* RTKit shutdown as apple_rtkit_shutdown does it: AP power state QUIESCED, then IOP power state SLEEP once that is acknowledged, then wait for the
-		 * IOP acknowledgement (or an idle message). OFF is not used: it cannot be restarted. */
+		 * IOP acknowledgement (or an idle message). rtkit_stop=2 sends OFF on both sides instead (apple_rtkit_poweroff), which cannot be restarted. */
 		u32 chan_off = ANE_H18_PO_ALIAS_OFF + s->mbox_num * 2 * ANE_H18_PO_STRIDE;
 		char tag[16];
 
 		snprintf(tag, sizeof(tag), "alias%u", s->mbox_num * 2);
+		for (waited = 0; waited < ANE_H18_RTK_STOP_WAIT_MS && ane->rtk_txq_n; waited += 10) {
+			/* messages of the boot still queued go out first */
+			usleep_range(10000, 11000);
+			ane_h18_rtkit_step(ane, chan_off, tag, &sent);
+		}
 		sent = 0;	/* the shutdown has its own send budget: the boot messages cannot starve it */
 		ane->rtk_shutdown = true;
 		ane->rtk_ap_state = rtkit_stop == 2 ? ANE_H18_RTK_PWR_OFF : ANE_H18_RTK_PWR_QUIESCED;
