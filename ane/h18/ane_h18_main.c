@@ -162,6 +162,10 @@ struct ane_h18 {
 	} hs_pool, hs_ipc, hs_heap, hs_cmd, hs_mal[ANE_H18_MAL_MAX_BUFS];
 	unsigned int hs_mal_n, mal_cursor, mal_slots, mal_bit;
 	size_t hs_mal_bytes;
+	unsigned int ack_logs;	/* ack writes logged so far: the address is logged for the first few, then silently */
+	unsigned int snap_left;	/* change snapshots still allowed in the current wait */
+	int mal_err;		/* the first refusal of a firmware request: later polls return it without logging again */
+	bool hs_cmd_in_pool;	/* hs_cmd points into hs_pool: never freed on its own */
 	u64 *mal_ring;		/* the SHAREDMALLOC ring of the published table, NULL until the channel step has checked the table */
 	char ch_names[8][0x40];
 	struct ane_h18_ring_copy {
@@ -672,6 +676,11 @@ static void ane_h18_hs_free(struct ane_h18 *ane)
 	struct ane_h18_hs_buf *b[4] = { &ane->hs_cmd, &ane->hs_heap, &ane->hs_ipc, &ane->hs_pool };
 	unsigned int i;
 
+	if (ane->hs_cmd_in_pool) {
+		ane->hs_cmd.va = NULL;
+		ane->hs_cmd_in_pool = false;
+	}
+
 	for (i = 0; i < 4; i++)
 		if (b[i]->va) {
 			dma_free_coherent(ane->dev, b[i]->size, b[i]->va, b[i]->iova);
@@ -684,6 +693,7 @@ static void ane_h18_hs_free(struct ane_h18 *ane)
 		}
 	ane->hs_mal_n = 0;
 	ane->mal_ring = NULL;
+	memset(ane->ch_rings, 0, sizeof(ane->ch_rings));
 }
 
 /* One zeroed surface from the DMA API, in the default domain the firmware segments are mapped in. It must not overlap a firmware segment. */
@@ -773,6 +783,8 @@ static int ane_h18_cmd(struct ane_h18 *ane, struct ane_h18_ring *io, u16 op, u32
 	u32 last_pend = 0;
 	u16 id, ack;
 
+	ane->snap_left = ANE_H18_SNAP_PER_WAIT;
+
 	if (!(READ_ONCE(slot[0]) & 1)) {
 		dev_err(ane->dev, "ane_h18 cmd %#x: IO slot %u is not host owned (%#llx)\n", op, io->cursor, READ_ONCE(slot[0]));
 		return -EBUSY;
@@ -817,6 +829,8 @@ static int ane_h18_mal_service(struct ane_h18 *ane)
 
 	if (!ane->mal_ring)
 		return 0;
+	if (ane->mal_err)
+		return ane->mal_err;
 	slot = ane->mal_ring + ane->mal_cursor * 8;
 	hdr = READ_ONCE(slot[0]);
 	if (hdr & 1)
@@ -826,19 +840,31 @@ static int ane_h18_mal_service(struct ane_h18 *ane)
 	mode = READ_ONCE(slot[2]);
 	switch (ane_h18_mal_classify(hdr, size, mode)) {
 	case ANE_H18_MAL_MALLOC:
-		if (size % PAGE_SIZE || size > ANE_H18_MAL_MAX_SIZE || ane->hs_mal_n >= ANE_H18_MAL_MAX_BUFS || ane->hs_mal_bytes + size > ANE_H18_MAL_MAX_BYTES) {
+		/* the first free slot (a FREEd buffer's), else a new one */
+		for (i = 0; i < ane->hs_mal_n; i++)
+			if (!ane->hs_mal[i].va)
+				break;
+		if (size % PAGE_SIZE || size > ANE_H18_MAL_MAX_SIZE || i >= ANE_H18_MAL_MAX_BUFS || ane->hs_mal_bytes + size > ANE_H18_MAL_MAX_BYTES) {
 			dev_err(ane->dev, "ane_h18 fw MALLOC of %#llx bytes refused (%u buffers, %#zx bytes so far)\n", size, ane->hs_mal_n, ane->hs_mal_bytes);
-			return -E2BIG;
+			ane->mal_err = -E2BIG;
+			return ane->mal_err;
 		}
-		b = &ane->hs_mal[ane->hs_mal_n];
+		b = &ane->hs_mal[i];
 		ret = ane_h18_hs_alloc(ane, b, size, "FWMALLOC");
-		if (ret)
+		if (ret) {
+			if (b->va) {
+				dma_free_coherent(ane->dev, b->size, b->va, b->iova);
+				b->va = NULL;
+			}
+			ane->mal_err = ret;
 			return ret;
-		ane->hs_mal_n++;
+		}
+		if (i == ane->hs_mal_n)
+			ane->hs_mal_n++;
 		ane->hs_mal_bytes += size;
-		dev_info(ane->dev, "ane_h18 fw MALLOC %#llx bytes mode %llu -> iova %#llx ordinal %u\n", size, mode, (u64)b->iova, ane->hs_mal_n);
+		dev_info(ane->dev, "ane_h18 fw MALLOC %#llx bytes mode %llu -> iova %#llx ordinal %u\n", size, mode, (u64)b->iova, i + 1);
 		WRITE_ONCE(slot[1], 0);
-		WRITE_ONCE(slot[2], ane->hs_mal_n);
+		WRITE_ONCE(slot[2], i + 1);
 		dma_wmb();
 		WRITE_ONCE(slot[0], b->iova | 1);
 		break;
@@ -865,7 +891,8 @@ static int ane_h18_mal_service(struct ane_h18 *ane)
 		return 0;
 	default:
 		dev_err(ane->dev, "ane_h18 SHAREDMALLOC slot %u is not a request: %#llx %#llx %#llx\n", ane->mal_cursor, hdr, size, mode);
-		return -EOPNOTSUPP;
+		ane->mal_err = -EOPNOTSUPP;
+		return ane->mal_err;
 	}
 	dma_wmb();
 	dev_crit(ane->dev, "ane_h18 write doorbell BIT(%u) pa=%#llx to answer the MALLOC\n", ane->mal_bit, ane->soc->engine_pa + ANE_H18_DOORBELL_OFF);
@@ -886,7 +913,8 @@ static int ane_h18_chan_poll(struct ane_h18 *ane, unsigned int t, u64 *digest, u
 	int served, ret = 0;
 
 	if (pend) {
-		dev_crit(ane->dev, "ane_h18 write IPI ack=%#x pa=%#llx\n", pend, ane->soc->engine_pa + ANE_H18_IPI_ACK_OFF);
+		if (ane->ack_logs++ < 8)
+			dev_crit(ane->dev, "ane_h18 write IPI ack=%#x pa=%#llx\n", pend, ane->soc->engine_pa + ANE_H18_IPI_ACK_OFF);
 		writel(pend, ane->ipi_ack);
 	}
 	do {
@@ -903,7 +931,10 @@ static int ane_h18_chan_poll(struct ane_h18 *ane, unsigned int t, u64 *digest, u
 	if (d != *digest || pend != *last_pend) {
 		*digest = d;
 		*last_pend = pend;
-		ane_h18_chan_snapshot(ane, "ring change");
+		if (ane->snap_left) {
+			ane->snap_left--;
+			ane_h18_chan_snapshot(ane, "ring change");
+		}
 	}
 	return ret;
 }
@@ -930,6 +961,26 @@ static void ane_h18_chan_snapshot(struct ane_h18 *ane, const char *when)
 			for (k = 0; k < 2 && k < rings[i].slots; k++)
 				dev_info(ane->dev, "ane_h18 chan snapshot %s: %s slot %u = %#llx %#llx %#llx\n", when, names[i], k, READ_ONCE(r[k * 8]), READ_ONCE(r[k * 8 + 1]), READ_ONCE(r[k * 8 + 2]));
 			continue;
+		}
+		if (rings[i].type == 2) {
+			/* the terminal ring is the firmware console: print its text, one line per nonzero 64 byte slot (the firmware's own bytes, non-printable ones as '.') */
+			unsigned int shown = 0;
+
+			for (k = 0; k < rings[i].slots; k++) {
+				const u8 *e = (const u8 *)(r + k * 8);
+				char txt[65];
+				unsigned int j;
+				bool any = false;
+
+				for (j = 0; j < 64; j++) {
+					txt[j] = e[j] >= 0x20 && e[j] < 0x7f ? e[j] : '.';
+					any |= e[j] != 0;
+				}
+				txt[64] = 0;
+				if (any && shown++ < 32)
+					dev_info(ane->dev, "ane_h18 chan snapshot %s: %s text slot %u: %s\n", when, names[i], k, txt);
+			}
+			dev_info(ane->dev, "ane_h18 chan snapshot %s: %s has %u nonzero slots as text\n", when, names[i], shown);
 		}
 		for (k = 0, lines = 0, more = 0; k < rings[i].slots * 4; k++) {	/* 16 byte lines of the ring */
 			u64 a = READ_ONCE(r[k * 2]), b = READ_ONCE(r[k * 2 + 1]);
@@ -1029,6 +1080,7 @@ static int ane_h18_chan_step(struct ane_h18 *ane, const struct ane_h18_hs_buf *t
 		u64 digest = 0;
 		u32 last_pend = 0;
 
+		ane->snap_left = ANE_H18_SNAP_PER_WAIT;
 		/* let the firmware run on for 100 ms, answering what it asks for, before the first look at the rings */
 		for (k = 0; k < 100; k++) {
 			usleep_range(1000, 1100);
@@ -1038,9 +1090,12 @@ static int ane_h18_chan_step(struct ane_h18 *ane, const struct ane_h18_hs_buf *t
 	ane_h18_chan_snapshot(ane, "after SCRATCH3");
 	if (!hs_cmds)
 		return 0;
-	ret = ane_h18_hs_alloc(ane, &ane->hs_cmd, ANE_H18_CMD_BLOCK, "CMD");
-	if (ret)
-		return ret;
+	/* The kext takes every command block from the pool surface, the one that holds the init block and that the firmware was told about at block +0x58 and +0x60. */
+	ane->hs_cmd.va = (u8 *)ane->hs_pool.va + ANE_H18_CMD_POOL_OFF;
+	ane->hs_cmd.iova = ane->hs_pool.iova + ANE_H18_CMD_POOL_OFF;
+	ane->hs_cmd.size = ANE_H18_CMD_BLOCK;
+	ane->hs_cmd_in_pool = true;
+	dev_info(ane->dev, "ane_h18 hs surface CMD inside POOL at +%#x iova=%#llx size=%#x\n", ANE_H18_CMD_POOL_OFF, (u64)ane->hs_cmd.iova, ANE_H18_CMD_BLOCK);
 	ret = ane_h18_cmd(ane, &io, ANE_H18_CSNE_PRINT_ENABLE, 12, true, 0, &blk);
 	if (ret) {
 		ane_h18_chan_snapshot(ane, "after the failed PRINT_ENABLE");
@@ -1057,6 +1112,7 @@ static int ane_h18_chan_step(struct ane_h18 *ane, const struct ane_h18_hs_buf *t
 		u64 digest = 0;
 		u32 last_pend = 0;
 
+		ane->snap_left = ANE_H18_SNAP_PER_WAIT;
 		/* a firmware FREE can land after the acknowledgement: keep answering for 20 ms */
 		for (k = 0; k < 20; k++) {
 			usleep_range(1000, 1100);

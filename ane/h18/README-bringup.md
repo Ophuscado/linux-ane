@@ -72,6 +72,8 @@ else in the ASC, IORVBAR or mailbox windows.
     gets the answer the firmware waits for with no timeout. Each answer rings the ring's doorbell bit. A pending IPI value is written to the ack register at
     engine + 0x18b0000, as the kext does. When the pending value or a firmware-to-host ring changes, the module logs the nonzero lines of those rings. A silent
     firmware then still shows which ring moved. The first command on the M6 got no answer before this. The cause is open.
+    The command block lives inside the pool surface, 0x400 bytes in, because the kext takes every command block from the pool and the first run with a separate block
+    got no answer. The terminal ring is logged as text too.
   - `rtkit_hello=1` (needs `alias_mbox=1`): answer the firmware's RTKit management HELLO with version 12 and its endpoint map, nothing else. The
     reply goes to TX as one paired 16 byte store. No reply is sent without a free TX slot, for a message of another type or endpoint, or when the
     firmware's version range excludes 12. At most four replies per run.

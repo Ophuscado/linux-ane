@@ -561,7 +561,8 @@ extern unsigned long sim_jiffies;
 #define jiffies sim_jiffies
 static inline unsigned long msecs_to_jiffies(unsigned int ms) { return ms; }
 static inline bool time_after(unsigned long a, unsigned long b) { return (long)(b - a) < 0; }
-static inline void usleep_range(unsigned long lo, unsigned long hi) { sim_jiffies += (lo + hi) / 2000 + 1; sim_credits_now = 1; }
+extern void sim_usleep_hook(void);
+static inline void usleep_range(unsigned long lo, unsigned long hi) { sim_jiffies += (lo + hi) / 2000 + 1; sim_credits_now = 1; sim_usleep_hook(); }
 
 #define ERANGE_UNUSED 0
 
