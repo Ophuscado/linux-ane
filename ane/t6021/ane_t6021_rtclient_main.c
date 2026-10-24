@@ -589,12 +589,13 @@ static int ane_rtclient_malloc_service(struct ane_rtclient *ane, unsigned int *c
 }
 
 /* After a command that makes the firmware free memory (0x203, 0x201) its FREE request can land after the acknowledgement. Keep answering the
- * ring until it was quiet for quiet_ms. Caller holds the firmware lock. */
+ * ring until it was quiet for quiet_ms, at most 64 answers (a firmware that never goes quiet is -EBUSY). Caller holds the firmware lock. */
 static int ane_rtclient_malloc_settle(struct ane_rtclient *ane, unsigned int quiet_ms)
 {
 	unsigned int cursor = ane->legacy_malloc_cursor;
 	unsigned long until = jiffies + msecs_to_jiffies(quiet_ms);
 	int ret = 0, served;
+	unsigned int answered = 0;
 
 	while (time_before(jiffies, until)) {
 		served = ane_rtclient_malloc_service(ane, &cursor);
@@ -602,9 +603,13 @@ static int ane_rtclient_malloc_settle(struct ane_rtclient *ane, unsigned int qui
 			ret = served;
 			break;
 		}
-		if (served)
+		if (served) {
+			if (++answered > 64) {
+				ret = -EBUSY;
+				break;
+			}
 			until = jiffies + msecs_to_jiffies(quiet_ms);
-		else
+		} else
 			usleep_range(200, 400);
 	}
 	ane->legacy_malloc_cursor = cursor;
