@@ -208,25 +208,26 @@ against the `bo_total_max_mb` cap (12 GiB by default):
 
 - a section BO of a sent `LOAD_PROGRAM` is held while the program is
   loaded, because the firmware keeps reading it. With `unload_on_close=1`
-  (default 0, see below), when the last file that loaded or looked the
-  program up closes, the driver unloads the program (terminate its process
-  with command 0x203, destroy it with 0x201, both acknowledged) and then
-  gives the section buffers back. They follow the
-  usual rule for a BO the firmware no longer reads: freed, or parked under
-  the `bo_pool_max_mb` budget, where their bytes stay counted until the
-  pool is drained (set `bo_pool_max_mb` to 0 to see `bo_total_bytes` fall
-  to the io pool). If either command fails or times out, the sections stay
-  held for good and the device is quarantined. `unload_on_close` is 0 by
-  default, which keeps every program loaded until reboot as before. The
-  first run with it on, on an M2, failed: the first 0x203 aborted in the
-  exchange (the driver stopped on a malloc-ring entry it did not know, the
-  firmware's request to free a buffer), the device stayed quarantined and a
-  second session could not open it until reboot. The driver now answers
-  that request (see the receipt of the program unload). A second run passed
-  three sessions and failed the fourth and fifth in the middle of a LOAD
-  because the table of firmware buffers kept freed entries; a FREE now
-  releases its entry, and no board has run that change yet. Do not set it
-  to 1 on a machine you need;
+  (the default), when the last file that loaded or looked the program up
+  closes, the driver unloads the program (terminate its process with command
+  0x203, destroy it with 0x201, both acknowledged) and then gives the
+  section buffers back. They follow the usual rule for a BO the firmware no
+  longer reads: freed, or parked under the `bo_pool_max_mb` budget, where
+  their bytes stay counted until the pool is drained (set `bo_pool_max_mb`
+  to 0 to see `bo_total_bytes` fall to the io pool). If either command fails
+  or times out, the sections stay held for good and the device is
+  quarantined. `unload_on_close=0` keeps every program loaded until reboot,
+  as before the unload existed.
+  On an M2, six decode sessions in a row passed with the default: the logits
+  were byte identical, the step time stayed within 0.1 percent, and
+  `bo_total_bytes` after a pool drain stayed at about 54 MB (the first 3 MB
+  above the first session is a one-time rise, not a leak per session). Two
+  earlier runs failed. The first stopped at the first 0x203 because the
+  firmware asks the host to free a buffer while it terminates a process and
+  the driver did not answer. The second failed in the fourth session
+  because the table of firmware buffers kept freed entries. Both are fixed.
+  The measurements are one M2 and one decode workload, every set with a pool drain in between. Not tested: sessions without the pool drain between them, a session killed while a program is loaded or a command is in flight, other chips.
+  A session killed with a program loaded runs the same close path, and a failed unload quarantines the device until reboot;
 - an io BO is parked in a pool when its last reference drops. Its IOVA
   stays mapped. The next `BO_INIT` of the same page-aligned size takes it,
   zeroes it and gives it to the new owner. After a quarantine, io BOs are
