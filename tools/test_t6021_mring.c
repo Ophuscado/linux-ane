@@ -26,6 +26,8 @@ int main(void)
 	/* MALLOC: header 0, size, mode 0 or 1 */
 	check(ane_t6021_mring_classify(0, 0x4000, 0) == ANE_T6021_MRING_MALLOC, "malloc mode 0");
 	check(ane_t6021_mring_classify(0, 0x200000, 1) == ANE_T6021_MRING_MALLOC, "malloc mode 1");
+	check(ane_t6021_mring_classify(0, 0x4000, 0x10000) == ANE_T6021_MRING_MALLOC, "malloc mode 0x10000 (above u16) is still a malloc");
+	check(ane_t6021_mring_classify(0, 0x4000, 0xffffffffULL) == ANE_T6021_MRING_MALLOC, "malloc mode 0xffffffff (the u32 limit) is still a malloc");
 	check(ane_t6021_mring_classify(0, 0x4000, 0x100000000ULL) == ANE_T6021_MRING_BAD, "a mode above u32 is bad, as before");
 	/* an unwritten slot */
 	check(ane_t6021_mring_classify(0, 0, 0) == ANE_T6021_MRING_IDLE, "header 0 and size 0 is idle");
