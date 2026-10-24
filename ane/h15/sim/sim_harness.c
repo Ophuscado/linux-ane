@@ -82,6 +82,7 @@ int sim_pd_bad;
 int sim_pd_attach_fail_at = -1;
 int sim_link_fail_at = -1;
 int sim_pd_attach_calls;
+int sim_module_gets;
 int sim_link_calls;
 
 /* ---- helpers ---- */
@@ -218,6 +219,7 @@ static void reset_all(void)
 	confirm_read = false;
 	confirm_run = false;
 	run_unmapped = false;
+	sim_module_gets = 0;
 	run_wait_ms = 300;
 	sim_write_hook = NULL;
 	sim_read_hook = NULL;
@@ -1345,7 +1347,7 @@ static void pos_run_case(const char *tag, u32 ctrl, int msgs_left, bool nostart,
 	chk(sim_pm_get == 1 && sim_pm_put == 1 && log_count("do NOT unload") == 0, name);
 	ane_h15_remove(&pdev);
 	snprintf(name, sizeof(name), "%s: remove unmaps both windows (core stopped again)", tag);
-	chk(sim_n_iomap == 2 && sim_n_iounmap == 2, name);
+	chk(sim_n_iomap == 2 && sim_n_iounmap == 2 && sim_module_gets == 0, name);
 }
 
 static void pos_run(void)
@@ -1443,6 +1445,7 @@ static int neg_run(void)
 	    "N13 stuck core: reboot-required and do-NOT-unload logged");
 	chk(sim_pm_get == 1 && sim_pm_put == 0 && sim_n_iounmap == 0,
 	    "N13 stuck core: power claim and windows kept");
+	chk(sim_module_gets == 1, "N13 stuck core: the module is pinned (rmmod cannot free it under the core)");
 	before = sim_n_iounmap;
 	ane_h15_remove(&pdev);
 	chk(sim_n_iounmap == before && sim_pm_put == 0 && log_count("remove with the firmware released") == 1,

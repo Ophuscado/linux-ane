@@ -182,6 +182,10 @@ sim-mutation-dart-nottbr:
 sim-mutation-dart-noconfirm:
 	$(call pd_mutant,dart-noconfirm,/^static int ane_h15_stage_dart/$(COMMA)/^}/ s/if (!confirm_read) {/if (0 \/* NEG: confirm_read ignored in dart *\/) {/,NEG: confirm_read ignored in dart,neg-dart)
 
+# a core that will not stop leaves the module unpinned (rmmod then frees the code under it)
+sim-mutation-run-nopin:
+	$(call pd_mutant,run-nopin,s/__module_get(THIS_MODULE);/\/* NEG: module not pinned *\//,NEG: module not pinned,neg-run)
+
 sim-negative-nopsguard:
 	rm -rf /tmp/ane_h15-nopsguard && mkdir -p /tmp/ane_h15-nopsguard
 	cp -r sim /tmp/ane_h15-nopsguard/sim
@@ -246,5 +250,5 @@ clean:
 	sim-mutation-run-nomboxcheck sim-mutation-run-noclear \
 	sim-mutation-run-nostopcheck sim-mutation-run-pop32 \
 	sim-negative-dart sim-mutation-run-nodartgate sim-mutation-dart-nottbr \
-	sim-mutation-dart-noconfirm clean
+	sim-mutation-dart-noconfirm sim-mutation-run-nopin clean
 endif

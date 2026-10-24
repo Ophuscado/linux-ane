@@ -79,7 +79,8 @@ template is `ane/h16/`.
   the raw words (it sends nothing, never answers a HELLO), and stops the core the macOS
   way (clear bit 4, then bit 5). It never writes RVBAR, the mailbox or the
   DART. If the core does not report STOPPED afterwards it keeps the power
-  domains and mappings, logs `reboot required`, and `remove()` refuses.
+  domains and mappings, logs `reboot required`, `remove()` refuses and the module is pinned
+  with `__module_get` (an `rmmod` would otherwise free the code under a running core).
 
 ## Build (host cross build)
 

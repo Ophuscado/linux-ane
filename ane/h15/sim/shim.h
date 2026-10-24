@@ -370,6 +370,11 @@ static inline void pm_runtime_put_noidle(struct device *d)
 	sim_pm_noidle++;
 }
 
+/* module pinning: the stage takes a reference it never drops when the core will not stop */
+#define THIS_MODULE ((void *)0)
+extern int sim_module_gets;
+static inline void __module_get(void *m) { (void)m; sim_module_gets++; }
+
 /* ---- ERR_PTR helpers (the real linux/err.h is an empty sim stub) ---- */
 #define MAX_ERRNO 4095
 static inline void *ERR_PTR(long e) { return (void *)e; }

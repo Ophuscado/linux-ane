@@ -916,6 +916,10 @@ static int ane_h15_stage_run(struct ane_h15 *ane)
 		dev_emerg(ane->dev,
 			  "ane_h15 the core did not report STOPPED after RUN was cleared: power domains stay on, do NOT unload, reboot required\n");
 		ane_h15_result(ane, 5, "FAIL", "core-not-stopped");
+		/* Pin the module: ane_h15_remove() is void and cannot refuse an rmmod, and unloading would free the code that
+		 * owns the power claim, the windows and (map_fw) the DART domain under a core that may still be running. The
+		 * reference is never dropped: reboot to park the ANE. */
+		__module_get(THIS_MODULE);
 		/* 0, not an error: a failed probe would release the domains and the windows under a running core */
 		return 0;
 	}
