@@ -78,6 +78,7 @@ else in the ASC, IORVBAR or mailbox windows.
     then sends TERMINATE_PROCESS (0x203) and DESTROY_PROGRAM (0x201). The wire format is the T6021's, which the M2 driver uses and the kext decode matches in command ids
     and sizes. Whether the M6 firmware accepts a program built for the M2's firmware has not been tried: a refusal is logged with the reply, an unanswered command
     or a call without a finish event ends the sequence with no unload, and the buffers are freed only after the core stopped.
+    With `read_dart=1` the module also reads the exception state of the ANE DART (instance 0), read only, before LOAD_PROGRAM and after the call. On the first run on the M6 the firmware answered LOAD_PROGRAM, CREATE_PROCESS and PROCEDURE_CALL with acknowledgement 0 for the H14 add program. It posted one IO_T2H event with state 0. No finish event came, and the kernel logged an unhandled ANE DART interrupt.
   - After the channel step the module polls the doorbell side every millisecond while it waits. That is 100 ms after SCRATCH3 and the whole wait of each command.
     It answers the firmware's requests on the SHAREDMALLOC ring. A MALLOC gets a DMA buffer of up to 2 MiB (at most 16 buffers and 64 MiB) and an ordinal. A FREE
     gets the answer the firmware waits for with no timeout. Each answer rings the ring's doorbell bit. A pending IPI value is written to the ack register at

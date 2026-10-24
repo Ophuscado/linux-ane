@@ -1229,6 +1229,42 @@ static void ane_h18_prog_settle(struct ane_h18 *ane, unsigned int ms, unsigned i
 	}
 }
 
+/* Read only: the exception state of the ANE DART instance 0, in the layout the Linux apple-dart gen3 handler reads: the error word and its address (0x100, 0x104,
+ * 0x170, 0x174, 0x1c0), the eight words of the bitmap of streams with a pending exception (0x4000 + 4 * w, one bit per stream), and for the first
+ * ANE_H18_DART_EXC_SIDS streams with a bit set their record at 0x8000 + 0x40 * sid (status, +4, address lo and hi, +0x10, AXI id and user words at +0x18 to +0x24). Needs read_dart=1
+ * (the DART window is mapped). The first run of a program on the M6 ended in an unhandled DART interrupt: the kernel handler ignores the streams it does not own, so this
+ * is where the stream and the address of the fault show. Nothing is written. */
+static void ane_h18_dart_exc(struct ane_h18 *ane, const char *when)
+{
+	static const u32 fixed[] = { 0x100, 0x104, 0x170, 0x174, 0x1c0 };
+	static const u32 rec[] = { 0x0, 0x4, 0x8, 0xc, 0x10, 0x18, 0x1c, 0x20, 0x24 };
+	u32 pend[ANE_H18_DART_EXC_WORDS], i, w, bit, shown = 0;
+	const struct ane_h18_soc *s = ane->soc;
+
+	if (!ane->dart)
+		return;
+	dev_crit(ane->dev, "ane_h18 prog: reading the ANE DART exception state (%s), pa=%#llx..%#llx, read only\n", when, s->dart_pa + fixed[0],
+		 s->dart_pa + 0x8000 + 0x40 * (u64)ANE_H18_DART_EXC_MAXSID);
+	for (i = 0; i < ARRAY_SIZE(fixed); i++)
+		dev_info(ane->dev, "ane_h18 prog: DART exc %s +%#x = %#x\n", when, fixed[i], readl(ane->dart + fixed[i]));
+	for (w = 0; w < ANE_H18_DART_EXC_WORDS; w++) {
+		pend[w] = readl(ane->dart + 0x4000 + 4 * w);
+		dev_info(ane->dev, "ane_h18 prog: DART exc %s bitmap word %u (+%#x) = %#x\n", when, w, 0x4000 + 4 * w, pend[w]);
+	}
+	for (w = 0; w < ANE_H18_DART_EXC_WORDS && shown < ANE_H18_DART_EXC_SIDS; w++)
+		for (bit = 0; bit < 32 && shown < ANE_H18_DART_EXC_SIDS; bit++) {
+			u32 sid = w * 32 + bit, v[ARRAY_SIZE(rec)];
+
+			if (!(pend[w] & BIT(bit)) || sid >= ANE_H18_DART_EXC_MAXSID)
+				continue;
+			for (i = 0; i < ARRAY_SIZE(rec); i++)
+				v[i] = readl(ane->dart + 0x8000 + 0x40 * sid + rec[i]);
+			dev_info(ane->dev, "ane_h18 prog: DART exc %s stream %u: status %#x +4 %#x addr %#llx +0x10 %#x axi id %#x/%#x user %#x/%#x\n", when, sid, v[0], v[1],
+				 (u64)v[3] << 32 | v[2], v[4], v[5], v[6], v[7], v[8]);
+			shown++;
+		}
+}
+
 /* One program on the IO ring after START: allocate the section and buffer surfaces from the file, LOAD_PROGRAM, CREATE_PROCESS, PROCEDURE_CALL, wait for the
  * finish event, then TERMINATE_PROCESS and DESTROY_PROGRAM. Every reply is logged whole. A command the firmware refuses (acknowledgement not zero) or does not
  * answer ends the sequence; after an unanswered command nothing is unloaded and no buffer is freed before the core stopped (the module frees them with the
@@ -1266,6 +1302,7 @@ static int ane_h18_prog_run(struct ane_h18 *ane, struct ane_h18_ring *io)
 			memcpy(b->va, fw + p->io[i].doff, p->io[i].dsize);
 	}
 	wmb();
+	ane_h18_dart_exc(ane, "before LOAD_PROGRAM");
 
 	/* LOAD_PROGRAM */
 	memset(cmd, 0, sizeof(cmd));
@@ -1350,6 +1387,7 @@ static int ane_h18_prog_run(struct ane_h18 *ane, struct ane_h18_ring *io)
 		got += ane_h18_prog_t2h(ane, &t2h, &fin);
 	}
 	dev_info(ane->dev, "ane_h18 prog: PROCEDURE_CALL %s after %u ms, %u IO_T2H events\n", fin ? "finished" : "gave no finish event", waited, got);
+	ane_h18_dart_exc(ane, "after the call");
 	for (i = 0; i < p->nio; i++) {
 		const u32 *o = ane->pg_io[i].va;
 		unsigned int k, nz = 0, words = p->io[i].size / 4;
