@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `ane/h15/README-bringup.md` explains how to read the stage 4 DART output: `locked_windows` is bit 0 of PROTECT_LOCK (0x208), not of PROTECT (0x200); a T6030 tester's bank 0 PROTECT and PROTECT_LOCK `0x2` is bit 1, which on the M2 Max protects the aperture at bank base + 0x4000, the window the module skips as a different version. Carried over from the M2, not measured on an M3.
+
 - `ane/h18` names the source of the PREMAP_BUFFER layout (the kernelcache of build 26A434). A malformed answer to PREMAP_BUFFER is a protocol failure now, and only a well formed refusal lets the program stage go on. The stage script asks for `dart=1` only when a DART instance mask is given.
 
 - `ane/h18` gains `dart_inst` and `hs_premap` for the program stage. `dart_inst=<mask>` reads the ANE DART instances 0 to 3 read only before LOAD_PROGRAM and after the call. `hs_premap=1` sends PREMAP_BUFFER (0x20d, type 2) for one request pool before LOAD_PROGRAM, as the macOS kext does at init. The stage script takes both as arguments 12 and 13. The sim has five new cases and five mutants. Neither has run on the board yet.
