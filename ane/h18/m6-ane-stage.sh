@@ -2,9 +2,12 @@
 # SPDX-License-Identifier: GPL-2.0-only OR MIT
 # m6-ane-stage.sh: run ONE ane_h18 stage on the M6 (T8152), as root, and collect the log.
 #   m6-ane-stage.sh <1|2|3> <boot-id prefix> [GO [state [slots [mbox [ctrl]]]]]
+#   m6-ane-stage.sh 4 <boot-id prefix> GO [state [slots [wait_ms]]]
 # Step 1 = stage dt (no MMIO), step 2 = stage psd (read-only PSD slots 30 and 31), step 3 = stage power with
 # confirm_power=1 (requests PSD state <state> on the first <slots> slots, default 1 = slot 30 only, then reads CPU_STATUS,
 # ASC_STATUS and IORVBAR; mbox=1 also reads the Postoffice status words of three candidate channels, ctrl=1 also reads CPU_CONTROL).
+# Step 4 = stage boot: starts the ANE core (CPU_CONTROL.RUN), watches it for wait_ms (default 300), reads at most 8 mailbox messages,
+# clears RUN again. It needs GO, a step 3 PASS on this boot, and runs once per boot: reboot before anything else after it.
 # The state defaults to 1: the AppleT8152PMGR kext decode in the lab receipts reads "on" as request 1 (or 2) for these slots,
 # and names 1 as the first experiment. 0 is the value proven for the ATC USB slot 71 and GPU slot 3, 2 is the GPU ASC value.
 # Step 3 needs the literal third argument GO (the operator's go-ahead) and a step 2 PASS on this boot. It may run again on
@@ -26,7 +29,7 @@ fi
 
 WORK=${WORK:-/var/tmp/m6-ane}
 KO=${KO:-$WORK/ane_h18.ko}
-KO_SHA256=${KO_SHA256:-e75925f3257d87bd823323864a6c74eae4a4c481ab92bedcfdbb5ac08ca8f168}
+KO_SHA256=${KO_SHA256:-2fa45cb98e7d1414f28c2f54bba00520e9f2c396239fb3f3f0dd04c2dda0766b}
 WANT_UNAME=${WANT_UNAME:-7.1.12-aurora-m6usb-ARCH}
 UNAME_R=${UNAME_R:-$(uname -r)}
 BOOT_ID_FILE=${BOOT_ID_FILE:-/proc/sys/kernel/random/boot_id}
@@ -43,12 +46,18 @@ state=${4:-1}
 slots=${5:-1}
 mbox=${6:-0}
 ctrl=${7:-0}
+wait_ms=${6:-300}
 die() { echo "m6-ane-stage: REFUSED: $*" >&2; exit 2; }
 
-case "$step" in 1|2|3) ;; *) die "usage: $0 <1|2|3> <boot-id prefix> [GO [state]]" ;; esac
+case "$step" in 1|2|3|4) ;; *) die "usage: $0 <1|2|3|4> <boot-id prefix> [GO [state [slots [mbox [ctrl]]]]]" ;; esac
 case "$state" in 0|1|2|3|4|5) ;; *) die "state must be 0 to 5" ;; esac
 case "$slots" in 1|2) ;; *) die "slots must be 1 or 2" ;; esac
-case "$mbox$ctrl" in 00|01|10|11) ;; *) die "mbox and ctrl must be 0 or 1" ;; esac
+if [ "$step" = 4 ]; then
+  case "$wait_ms" in *[!0-9]*|"") die "wait_ms must be a number" ;; esac
+  [ "$wait_ms" -ge 10 ] && [ "$wait_ms" -le 2000 ] || die "wait_ms must be 10 to 2000"
+else
+  case "$mbox$ctrl" in 00|01|10|11) ;; *) die "mbox and ctrl must be 0 or 1" ;; esac
+fi
 [ "${#bid}" -ge 8 ] || die "boot id prefix of at least 8 hex characters required"
 [ "$UNAME_R" = "$WANT_UNAME" ] || die "kernel release $UNAME_R, want $WANT_UNAME"
 boot=$(tr -d '-' < "$BOOT_ID_FILE" | cut -c1-8)
@@ -59,11 +68,18 @@ case "$(tr -d '-' < "$BOOT_ID_FILE")" in "$bid"*) ;; *) die "boot id $boot does 
 [ "$(sha256sum "$KO" | cut -c1-64)" = "$KO_SHA256" ] || die "module sha256 is not the pinned $KO_SHA256"
 if $LSMOD | grep -q '^ane_h18 '; then die "ane_h18 is already loaded; rmmod it and reboot if step 3 ran"; fi
 mkdir -p "$WORK"
+[ ! -e "$WORK/step4-run-$boot" ] || die "step 4 already ran on boot $boot: reboot before any ANE step, the core may still be running"
 if [ "$step" = 2 ] && [ ! -e "$WORK/step1-pass-$boot" ]; then die "step 1 has not passed on boot $boot"; fi
 if [ "$step" = 3 ]; then
   [ "$go" = GO ] || die "step 3 needs the third argument GO (the go-ahead on the PSD state)"
   [ -e "$WORK/step2-pass-$boot" ] || die "step 2 has not passed on boot $boot"
   [ ! -e "$WORK/step3-run-$boot" ] || die "step 3 already ran on boot $boot: reboot first, the slot state is unknown"
+fi
+
+if [ "$step" = 4 ]; then
+  [ "$go" = GO ] || die "step 4 needs the third argument GO (the operator's go-ahead)"
+  [ -e "$WORK/step3-pass-$boot" ] && [ ! -e "$WORK/step3-run-$boot" ] || die "step 3 has not passed on boot $boot, or a later step 3 did not finish cleanly"
+  [ ! -e "$WORK/step4-run-$boot" ] || die "step 4 already ran on boot $boot: reboot first, the core may still be running"
 fi
 
 run="$WORK/run-$(date -u +%Y%m%dT%H%M%SZ)-step$step-boot$boot"
@@ -80,9 +96,10 @@ case "$step" in
   3) args="optin=t8152 stage=power confirm_power=1 psd_state=$state psd_slots=$slots"
      [ "$mbox" = 1 ] && args="$args read_mbox=1"
      [ "$ctrl" = 1 ] && args="$args read_ctrl=1"
-     : > "$WORK/step3-run-$boot" ;;
+     rm -f "$WORK/step3-pass-$boot"; : > "$WORK/step3-run-$boot" ;;
+  4) args="optin=t8152 stage=boot confirm_power=1 confirm_boot=1 psd_state=$state psd_slots=$slots boot_wait_ms=$wait_ms"; : > "$WORK/step4-run-$boot" ;;
 esac
-case "$step" in 1) want_stage=dt ;; 2) want_stage=psd ;; 3) want_stage=power ;; esac
+case "$step" in 1) want_stage=dt ;; 2) want_stage=psd ;; 3) want_stage=power ;; 4) want_stage=boot ;; esac
 n0=$($DMESG 2>&1 | grep -c 'ane_h18 RESULT')
 echo "insmod $KO $args (RESULT lines already in the kernel log: $n0)" | tee -a "$run/header.txt"
 timeout 60 $INSMOD "$KO" $args > "$run/insmod.out" 2>&1
@@ -97,13 +114,14 @@ grep 'ane_h18 RESULT' "$run/dmesg-ane_h18.txt" | tail -n +$((n0 + 1)) > "$run/ne
 verdict=$(grep -o "RESULT stage=$want_stage soc=t8152 verdict=[A-Z]* reason=[^ ]*" "$run/new-result-lines.txt" | tail -1)
 echo "verdict: ${verdict:-none} (new RESULT lines: $(wc -l < "$run/new-result-lines.txt"), wanted stage $want_stage)" | tee -a "$run/header.txt"
 if echo "$verdict" | grep -q 'verdict=PASS'; then
-  if [ "$step" = 3 ] && grep -q 'did not return to state 6' "$run/dmesg-ane_h18.txt"; then
+  if { [ "$step" = 3 ] || [ "$step" = 4 ]; } && grep -q 'did not return to state 6' "$run/dmesg-ane_h18.txt"; then
     echo "m6-ane-stage: step 3 PASS but a PSD slot did not return to state 6, log in $run" >&2
     exit 3
   fi
-  if [ "$step" = 3 ]; then rm -f "$WORK/step3-run-$boot"; else : > "$WORK/step$step-pass-$boot"; fi
+  if [ "$step" = 3 ]; then rm -f "$WORK/step3-run-$boot"; : > "$WORK/step3-pass-$boot"; elif [ "$step" = 4 ]; then echo "m6-ane-stage: reboot before any further ANE run on this machine"; else : > "$WORK/step$step-pass-$boot"; fi
   echo "m6-ane-stage: step $step PASS, log in $run"
   exit 0
 fi
 echo "m6-ane-stage: step $step did not pass (rc=$rc), log in $run" >&2
+[ "$step" != 4 ] || echo "m6-ane-stage: after step 4 reboot before any further ANE run" >&2
 exit 1

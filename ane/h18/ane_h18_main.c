@@ -2,8 +2,9 @@
 /*
  * ane_h18: OPT-IN EXPERIMENTAL bring-up module for the H18 ANE0 of the T8152 (Mac mini M6, J873g).
  *
- * No hardware has run this module. It has no firmware path: no IORVBAR write, no CPU RUN, no mailbox write.
- * The firmware is preloaded by iBoot (the ADT /arm-io/ane segment-ranges name where); booting it is a later change.
+ * Stages dt, psd and power ran on a Mac mini M6 (see README-bringup.md). Stage boot has not run on any machine.
+ * The firmware is preloaded by iBoot (the ADT /arm-io/ane segment-ranges name where) and iBoot programs IORVBAR. This module never writes
+ * IORVBAR or a mailbox. Stage boot sets the core's RUN bit once, watches the status and the Postoffice outboxes for a short time, then clears RUN.
  *
  * Stages (`stage` parameter):
  *   dt    : check the device tree windows against the SoC row and log them. No mapping, no MMIO.
@@ -13,6 +14,11 @@
  *           slots (default 1: slot 30 only), wait for each acknowledge as pmgr-psd.c does, then read
  *           CPU_STATUS, ASC_STATUS and IORVBAR (CPU_CONTROL with read_ctrl=1, the mailbox status words with read_mbox=1), then put the
  *           slots back to state 6 unless keep_on=1. Every write and read address is logged BEFORE the access.
+ *
+ *   boot  : needs confirm_power=1 and confirm_boot=1. Like power, then: refuse unless the core is stopped, CPU_CONTROL.RUN is clear and
+ *           IORVBAR is exactly the value iBoot leaves (ane_h18_soc.c). Then write CPU_CONTROL |= RUN, watch CPU_STATUS and the status words
+ *           of the three candidate Postoffice channels for boot_wait_ms, read at most 8 outbox messages (raw words are logged), write
+ *           CPU_CONTROL &= ~RUN and wait for STOPPED. If the core does not stop, the PSD slots stay on and a reboot is required.
  *
  * Nothing autoloads: there is no MODULE_DEVICE_TABLE, and probe returns -EPERM unless optin=t8152.
  *   insmod ane_h18.ko optin=t8152 stage=psd
@@ -63,6 +69,14 @@ static bool read_mbox;
 module_param(read_mbox, bool, 0444);
 MODULE_PARM_DESC(read_mbox, "Stage=power: also read the Postoffice status word of this ANE's channel.");
 
+static bool confirm_boot;
+module_param(confirm_boot, bool, 0444);
+MODULE_PARM_DESC(confirm_boot, "Required for stage=boot, together with confirm_power=1. Off by default.");
+
+static unsigned int boot_wait_ms = 300;
+module_param(boot_wait_ms, uint, 0444);
+MODULE_PARM_DESC(boot_wait_ms, "Stage=boot: how long the core runs before RUN is cleared again, ms (10 to 2000). Default 300.");
+
 static bool read_ctrl;
 module_param(read_ctrl, bool, 0444);
 MODULE_PARM_DESC(read_ctrl, "Stage=power: also read CPU_CONTROL (ASC + 0x44). Read only, never written. Default off.");
@@ -71,7 +85,7 @@ static unsigned int psd_timeout_ms = 1000;
 module_param(psd_timeout_ms, uint, 0444);
 MODULE_PARM_DESC(psd_timeout_ms, "Stage=power: per-slot acknowledge wait, ms. Default 1000 (the ADT psd-timeout-ms).");
 
-enum { ANE_H18_STAGE_DT, ANE_H18_STAGE_PSD, ANE_H18_STAGE_POWER };
+enum { ANE_H18_STAGE_DT, ANE_H18_STAGE_PSD, ANE_H18_STAGE_POWER, ANE_H18_STAGE_BOOT };
 
 struct ane_h18 {
 	struct device *dev;
@@ -81,6 +95,7 @@ struct ane_h18 {
 	void __iomem *rvbar;
 	void __iomem *mbox;
 	bool psd_on[ANE_H18_NPSD];
+	bool fw_started;
 };
 
 static void ane_h18_result(struct ane_h18 *ane, const char *stg, const char *verdict, const char *reason)
@@ -93,6 +108,7 @@ static int ane_h18_stage_idx(const char *name, unsigned int *out)
 	if (!strcmp(name, "dt")) { *out = ANE_H18_STAGE_DT; return 0; }
 	if (!strcmp(name, "psd")) { *out = ANE_H18_STAGE_PSD; return 0; }
 	if (!strcmp(name, "power")) { *out = ANE_H18_STAGE_POWER; return 0; }
+	if (!strcmp(name, "boot")) { *out = ANE_H18_STAGE_BOOT; return 0; }
 	return -EINVAL;
 }
 
@@ -359,6 +375,122 @@ static int ane_h18_stage_power(struct ane_h18 *ane)
 	return 0;
 }
 
+/* Read the outbox of one Postoffice channel if its status says it holds a message. Logs the raw 16 bytes. Returns 1 if a message was read. */
+static int ane_h18_po_pop(struct ane_h18 *ane, unsigned int chan, u32 status)
+{
+	const struct ane_h18_soc *s = ane->soc;
+	u32 off = chan * ANE_H18_PO_STRIDE + ANE_H18_PO_OUTBOX, w[4] = { 0 };
+	unsigned int i;
+
+	if ((status & 0xf) == 0)
+		return 0;
+	if ((u64)off + 16 > s->mbox_size)
+		return 0;
+	dev_crit(ane->dev, "ane_h18 read outbox ch%u pa=%#llx (status %#x)\n", chan, s->mbox_pa + off, status);
+	for (i = 0; i < 4; i++)
+		w[i] = readl(ane->mbox + off + 4 * i);
+	dev_info(ane->dev, "ane_h18 msg ch%u msg0=%#llx msg1=%#llx\n", chan, ((u64)w[1] << 32) | w[0], ((u64)w[3] << 32) | w[2]);
+	return 1;
+}
+
+static int ane_h18_stage_boot(struct ane_h18 *ane)
+{
+	const struct ane_h18_soc *s = ane->soc;
+	u32 st = 0, ctrl = 0, rv_lo = 0, rv_hi = 0, last = 0xffffffffu, po;
+	unsigned int i, c, waited = 0, msgs = 0, running_seen = 0;
+	bool stopped = false;
+	int ret = 0;
+
+	if (!confirm_power || !confirm_boot) {
+		ane_h18_result(ane, "boot", "REFUSED", "confirm_power=1 and confirm_boot=1 required");
+		return -EPERM;
+	}
+	if (psd_state >= ANE_H18_PSD_P6_RAIL || psd_slots < 1 || psd_slots > ANE_H18_NPSD || boot_wait_ms < 10 || boot_wait_ms > 2000) {
+		ane_h18_result(ane, "boot", "REFUSED", "psd_state 0 to 5, psd_slots 1 or 2, boot_wait_ms 10 to 2000");
+		return -EINVAL;
+	}
+	for (i = 0; i < psd_slots; i++) {
+		ret = ane_h18_psd_request(ane, i, psd_state);
+		if (ret) {
+			ane_h18_psd_off(ane);
+			ane_h18_result(ane, "boot", "FAIL", "psd-not-acknowledged");
+			return ret;
+		}
+		ane->psd_on[i] = true;
+	}
+	/* Preflight, all read only: the core must be stopped with RUN clear and IORVBAR exactly as iBoot leaves it. */
+	ret = ane_h18_read(ane, "CPU_STATUS", ane->asc, s->asc_pa, ANE_H18_ASC_CPU_STATUS, s->asc_size, &st);
+	if (!ret)
+		ret = ane_h18_read(ane, "CPU_CONTROL", ane->asc, s->asc_pa, ANE_H18_ASC_CPU_CONTROL, s->asc_size, &ctrl);
+	if (!ret)
+		ret = ane_h18_read(ane, "IORVBAR_LO", ane->rvbar, s->rvbar_pa, ANE_H18_RVBAR_OFF, s->rvbar_size, &rv_lo);
+	if (!ret)
+		ret = ane_h18_read(ane, "IORVBAR_HI", ane->rvbar, s->rvbar_pa, ANE_H18_RVBAR_OFF + 4, s->rvbar_size, &rv_hi);
+	if (ret) {
+		ane_h18_psd_off(ane);
+		ane_h18_result(ane, "boot", "FAIL", "read-refused");
+		return ret;
+	}
+	if ((st & ANE_H18_ST_RUNNING) || !(st & ANE_H18_ST_STOPPED) || (ctrl & ANE_H18_CPU_RUN) || (((u64)rv_hi << 32) | rv_lo) != s->rvbar_expect) {
+		dev_err(ane->dev, "ane_h18 preflight: cpu_status=%#x cpu_control=%#x iorvbar=%#llx (want stopped, RUN clear, iorvbar %#llx)\n", st, ctrl,
+			((u64)rv_hi << 32) | rv_lo, s->rvbar_expect);
+		ane_h18_psd_off(ane);
+		ane_h18_result(ane, "boot", "FAIL", "preflight-not-as-iboot-left-it");
+		return -EBUSY;
+	}
+	/* Start the core. From here a reboot may be needed. */
+	dev_crit(ane->dev, "ane_h18 write CPU_CONTROL=%#x pa=%#llx (RUN)\n", ctrl | ANE_H18_CPU_RUN, s->asc_pa + ANE_H18_ASC_CPU_CONTROL);
+	ane->fw_started = true;
+	writel(ctrl | ANE_H18_CPU_RUN, ane->asc + ANE_H18_ASC_CPU_CONTROL);
+	for (waited = 0; waited < boot_wait_ms; waited += 10) {
+		usleep_range(10000, 11000);
+		ret = ane_h18_read(ane, "CPU_STATUS", ane->asc, s->asc_pa, ANE_H18_ASC_CPU_STATUS, s->asc_size, &st);
+		if (ret)
+			break;
+		if (st & ANE_H18_ST_RUNNING)
+			running_seen = 1;
+		if (st != last) {
+			dev_info(ane->dev, "ane_h18 t+%ums cpu_status=%#x\n", waited + 10, st);
+			last = st;
+		}
+		for (c = 0; c < ANE_H18_PO_NCAND && msgs < ANE_H18_PO_MAXMSG; c++) {
+			u32 off = ane_h18_po_chan(s, c) * ANE_H18_PO_STRIDE + ANE_H18_PO_STATUS;
+
+			if ((u64)off + 4 > s->mbox_size)
+				continue;
+			po = readl(ane->mbox + off);
+			msgs += ane_h18_po_pop(ane, ane_h18_po_chan(s, c), po);
+		}
+	}
+	/* Stop the core again. */
+	ctrl = readl(ane->asc + ANE_H18_ASC_CPU_CONTROL);
+	dev_crit(ane->dev, "ane_h18 write CPU_CONTROL=%#x pa=%#llx (clear RUN)\n", ctrl & ~ANE_H18_CPU_RUN, s->asc_pa + ANE_H18_ASC_CPU_CONTROL);
+	writel(ctrl & ~ANE_H18_CPU_RUN, ane->asc + ANE_H18_ASC_CPU_CONTROL);
+	for (i = 0; i < 20; i++) {
+		usleep_range(5000, 6000);
+		st = readl(ane->asc + ANE_H18_ASC_CPU_STATUS);
+		if (st & ANE_H18_ST_STOPPED) {
+			stopped = true;
+			break;
+		}
+	}
+	dev_info(ane->dev, "ane_h18 boot running_seen=%u messages=%u final cpu_status=%#x stopped=%d\n", running_seen, msgs, st, stopped);
+	if (!stopped) {
+		dev_emerg(ane->dev, "ane_h18 the core did not stop after RUN was cleared: the PSD slots stay on, reboot required\n");
+		ane_h18_result(ane, "boot", "FAIL", "core-not-stopped");
+		return ret ? ret : -EBUSY;
+	}
+	ane->fw_started = false;
+	if (!keep_on)
+		ane_h18_psd_off(ane);
+	if (ret) {
+		ane_h18_result(ane, "boot", "FAIL", "read-refused");
+		return ret;
+	}
+	ane_h18_result(ane, "boot", "PASS", running_seen ? "core-ran-and-stopped" : "core-never-reported-running");
+	return 0;
+}
+
 static int ane_h18_probe(struct platform_device *pdev)
 {
 	struct ane_h18 *ane;
@@ -372,7 +504,7 @@ static int ane_h18_probe(struct platform_device *pdev)
 	}
 	ret = ane_h18_stage_idx(stage, &stage_idx);
 	if (ret) {
-		dev_err(&pdev->dev, "unknown stage \"%s\" (dt, psd or power)\n", stage);
+		dev_err(&pdev->dev, "unknown stage \"%s\" (dt, psd, power or boot)\n", stage);
 		return ret;
 	}
 	ane = devm_kzalloc(&pdev->dev, sizeof(*ane), GFP_KERNEL);
@@ -400,17 +532,18 @@ static int ane_h18_probe(struct platform_device *pdev)
 	/* stage=power: the ASC windows are mapped here, but nothing reads them before the PSD acknowledge. */
 	ane->asc = of_iomap(pdev->dev.of_node, idx[0]);
 	ane->rvbar = of_iomap(pdev->dev.of_node, idx[1]);
-	if (read_mbox)
+	if (read_mbox || stage_idx == ANE_H18_STAGE_BOOT)
 		ane->mbox = of_iomap(pdev->dev.of_node, idx[2]);
-	if (!ane->asc || !ane->rvbar || (read_mbox && !ane->mbox)) {
+	if (!ane->asc || !ane->rvbar || ((read_mbox || stage_idx == ANE_H18_STAGE_BOOT) && !ane->mbox)) {
 		dev_err(&pdev->dev, "ane_h18 of_iomap of an ASC window failed\n");
 		ret = -ENXIO;
 		goto out;
 	}
-	ret = ane_h18_stage_power(ane);
+	ret = stage_idx == ANE_H18_STAGE_BOOT ? ane_h18_stage_boot(ane) : ane_h18_stage_power(ane);
 out:
-	/* a failed probe never reaches remove(); a stage that passed keeps its mappings until remove */
-	if (ret)
+	/* a failed probe never reaches remove(); a stage that passed keeps its mappings until remove.
+	 * If the core may still be running, keep the mappings (the module cannot be removed after a failed bind anyway). */
+	if (ret && !ane->fw_started)
 		ane_h18_unmap(ane);
 	return ret;
 }
@@ -420,6 +553,10 @@ static void ane_h18_remove(struct platform_device *pdev)
 	struct ane_h18 *ane = platform_get_drvdata(pdev);
 
 	if (ane) {
+		if (ane->fw_started) {
+			dev_emerg(&pdev->dev, "ane_h18 the core may still run: reboot required\n");
+			return;
+		}
 		if (keep_on)
 			dev_warn(&pdev->dev, "ane_h18 keep_on=1: PSD slots left running\n");
 		ane_h18_unmap(ane);

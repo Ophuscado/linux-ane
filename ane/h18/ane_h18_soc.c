@@ -18,5 +18,6 @@ const struct ane_h18_soc ane_t8152_soc = {
 	.engine_pa = 0x418000000ULL,
 	.engine_size = 0x2000000,
 	.mbox_num = 12,
+	.rvbar_expect = 0x10000000001ULL,
 	.psd_slot = { 30, 31 },
 };
