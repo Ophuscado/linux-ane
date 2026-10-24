@@ -558,9 +558,9 @@ static int ane_h15_stage_boot(struct ane_h15 *ane)
  *
  * Sources: ane/h15/run-stage-sources.md (apple-dart.c t8110 at omarchy-linux 94fb2334, data/ane-soc/t6030.json).
  *
- * The M6 (T8152) lesson (w7H run, boot 235c8ff4; w7C offline RE of the Gen3 DART, 2026-10-23): RUN alone gave
+ * The M6 (T8152) lesson (an earlier run on a Mac mini M6, boot 235c8ff4, and an offline decode of the Gen3 DART, 2026-10-23): RUN alone gave
  * a core that left STOPPED and posted nothing, with the ANE DART never read or written by Linux (its iBoot
- * state is NOT measured: w7C U1, w7H "not tested"). macOS maps TEXT and DATA through the ANE DART before it
+ * state is NOT measured: an open question in the decode, and the run did not test it). macOS maps TEXT and DATA through the ANE DART before it
  * releases the core. This stage reads, and only reads, what the DART says, so a tester's first boot answers
  * it instead of a core start.
  *
@@ -721,7 +721,7 @@ static int ane_h15_stage_dart(struct ane_h15 *ane)
  *
  * Sources, commit-pinned, with H15 observations told apart from cross-generation inference:
  * ane/h15/run-stage-sources.md (m1n1 asc.py 97820568, macOS _runCPU decode sha d383f674, ane_t6021.h
- * 16cfa8720b80677dbcdf8fd1d04077a8b72768bf, omarchy-linux mailbox.c 57f8f6de, w7H M6 boot 235c8ff4).
+ * 16cfa8720b80677dbcdf8fd1d04077a8b72768bf, omarchy-linux mailbox.c 57f8f6de, the M6 boot 235c8ff4).
  *
  * Why this is the next step. The T6030 stage 2 run (PR 175, J516S) read RVBAR 0x0000010000000001 and CPU_STATUS
  * 0x0030002a: iBoot already preloaded the firmware and wrote the entry address, and the core is stopped (m1n1
