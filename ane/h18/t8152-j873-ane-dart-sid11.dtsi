@@ -1,0 +1,11 @@
+// SPDX-License-Identifier: GPL-2.0+ OR MIT
+/*
+ * Apple T8152 (M6) J873: stream 11 (ADT /arm-io/dart-ane/mapper-ane-mpm, reg 11) next to stream 0 on every ANE DART instance.
+ * The ane node's ADT iommu-parent names both mappers (phandles of mapper-ane and mapper-ane-mpm); the T8140 data-only overlay lists stream 11
+ * on each instance the same way. What stream 11 carries is not known. Use it after t8152-j873-ane-dart.dtsi; it replaces the iommus list.
+ */
+
+&ane0 {
+	iommus = <&dart_ane0 0>, <&dart_ane1 0>, <&dart_ane2 0>, <&dart_ane3 0>,
+		 <&dart_ane0 11>, <&dart_ane1 11>, <&dart_ane2 11>, <&dart_ane3 11>;
+};
