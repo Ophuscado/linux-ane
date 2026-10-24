@@ -157,6 +157,12 @@ static u16 sim_prog_cmd(u16 op, u8 *blk)
 
 		if (sim_prog_mode == 7)
 			return 3;
+		if (sim_prog_mode == 8) {	/* answers with another command's id */
+			u16 wrong = 0x20e;
+
+			memcpy(blk + 4, &wrong, 2);
+			return 0;
+		}
 		memcpy(&a1, blk + 8, 4);
 		memcpy(&ty, blk + 0x10, 4);
 		memcpy(&f54, blk + 0x54, 4);
@@ -1391,7 +1397,7 @@ static void pos_boot(void)
 		int pass, k, w3 = -1, db = -1, nsc3, nh2t, ok;
 		u8 *ipc;
 
-		for (pass = 0; pass < 33; pass++) {
+		for (pass = 0; pass < 34; pass++) {
 			kboot_setup();
 			alias_mbox = true;
 			rtkit_hello = true;
@@ -1438,6 +1444,7 @@ static void pos_boot(void)
 			if (pass == 30) { hs_prog = false; hs_premap = true; }
 			if (pass == 31) dart_inst = 0x2;
 			if (pass == 32) { read_dart = true; dart_inst = 0x10; }
+			if (pass == 33) { hs_premap = true; sim_prog_mode = 8; }
 			ret = probe_now();
 			ipc = sim_n_dma > 1 ? sim_dma[1].va : NULL;
 			nsc3 = 0;
@@ -1498,6 +1505,9 @@ static void pos_boot(void)
 				if (pass == 29)
 					chk(ret == 0 && ok && sim_prog_n == 6 && sim_prog_ops[0] == 0x20d && sim_prog_ops[1] == 0x200 && !sim_premapped && log_count("PREMAP_BUFFER was refused, going on with LOAD_PROGRAM") == 1,
 					    "PG21 PREMAP_BUFFER refused by the firmware (acknowledgement 3): logged, the program runs anyway");
+				if (pass == 33)
+					chk(ret == -EIO && sim_prog_n == 1 && sim_prog_ops[0] == 0x20d && log_count("PREMAP_BUFFER was refused") == 0 && log_count("sequence result -71") == 1 && live == 0,
+					    "PG23 a malformed PREMAP_BUFFER answer (wrong id) is a protocol FAIL, not a refusal: no LOAD_PROGRAM follows");
 				if (pass == 30)
 					chk(ret == -EINVAL && result("boot", "REFUSED", "hs_premap=1 needs hs_prog=1; dart_inst needs hs_prog=1 and read_dart=1 and is a mask of instances 0 to 3") && writes() == 0, "PG22 hs_premap=1 without hs_prog=1 is refused before any write");
 				if (pass == 31)
