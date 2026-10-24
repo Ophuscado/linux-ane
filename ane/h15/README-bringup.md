@@ -64,8 +64,8 @@ template is `ane/h16/`.
   means nothing is enabled: a started core could not fetch its firmware. It
   does not show whether the mapping covers the firmware, whether the core would
   run, or anything about the mailbox.
-  Reading the result: `locked_windows` counts bit 0 of PROTECT (PROTECT_TTBR_TCR, the
-  lock on the translation registers) only. A T6030 (J516S, run by a tester) printed bank 0
+  Reading the result: `locked_windows` counts bit 0 of PROTECT_LOCK (offset 0x208), not
+  of PROTECT (offset 0x200): the code tests `lock & 1`. A T6030 (J516S, run by a tester) printed bank 0
   PROTECT = PROTECT_LOCK = `0x2` and the fourth window, at bank 0 + 0x4000, with another
   version word, so the module skipped it. Bit 1 is the one the M2 Max record in
   `docs/t6021-ane-bringup-findings.md` (section 18) ties to the write protection of the aperture at bank base + 0x4000

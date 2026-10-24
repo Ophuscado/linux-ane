@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- `ane/h15/README-bringup.md` explains how to read the stage 4 DART output: `locked_windows` is bit 0 of PROTECT only; a T6030 tester's bank 0 PROTECT and PROTECT_LOCK `0x2` is bit 1, which on the M2 Max protects the aperture at bank base + 0x4000, the window the module skips as a different version. Carried over from the M2, not measured on an M3.
+- `ane/h15/README-bringup.md` explains how to read the stage 4 DART output: `locked_windows` is bit 0 of PROTECT_LOCK (0x208), not of PROTECT (0x200); a T6030 tester's bank 0 PROTECT and PROTECT_LOCK `0x2` is bit 1, which on the M2 Max protects the aperture at bank base + 0x4000, the window the module skips as a different version. Carried over from the M2, not measured on an M3.
 
 - `ane/h18` names the source of the PREMAP_BUFFER layout (the kernelcache of build 26A434). A malformed answer to PREMAP_BUFFER is a protocol failure now, and only a well formed refusal lets the program stage go on. The stage script asks for `dart=1` only when a DART instance mask is given.
 
