@@ -96,8 +96,8 @@ template is `ane/h16/`.
   (m1n1 writes asc-firmware regions only for dcp, dcpext and ave). Each segment
   must be 16 KiB aligned, at most 64 MiB, disjoint, and outside system RAM,
   or the stage refuses before touching hardware. `map_fw=1` needs `iommus` in
-  the ANE node: `ane/h15/t6030-ane-dart-experimental.dts` (DART instance 0
-  enabled, stream 0 inferred). The mapping is undone after a clean stop and
+  the ANE node: `ane/h15/t6030-ane-dart-experimental.dts` (the three DART instances
+  enabled and listed with stream 0, the aperture window left disabled). The mapping is undone after a clean stop and
   kept when the core does not stop. Then it sets CPU_CONTROL bit 4 (the macOS
   `_runCPU(true)` read-OR-write), watches CPU_STATUS and `MBOX_I2A_CTRL` every
   10 ms for `run_wait_ms`, pops at most four I2A messages (one 64-bit read per receive register) and logs
@@ -290,7 +290,12 @@ the dmesg back.
    line. `verdict=PASS reason=core-started-and-stopped` (or
    `core-never-left-stopped`) means the core is stopped again and the
    module can be removed. `verdict=FAIL reason=core-not-stopped` means
-   reboot. `verdict=FAIL reason=preflight-not-as-iboot-left-it` means
+   reboot. Clearing RUN does not stop a core whose firmware runs: on the M6, with the
+   firmware mapped and RUN cleared, CPU_STATUS stayed `0xd` and the result was the same
+   `core-not-stopped`; that core stopped only after RTKit power messages (stage 6). A core that never
+   ran firmware did not stop either (M6 with no firmware mapped: `0x8`, then `core-not-stopped`). So this
+   result alone does not say whether the core ran; read CPU_STATUS (bit 0 RUNNING) and the mailbox lines. A T6030
+   run with one DART instance bound ended this way: `0x30002a` before RUN, `0x300028` after, bit 0 never set, no message, no DART fault line. `verdict=FAIL reason=preflight-not-as-iboot-left-it` means
    nothing was written. Send the whole `dmesg | grep ane_h15`.
 7. Remove the opt-in key and reboot before any other experiment.
 
