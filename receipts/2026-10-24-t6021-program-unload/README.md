@@ -42,6 +42,6 @@ The first run of the unload on a 14-inch M2 failed at the first 0x203. The drive
 - The driver took the slot for a malformed MALLOC and aborted. That is why the program stayed held and the device was quarantined.
 - Any pool shrink in the firmware can post the same request. It is not limited to 0x203.
 
-The driver now answers it. `ane_rtclient_malloc_service` classifies every ring slot with `ane_t6021_mring_classify` and answers a FREE without allocating. A host test covers the classifier (`tools/test_t6021_mring.c`). The ring is served before each command is sent, while the driver waits, and for 10 ms of quiet after 0x203 and after 0x201. The buffer the firmware gave back stays allocated until teardown.
+The driver now answers it. `ane_rtclient_malloc_service` classifies every ring slot with `ane_t6021_mring_classify` and answers a FREE without allocating. A host test covers the classifier (`tools/test_t6021_mring.c`). The ring is served before each command is sent, while the driver waits, and for 10 ms of quiet after 0x203 and after 0x201. The driver matches the buffer the firmware gave back to its table entry and frees it once the answer is out.
 
 Proven by the decode: the slot shape, the wait, the lock span and the call chain. Inferred: that the doorbell write on the firmware side is the interrupt the host sees. Also inferred: that the SHAREDMALLOC channel is the ring the driver already uses (checked against the firmware-built table at every boot). Not run: any device. `unload_on_close` stays 0 until the proof passes twice on an M2.
