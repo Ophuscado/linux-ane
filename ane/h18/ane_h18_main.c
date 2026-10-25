@@ -1799,6 +1799,10 @@ static int ane_h18_chan_step(struct ane_h18 *ane, const struct ane_h18_hs_buf *t
 				}
 			} else {
 				ret = ane_h18_cmd(ane, &io, seq[i].op, seq[i].len, seq[i].arg, 0, &blk);
+				if (ret == -EREMOTEIO && seq[i].mcsz) {	/* a diagnostic read: its refusal is the result, the run goes on */
+					dev_warn(ane->dev, "ane_h18 chan: the firmware refused %s (ack at +6 nonzero), going on\n", seq[i].name);
+					continue;
+				}
 			}
 			if (ret) {
 				snprintf(when, sizeof(when), "after the failed %s", seq[i].name);
