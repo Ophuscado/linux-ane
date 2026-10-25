@@ -124,9 +124,9 @@ static unsigned int dart_inst;
 module_param(dart_inst, uint, 0444);
 MODULE_PARM_DESC(dart_inst, "hs_prog=1 with read_dart=1: a bit mask of ANE DART instances 0 to 3 whose ENABLE_STREAMS, TCR, TTBR, exception bitmap and the records of streams 0, 10, 11, 13 and 15 are read, read only, before LOAD_PROGRAM and after the call. Instances 1 to 3 are mapped here (ADT dart-ane reg[1..3]). Default 0.");
 
-static bool hs_props;
-module_param(hs_props, bool, 0444);
-MODULE_PARM_DESC(hs_props, "hs_start=1: send the five CH_PROPERTY_WRITE commands (0x1f) the macOS kext sends after CONFIG_GET and RESOURCE_INFO_GET: 0x10a4=1, 0x10a6=1, 0xa1=0, 0x10aa=1, 0x1209=1, in the kext's order. A refused write is logged and the sequence goes on. The values of 0x10a6 and 0x1209 depend on kext config bytes that are not known for the T8152. Default off.");
+static unsigned int hs_props;
+module_param(hs_props, uint, 0444);
+MODULE_PARM_DESC(hs_props, "hs_start=1: send the five CH_PROPERTY_WRITE commands (0x1f) the macOS kext sends after CONFIG_GET and RESOURCE_INFO_GET: 0x10a4=1, 0x10a6=1, 0xa1=0, 0x10aa=1, 0x1209=1, in the kext's order. A refused write is logged and the sequence goes on. The values of 0x10a6 and 0x1209 depend on kext config bytes that are not known for the T8152. hs_props=2 sends 0xa1 = 1 instead of 0: the kext writes 0 for 'ProcedureCall Firmware log', 1 may turn the firmware's per call log on (not tested). Default 0 (off).");
 
 static bool hs_premap;
 module_param(hs_premap, bool, 0444);
@@ -1727,7 +1727,7 @@ static int ane_h18_chan_step(struct ane_h18 *ane, const struct ane_h18_hs_buf *t
 			if (seq[i].prop && !hs_props)
 				continue;
 			if (seq[i].prop) {
-				u32 body[2] = { seq[i].id, seq[i].val };
+				u32 body[2] = { seq[i].id, seq[i].id == 0xa1 ? hs_props == 2 : seq[i].val };
 
 				ret = ane_h18_cmd_body(ane, &io, seq[i].op, seq[i].len, false, 0, (const u8 *)body, sizeof(body), &blk);
 				if (ret == -EREMOTEIO) {
@@ -2091,8 +2091,8 @@ static int ane_h18_stage_boot(struct ane_h18 *ane)
 		ane_h18_result(ane, "boot", "REFUSED", "hs_chan=1 needs handshake=1, hs_cmds=1 needs hs_chan=1, hs_start=1 needs hs_cmds=1 and hs_prog=1 needs hs_start=1");
 		return -EINVAL;
 	}
-	if (hs_props && !hs_start) {
-		ane_h18_result(ane, "boot", "REFUSED", "hs_props=1 needs hs_start=1");
+	if (hs_props > 2 || (hs_props && !hs_start)) {
+		ane_h18_result(ane, "boot", "REFUSED", "hs_props is 0, 1 or 2 and needs hs_start=1");
 		return -EINVAL;
 	}
 	if (hs_prog) {

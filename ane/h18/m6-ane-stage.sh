@@ -46,7 +46,7 @@ fi
 
 WORK=${WORK:-/var/tmp/m6-ane}
 KO=${KO:-$WORK/ane_h18.ko}
-KO_SHA256=${KO_SHA256:-8354da542bf30810f6491333fb9e116237959ab717bdf7d98dd9a24ceea7bc55}
+KO_SHA256=${KO_SHA256:-d0847b983dbf03e69d39fda62335b6a8fae359acd14d52ed44e028f6897ec23b}
 PROG=${PROG:-$WORK/ane_h18_prog.bin}
 PROG_SHA256=${PROG_SHA256:-dcd6c5b87e92458e855031c70772121963ceb463cea08e212170ffa4bc2d3bfc}
 FWDIR=${FWDIR:-/lib/firmware}
@@ -90,7 +90,7 @@ if [ "$step" = 4 ]; then
   case "$chan" in 0|1|2|3|4) ;; *) die "chan must be 0 to 4" ;; esac
   case "$dinst" in [0-9]|1[0-5]) ;; *) die "dinst (DART instance mask) must be 0 to 15" ;; esac
   case "$premap" in 0|1) ;; *) die "premap must be 0 or 1" ;; esac
-  case "$props" in 0|1) ;; *) die "props must be 0 or 1" ;; esac
+  case "$props" in 0|1|2) ;; *) die "props must be 0, 1 or 2" ;; esac
   [ "$dinst" = 0 ] || { [ "$chan" = 4 ] && [ "$dart" = 1 ]; } || die "dinst needs chan=4 and dart=1"
   [ "$premap" = 0 ] || [ "$chan" = 4 ] || die "premap needs chan=4"
   [ "$props" = 0 ] || [ "$chan" -ge 3 ] || die "props needs chan=3 or 4"
@@ -161,7 +161,7 @@ case "$step" in
      [ "$chan" = 4 ] && args="$args hs_prog=1"
      [ "$dinst" = 0 ] || args="$args dart_inst=$dinst"
      [ "$premap" = 0 ] || args="$args hs_premap=1"
-     [ "$props" = 0 ] || args="$args hs_props=1"
+     [ "$props" = 0 ] || args="$args hs_props=$props"
      [ "$hello" = 0 ] || args="$args rtkit_hello=1"
      [ "$hello" -ge 2 ] && args="$args rtkit_start=1"
      [ "$hello" = 3 ] && args="$args rtkit_stop=1"

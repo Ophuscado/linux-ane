@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `ane/h18`: `hs_props` takes 0, 1 or 2 (stage script argument 14 likewise). The first M6 run with `hs_props=1` showed the firmware acknowledges all five property writes (ack 0) and still never finishes the first program, with the console silent after START PROCESSED. `hs_props=2` sends property 0xa1 = 1 instead of 0, the property the kext names 'ProcedureCall Firmware log' and writes as 0, which may make the firmware log what it does with a call. Not tested on a board: whether 1 changes anything. A value above 2 is refused before any write.
+
 - `tools/qwen_m2_decode.py` loads the programs of a package largest first. On the M2 Max the shipped package (38 programs, 2.8 GB of sections) refused to load after other sessions had run on the same boot: `device-open-failed` at a large section, from `DRM_IOCTL_ANE_BO_INIT` failing with ENOMEM. A load-only test on one boot showed the cause is the order, not a leak. The pool was empty and `bo_total_bytes` was 0. Index order refused the 38th program and reverse order refused the 7th. Largest first loaded all 38 in eight sessions in a row, across sessions of both packages. The sections come from the IOVA allocator aligned to a power of two inside a window of about 3 GB, so the order decides whether the last large one fits. A refused session leaves nothing behind: `bo_total_bytes` went back to the parked pool when its process exited. The earlier reading of a leak came from counters read while the process was still shutting down. Not shown yet: a full decode run after the change, and other packages than the two tested.
 
 ## 0.5.2 (2026-10-25)

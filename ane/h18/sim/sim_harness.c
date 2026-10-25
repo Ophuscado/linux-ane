@@ -615,7 +615,8 @@ static void reset_all(void)
 	hs_cfg_size = 0x380000;
 	hs_wait_ms = 50;
 	sim_scr_model = sim_n_dma = sim_dma_fail = sim_default_dom_none = sim_hs_mode = sim_hs_block_ok = sim_hs_wakes = 0;
-	hs_chan = hs_cmds = hs_start = hs_prog = hs_premap = hs_props = false;
+	hs_chan = hs_cmds = hs_start = hs_prog = hs_premap = false;
+	hs_props = 0;
 	sim_nprops = 0;
 	sim_prop_refuse = 0;
 	dart_inst = 0;
@@ -1427,7 +1428,7 @@ static void pos_boot(void)
 		int pass, k, w3 = -1, db = -1, nsc3, nh2t, ok;
 		u8 *ipc;
 
-		for (pass = 0; pass < 37; pass++) {
+		for (pass = 0; pass < 39; pass++) {
 			kboot_setup();
 			alias_mbox = true;
 			rtkit_hello = true;
@@ -1475,9 +1476,11 @@ static void pos_boot(void)
 			if (pass == 31) dart_inst = 0x2;
 			if (pass == 32) { read_dart = true; dart_inst = 0x10; }
 			if (pass == 33) { hs_premap = true; sim_prog_mode = 8; }
-			if (pass == 34) hs_props = true;
-			if (pass == 35) { hs_props = true; sim_prop_refuse = 0x10aa; }
-			if (pass == 36) { hs_start = false; hs_prog = false; hs_props = true; }
+			if (pass == 34) hs_props = 1;
+			if (pass == 35) { hs_props = 1; sim_prop_refuse = 0x10aa; }
+			if (pass == 36) { hs_start = false; hs_prog = false; hs_props = 1; }
+			if (pass == 37) hs_props = 2;
+			if (pass == 38) hs_props = 3;
 			ret = probe_now();
 			ipc = sim_n_dma > 1 ? sim_dma[1].va : NULL;
 			nsc3 = 0;
@@ -1546,8 +1549,12 @@ static void pos_boot(void)
 				if (pass == 35)
 					chk(ret == 0 && sim_cmds_seen == 14 && sim_nprops == 5 && log_count("the firmware refused PROPERTY 0x10aa") == 1 && sim_cmd_ops[9] == 0x200,
 					    "PR2 a refused property write is logged and the sequence goes on to the program");
+				if (pass == 37)
+					chk(ret == 0 && sim_nprops == 5 && sim_prop[2][1] == 0xa1 && sim_prop[2][2] == 1 && sim_prop[0][2] == 1 && sim_prop[3][2] == 1, "PR4 hs_props=2 sends 0xa1 = 1 and the other four as hs_props=1");
+				if (pass == 38)
+					chk(ret == -EINVAL && result("boot", "REFUSED", "hs_props is 0, 1 or 2 and needs hs_start=1") && writes() == 0, "PR5 hs_props=3 is refused before any write");
 				if (pass == 36)
-					chk(ret == -EINVAL && result("boot", "REFUSED", "hs_props=1 needs hs_start=1") && writes() == 0, "PR3 hs_props=1 without hs_start=1 is refused before any write");
+					chk(ret == -EINVAL && result("boot", "REFUSED", "hs_props is 0, 1 or 2 and needs hs_start=1") && writes() == 0, "PR3 hs_props=1 without hs_start=1 is refused before any write");
 				if (pass == 33)
 					chk(ret == -EIO && sim_prog_n == 1 && sim_prog_ops[0] == 0x20d && log_count("PREMAP_BUFFER was refused") == 0 && log_count("sequence result -71") == 1 && live == 0,
 					    "PG23 a malformed PREMAP_BUFFER answer (wrong id) is a protocol FAIL, not a refusal: no LOAD_PROGRAM follows");
