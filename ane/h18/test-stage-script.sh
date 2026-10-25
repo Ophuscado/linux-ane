@@ -196,6 +196,7 @@ rm -f "$T/work/step4-run-0123abcd"
 sleep 1
 # dinst and premap: only with chan=4, dinst only with dart=1
 expect "step 5 with props=1 and chan=2 refused" 2 bash "$S" 5 0123abcd GO 1 2 800 1 3 1 1 2 0 0 1
+expect "step 5 with props=3 refused" 2 bash "$S" 5 0123abcd GO 1 2 800 1 3 1 1 4 0 1 3
 expect "step 5 with premap=1 and chan=3 refused" 2 bash "$S" 5 0123abcd GO 1 2 800 1 3 1 1 3 0 1
 sleep 1
 expect "step 5 with dinst=2 and dart=0 refused" 2 bash "$S" 5 0123abcd GO 1 2 800 0 3 1 1 4 2 0
