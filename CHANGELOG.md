@@ -4,6 +4,12 @@
 
 - `tools/qwen_m2_decode.py` loads the programs of a package largest first. On the M2 Max the shipped package (38 programs, 2.8 GB of sections) refused to load after other sessions had run on the same boot: `device-open-failed` at a large section, from `DRM_IOCTL_ANE_BO_INIT` failing with ENOMEM. A load-only test on one boot showed the cause is the order, not a leak. The pool was empty and `bo_total_bytes` was 0. Index order refused the 38th program and reverse order refused the 7th. Largest first loaded all 38 in eight sessions in a row, across sessions of both packages. The sections come from the IOVA allocator aligned to a power of two inside a window of about 3 GB, so the order decides whether the last large one fits. A refused session leaves nothing behind: `bo_total_bytes` went back to the parked pool when its process exited. The earlier reading of a leak came from counters read while the process was still shutting down. Not shown yet: a full decode run after the change, and other packages than the two tested.
 
+## 0.5.2 (2026-10-25)
+
+This release raises the M1 Max ANE clock to level 1 in the driver, adds the int8 GPTQ Qwen decode package as an opt-in speed tier, and carries the M6 program-stage work: DART instances 0 to 3 with their tunables, the firmware console log, PREMAP_BUFFER and a first program load. It gives the T6030 overlay all three DART banks and the H15 module a read-only SCRATCH dump, and it moves the promotion release step onto one release per run. On the 16-inch M1 Max a Qwen decode step goes from 0.2009 s to 0.1158 s (4.98 to 8.64 tokens per second) with bit-identical logits: one machine and five prompts. A one-hour suspend and resume soak on the same machine then ran clean: 1101 of 1101 level-1 resumes, logits bit-identical in 7 decodes, no bad kernel log lines, 44.6 C at most. The receipt in the repository still lists the soak as not done. The GPTQ package cuts the step by 21 to 29 percent and passes the quality gate on technical text on one M1 and one M2 Max, but it fails the rule on an M2 Max's code and long-position prompts (KL 1.57 and 2.06 times the shipped package). On the M6 no program has finished yet, and the M3 Pro stage 5 runs showed CPU_STATUS with STOPPED clear and IDLE set, and no mailbox message. No default changes on any chip.
+
+### M1 Max (T6001): ANE clock level
+
 - ANE clock level on the T6001 (M1 Max): ane.ko requests level 1 from the PMP
   when the partition comes up and releases it before the partition goes down
   (`ane/src/ane_dvfs.c`, runtime resume and suspend), in the order macOS uses.
@@ -14,37 +20,14 @@
   carries them; without them nothing changes) and the PMP firmware running (nothing in the repository starts it);
   `perf_state` in the device's sysfs directory says what happened. See
   `receipts/2026-10-24-ane-level-driver/README.md`.
-- The release step cuts the release it should: one release per run covering
-  every promotion merged since the last tag (verdict, chip, row shas,
-  driver_source, merge sha), tagging the release commit so the tarball
-  carries its own CHANGELOG section, with `## Unreleased` kept as the first
-  section.
-- The promotion flip is state-independent: the check's case lists and the
-  tested-header list derive their order from rules instead of absolute seats
-  into the v0.4.2 five-chip list, each overlay dts carries one
-  tool-written `Overlay state:` line, the offline suites pick their chips
-  from the overlays table, and `test_promote_chip` runs in the promotion
-  gate. Any promotion state round-trips and passes.
-- `propose` stages only the tracked files the flip wrote; `git add -A` had
-  shipped a committed `__pycache__` blob in v0.4.3 (removed, and
-  `__pycache__/` and `*.pyc` are ignored now).
-- The T6000/T6020 prose matches 0.4.3: the README's default-on line and the
-  evidence cells name the passing rows 6eb94f49985b and 3c9389040f51, the
-  overlay dts headers and the libane receipt stop claiming untested/opt-in,
-  and the libane entry and receipt carry the hardware numbers (#111) instead
-  of "not merged before hardware" and lab aliases.
+
+### M6 (T8152): module and device tree
 
 - `ane/h18` gains `hs_props=1` (stage script argument 14, with chan 3 or 4). After CONFIG_GET it sends the five CH_PROPERTY_WRITE commands the macOS kext sends, in the kext's order: property 0x10a4 = 1, then RESOURCE_INFO_GET, then 0x10a6 = 1, 0xa1 = 0, 0x10aa = 1 and 0x1209 = 1. The block is 0x14 bytes with the property id at +0xc and the value at +0x10, read from the kernelcache of build 26A434 (builder at 0xfffffe0009363890). The last runs sent none of them and the first program stayed started and never finished. The values of 0x10a6 and 0x1209 depend on kext config bytes that are not known for the T8152, so both are sent as 1. A write the firmware refuses is logged and the sequence goes on. The default setting command (0x2e) is not sent, because its value comes from the same unknown config. The simulation checks the order, the ids and the values, a refused write and the refusal without `hs_start=1`.
 
 - `ane/h18` logs the firmware console as text after a failed handshake command or a failed program. A record of the terminal ring holds the address of the text, its length and a timestamp (seen on a board in October 2026, not documented anywhere); the text lies in a buffer the host gave the firmware, so the module reads it and prints one line per record with the slot number and the timestamp. Records that point outside the module's buffers, or whose length is 0 or over 256 bytes, are counted and not printed. The first four printed records also appear as raw bytes (at most 32 each), to tell text from a format reference. Nothing is written. The simulation plants such records and checks the line. Not verified on a board yet: that every record on a real run has this layout.
 
 - `ane/h18` device tree: the DART nodes of instances 1 to 3 now carry their ADT tunables. The kernel's `apple-dart` fails the probe of a Gen3 node without `apple,tunable` (`failed to parse DART tunables`, -ENOENT, seen on a board boot), so the default `t8152-j873-ane-dart.dts` of the previous change did not bring the ANE an iommu group. `t8152-j873-ane-dart-tunables.dtsi` is gone; the records are in `t8152-j873-ane-dart.dtsi`, and `t8152-j873-ane-dart-full.dts` only adds stream 11. `h18-dart-check.py` now fails a node without tunables. The earlier reasoning that the M2 reset values work without them did not apply: the driver requires the property. Not known: whether the 0x20c record on instances 1 to 3 changes translation on the Gen3 DART (instance 0 already carries it).
-
-- `ane_h15` stage 5 gains `run_scratch=1` (off by default): a read-only dump of the eight SCRATCH words before RUN and after the wait, one log line each. It writes nothing. Why: the first T6030 stage 5 runs ended with CPU_STATUS `0x300028` (STOPPED clear, IDLE set, the status a started M2 core reads), no mailbox message and `core-not-stopped`, and the firmware in memory is the 14.x generation, not the 27.0 one stages 6 and 7 were built from. On the M2 the macOS kext waits for `0x08042006` in SCRATCH7 after the start; the dump shows whether this firmware writes it. The SCRATCH offsets come from the macOS kext's T6030 case and have not been read on an M3. `sim-test` checks that the dump reads each word twice, never writes, and that without the parameter the window is not touched.
-
-- `ane/h15/t6030-ane-dart-experimental.dts` now enables the three ANE DART translation instances of the T6030 (0x309800000, 0x309810000, 0x309820000: DARTLLT, DARTBRD, DARTBWR in a J516S's same-boot ADT) and lists all three in the ANE node's `iommus` (stream 0); the aperture window at 0x309804000 stays disabled. Before, only instance 0 was bound, and the first T6030 stage 5 ended with the core leaving STOPPED, no mailbox message and `core-not-stopped`. Whether the other instances matter for that is not known: on the M6 the first message and the whole handshake worked with instance 0 alone, and the instances mattered when the engine ran a program. `tools/test_t6030_dart_overlay.py` (dt-overlays workflow) checks the overlay against the ADT facts and fails on four mutations. The README now says that clearing RUN does not stop a core whose firmware runs (M6 logs), so `core-not-stopped` alone does not say whether the core ran.
-
-- `ane/h15/README-bringup.md` explains how to read the stage 4 DART output: `locked_windows` is bit 0 of PROTECT_LOCK (0x208), not of PROTECT (0x200); a T6030 tester's bank 0 PROTECT and PROTECT_LOCK `0x2` is bit 1, which on the M2 Max protects the aperture at bank base + 0x4000, the window the module skips as a different version. Carried over from the M2, not measured on an M3.
 
 - `ane/h18` names the source of the PREMAP_BUFFER layout (the kernelcache of build 26A434). A malformed answer to PREMAP_BUFFER is a protocol failure now, and only a well formed refusal lets the program stage go on. The stage script asks for `dart=1` only when a DART instance mask is given.
 
@@ -56,7 +39,46 @@
 
 - `ane/h18` gains `hs_prog=1` (needs `hs_start=1`): it loads a program file made by the new `tools/ane-prog-pack` from an ANEC, allocates a surface per section and buffer, sends LOAD_PROGRAM, CREATE_PROCESS and PROCEDURE_CALL on the IO ring in the T6021 wire format, reads the IO_T2H events, and unloads with TERMINATE_PROCESS and DESTROY_PROGRAM. The stage script takes `chan=4` and pins the program file. The sim has twelve new cases, eighteen parser cases and fourteen mutants. Whether the M6 firmware accepts the M2's program format has not been tried on the board.
 
+### M3 (H15): module and overlay
+
+- `ane_h15` stage 5 gains `run_scratch=1` (off by default): a read-only dump of the eight SCRATCH words before RUN and after the wait, one log line each. It writes nothing. Why: the first T6030 stage 5 runs ended with CPU_STATUS `0x300028` (STOPPED clear, IDLE set, the status a started M2 core reads), no mailbox message and `core-not-stopped`, and the firmware in memory is the 14.x generation, not the 27.0 one stages 6 and 7 were built from. On the M2 the macOS kext waits for `0x08042006` in SCRATCH7 after the start; the dump shows whether this firmware writes it. The SCRATCH offsets come from the macOS kext's T6030 case and have not been read on an M3. `sim-test` checks that the dump reads each word twice, never writes, and that without the parameter the window is not touched.
+
+- `ane/h15/t6030-ane-dart-experimental.dts` now enables the three ANE DART translation instances of the T6030 (0x309800000, 0x309810000, 0x309820000: DARTLLT, DARTBRD, DARTBWR in a J516S's same-boot ADT) and lists all three in the ANE node's `iommus` (stream 0); the aperture window at 0x309804000 stays disabled. Before, only instance 0 was bound, and the first T6030 stage 5 ended with the core leaving STOPPED, no mailbox message and `core-not-stopped`. Whether the other instances matter for that is not known: on the M6 the first message and the whole handshake worked with instance 0 alone, and the instances mattered when the engine ran a program. `tools/test_t6030_dart_overlay.py` (dt-overlays workflow) checks the overlay against the ADT facts and fails on four mutations. The README now says that clearing RUN does not stop a core whose firmware runs (M6 logs), so `core-not-stopped` alone does not say whether the core ran.
+
+- `ane/h15/README-bringup.md` explains how to read the stage 4 DART output: `locked_windows` is bit 0 of PROTECT_LOCK (0x208), not of PROTECT (0x200); a T6030 tester's bank 0 PROTECT and PROTECT_LOCK `0x2` is bit 1, which on the M2 Max protects the aperture at bank base + 0x4000, the window the module skips as a different version. Carried over from the M2, not measured on an M3.
+
+### Packages, docs and tools
+
 - `docs/ane-constants-t6021-t8152.md` lists every numeric constant of `ane/t6021` with its T8152 (M6) value and, where known, its H15 value, each marked kext, ADT, board, inferred or not decoded, and `tools/test_ane_constants_table.py` (run in the dt-overlays workflow) re-reads the T6021 values and the `ane/h18` and `ane/h15` references from the source. It records the places where the T6021 values cannot be reused on T8152: the wrapper, SCRATCH and doorbell offsets, the Postoffice mailbox, the firmware's channel table (TERMINAL has 0x200 slots, not 0x300) and the CPU_STATUS value after RUN.
+
+- The S1 int8 package with GPTQ weights passes the quality gate on technical text and replaces plain rounding as the int8 package. On a 13-inch M1 the step p50 goes from 0.0863 s (fp16 package) to 0.0610 s, which is 16.4 tokens per second against 11.6, with KL 0.000397 and top-1 0.9958. Two decode streams give 18.05 scored steps per second against 12.12. On a 14-inch M2 Max the step goes from 0.1579 s to 0.1243 s with KL 0.000400 and top-1 0.9958. On the M2 Max GPTQ lowers the KL of plain int8 by 27 percent at the same step time. The package seals and the full table are in `docs/qwen-decode-packages.md`. The 16-inch M1 Max has not run this package.
+
+- The int8 GPTQ package is an opt-in speed tier, not the default. On a 14-inch M2 Max it was also run on two prompt sets its calibration never saw, with the fp16 package in the same session. On 50 code prompts the KL is 1.57 times the fp16 KL (0.000454 against 0.000289) and top-1 is lower by 0.0013. On 50 long-position prompts of 170 positions the KL is 2.06 times (0.000604 against 0.000293) and top-1 is lower by 0.0028. The step is 21.7 and 21.0 percent lower. `docs/qwen-decode-packages.md` has the table. The default stays the fp16 package.
+
+### Release and promotion tooling
+
+- The release step cuts the release it should: one release per run covering
+  every promotion merged since the last tag (verdict, chip, row shas,
+  driver_source, merge sha), tagging the release commit so the tarball
+  carries its own CHANGELOG section, with `## Unreleased` kept as the first
+  section.
+
+- The promotion flip is state-independent: the check's case lists and the
+  tested-header list derive their order from rules instead of absolute seats
+  into the v0.4.2 five-chip list, each overlay dts carries one
+  tool-written `Overlay state:` line, the offline suites pick their chips
+  from the overlays table, and `test_promote_chip` runs in the promotion
+  gate. Any promotion state round-trips and passes.
+
+- `propose` stages only the tracked files the flip wrote; `git add -A` had
+  shipped a committed `__pycache__` blob in v0.4.3 (removed, and
+  `__pycache__/` and `*.pyc` are ignored now).
+
+- The T6000/T6020 prose matches 0.4.3: the README's default-on line and the
+  evidence cells name the passing rows 6eb94f49985b and 3c9389040f51, the
+  overlay dts headers and the libane receipt stop claiming untested/opt-in,
+  and the libane entry and receipt carry the hardware numbers (#111) instead
+  of "not merged before hardware" and lab aliases.
 
 ## 0.5.1 (2026-10-24)
 
@@ -81,10 +103,6 @@ This release turns the T6021 program unload on by default again. It adds START a
 - `tools/qwen_prog_run.py` now packs and unpacks surfaces with `tools/surface_pack` by default. The bytes are identical to the numpy path, so the decode gives the same logits. It falls back to numpy when no C compiler is available, for a batch stride that is not the plane count times the plane stride, and when `SURFACE_PACK=0` is set. Bad strides still raise `Refuse`. The default reaches the code paths of this repository: `ane_call` and the resident session. The lab decoders (the 13-inch research decoder and the M2 int8 session) have their own numpy pack and use the C code only through a shim, so this default does not change them. With the shim on, the staged decode on a 13-inch M1 had a step p50 4.2 percent lower on the S1 int8 package and 2.5 percent lower on the shipped package, and on a 16-inch M1 Max 1.0 to 1.3 percent lower. Two tests of `tests/test_qwen_m2_decode.py` that failed on main because the stub decoder lacked `resident`, `session`, `resident_states` and `cpu_hist` now pass.
 
 - The S1 int8 package with plain rounding stays an opt-in tier on both chips. On a 13-inch M1 it takes the step p50 from 0.0892 to 0.0649 s with KL 0.000540 and top-1 0.9944. On a 14-inch M2 Max it takes it from 0.1616 s (an older boot with the stock module) to 0.1233 s (a newer boot with the current module) with KL 0.000547 and top-1 0.9945. That is about 23 percent, but not a like-for-like pair: six sets of the shipped package on the newer boot read 0.1592 s without P-core pinning. The shipped package has KL 0.000267 to 0.000269 and top-1 0.9955. The quality gate is KL at most 0.000534 and top-1 at least 0.9945, so S1 misses it by 1.1 percent (13-inch) and 2.4 percent (M2 Max) in KL, and on the 13-inch also in top-1 (0.9944 against 0.9945). It is a speed tier for users who accept that cost.
-
-- The S1 int8 package with GPTQ weights passes the quality gate and replaces plain rounding as the int8 package. On a 13-inch M1 the step p50 goes from 0.0863 s (fp16 package) to 0.0610 s, which is 16.4 tokens per second against 11.6, with KL 0.000397 and top-1 0.9958. Two decode streams give 18.05 scored steps per second against 12.12. On a 14-inch M2 Max the step goes from 0.1579 s to 0.1243 s with KL 0.000400 and top-1 0.9958. On the M2 Max GPTQ lowers the KL of plain int8 by 27 percent at the same step time. The package seals and the full table are in `docs/qwen-decode-packages.md`. The 16-inch M1 Max has not run this package.
-
-- The int8 GPTQ package is an opt-in speed tier, not the default. On a 14-inch M2 Max it was also run on two prompt sets its calibration never saw, with the fp16 package in the same session. On 50 code prompts the KL is 1.57 times the fp16 KL (0.000454 against 0.000289) and top-1 is lower by 0.0013. On 50 long-position prompts of 170 positions the KL is 2.06 times (0.000604 against 0.000293) and top-1 is lower by 0.0028. The step is 21.7 and 21.0 percent lower. `docs/qwen-decode-packages.md` has the table. The default stays the fp16 package.
 
 ## 0.5.0 (2026-10-24)
 
