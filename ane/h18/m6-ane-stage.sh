@@ -48,7 +48,9 @@ WORK=${WORK:-/var/tmp/m6-ane}
 KO=${KO:-$WORK/ane_h18.ko}
 KO_SHA256=${KO_SHA256:-d0847b983dbf03e69d39fda62335b6a8fae359acd14d52ed44e028f6897ec23b}
 PROG=${PROG:-$WORK/ane_h18_prog.bin}
-PROG_SHA256=${PROG_SHA256:-0050490148431c2a787a1e424b8779f74dc666a1a451111606f92fc10144d59f}
+# PROG_SHA256 is a list: any one of the reviewed program files may be staged (a space separated list of sha256, each one a file that went through review)
+PROG_SHA256=${PROG_SHA256:-0050490148431c2a787a1e424b8779f74dc666a1a451111606f92fc10144d59f 8408eb553c8f1017f91472405fe87c4c609ae7d94f41a26005b0ed2de6c2196a 5ce40ebefc2d5aac7987b01fea4dc2c2642805bdb7f1662541bfc6a1a4a165a9 aa2d445daf23162c9d86f2518d1e6ad1a277e4e6e012cf99b35c1046d4946b02}
+prog_pinned() { case " $PROG_SHA256 " in *" $1 "*) return 0 ;; esac; return 1; }
 FWDIR=${FWDIR:-/lib/firmware}
 WANT_UNAME=${WANT_UNAME:-7.1.12-aurora-m6usb-ARCH}
 UNAME_R=${UNAME_R:-$(uname -r)}
@@ -116,7 +118,7 @@ case "$(tr -d '-' < "$BOOT_ID_FILE")" in "$bid"*) ;; *) die "boot id $boot does 
 [ "$(sha256sum "$KO" | cut -c1-64)" = "$KO_SHA256" ] || die "module sha256 is not the pinned $KO_SHA256"
 if [ "$step" = 4 ] && [ "$chan" = 4 ]; then
   [ -f "$PROG" ] || die "no program file at $PROG"
-  [ "$(sha256sum "$PROG" | cut -c1-64)" = "$PROG_SHA256" ] || die "program file sha256 is not the pinned $PROG_SHA256"
+  prog_pinned "$(sha256sum "$PROG" | cut -c1-64)" || die "program file sha256 is not one of the pinned $PROG_SHA256"
   [ -d "$FWDIR" ] && [ -w "$FWDIR" ] || die "$FWDIR is not a writable directory"
 fi
 if $LSMOD | grep -q '^ane_h18 '; then die "ane_h18 is already loaded; rmmod it and reboot if step 3 ran"; fi
@@ -170,8 +172,8 @@ case "$step" in
 esac
 if [ "$step" = 4 ] && [ "$chan" = 4 ]; then
   cp "$PROG" "$FWDIR/ane_h18_prog.bin" && sync || die "cannot install the program file into $FWDIR"
-  [ "$(sha256sum "$FWDIR/ane_h18_prog.bin" | cut -c1-64)" = "$PROG_SHA256" ] || die "the installed program file does not match the pin"
-  echo "program file $PROG_SHA256 installed as $FWDIR/ane_h18_prog.bin" | tee -a "$run/header.txt"
+  prog_pinned "$(sha256sum "$FWDIR/ane_h18_prog.bin" | cut -c1-64)" || die "the installed program file does not match the pin"
+  echo "program file $(sha256sum "$FWDIR/ane_h18_prog.bin" | cut -c1-64) installed as $FWDIR/ane_h18_prog.bin" | tee -a "$run/header.txt"
 fi
 case "$step" in 1) want_stage=dt ;; 2) want_stage=psd ;; 3) want_stage=power ;; 4) want_stage=boot ;; esac
 n0=$($DMESG 2>&1 | grep -c 'ane_h18 RESULT')
