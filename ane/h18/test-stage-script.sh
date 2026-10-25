@@ -136,6 +136,13 @@ expect "step 5 with dyn=3 refused" 2 bash "$S" 5 0123abcd GO 1 2 800 0 3 1 1 4 0
 sleep 1
 FAKE_STAGE=boot expect "step 5 with pmu=1 and dyn=1 passes" 0 bash "$S" 5 0123abcd GO 1 2 800 0 3 1 1 4 0 0 0 1 0 1
 grep -q 'hs_pmu=1 hs_dyn=1' "$T/insmod.args" && echo "  PASS dyn arg reaches the module" || { echo "  FAIL dyn arg"; fails=$((fails + 1)); }
+rm -f "$T/work/step4-run-0123abcd" "$T/fw/ane_h18_prog.bin"
+sleep 1
+expect "step 5 with defset=1 and props=0 refused" 2 bash "$S" 5 0123abcd GO 1 2 800 0 3 1 1 4 0 0 0 0 0 0 1
+expect "step 5 with mcsz=1 and chan=2 refused" 2 bash "$S" 5 0123abcd GO 1 2 800 0 3 1 1 2 0 0 0 0 0 0 0 1
+sleep 1
+FAKE_STAGE=boot expect "step 5 with defset=1 and mcsz=1 passes" 0 bash "$S" 5 0123abcd GO 1 2 800 0 3 1 1 4 0 0 2 1 0 0 1 1
+grep -q 'hs_props=2 hs_pmu=1 hs_defset=1 hs_mcsz=1' "$T/insmod.args" && echo "  PASS defset and mcsz args reach the module" || { echo "  FAIL defset/mcsz args"; fails=$((fails + 1)); }
 rm -f "$T/fw/ane_h18_prog.bin"
 rm -f "$T/work/step4-run-0123abcd"
 sleep 1

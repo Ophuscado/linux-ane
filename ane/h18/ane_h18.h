@@ -109,6 +109,8 @@ static inline enum ane_h18_mal_kind ane_h18_mal_classify(u64 hdr, u64 size, u64 
 #define ANE_H18_CMD_POOL_OFF	0x400	/* the command block lives in the pool surface, 0x100 aligned, as the kext takes every command block from the pool */
 #define ANE_H18_CSNE_CH_PROPERTY_WRITE	0x1f	/* 0x14 bytes: u32 0 at +8, property id at +0xc, u32 value at +0x10 (kext builder 0xfffffe0009363890, kernelcache 26A434) */
 #define ANE_H18_CSNE_PRINT_ENABLE	0x04
+#define ANE_H18_CSNE_MCACHE_SIZE_GET	0x26	/* 12 bytes, no argument; the reply u32 at +8 is the memory cache size (kext fn 0x9363524, kernelcache 26A434) */
+#define ANE_H18_CSNE_DEFAULT_SETTING_SET	0x2e	/* 0x18 bytes: u64 1 at +8 (one setting), u32 2 at +0x10 (register id 2), u32 0x2710 at +0x14; the kext sends it after the property writes (0x9364b60 to 0x9364bac, value from config +0x124) */
 #define ANE_H18_CSNE_SET_DYNAMIC_POWERGATE	0x2d	/* 12 bytes, one byte at +8: 1 enables, 0 disables the firmware's dynamic power gating (kernelcache 26A434 builder 0x936242c, called from a bool-taking function 0x9381d88; where the kext sends it is not decoded; that 1 enables is read from the firmware strings) */
 #define ANE_H18_CSNE_SET_SNE_PMU_BASE2	0x29	/* 16 bytes, u64 at +8: the PMU base the firmware uses for its own power control; the kext sends it after START and before CONFIG_GET (kernelcache 26A434, sender in 0x9363f88) */
 #define ANE_H18_PMU_BASE_H18G	0x300700000ULL	/* the kext's constant for ANE types 0x300 and 0x310 (ANEHWDeviceConfig +0x38, built in 0x938e46c) */
