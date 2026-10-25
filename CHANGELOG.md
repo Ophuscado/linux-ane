@@ -57,6 +57,8 @@ This release raises the M1 Max ANE clock to level 1 in the driver, adds the int8
 
 - The int8 GPTQ package is an opt-in speed tier, not the default. On a 14-inch M2 Max it was also run on two prompt sets its calibration never saw, with the fp16 package in the same session. On 50 code prompts the KL is 1.57 times the fp16 KL (0.000454 against 0.000289) and top-1 is lower by 0.0013. On 50 long-position prompts of 170 positions the KL is 2.06 times (0.000604 against 0.000293) and top-1 is lower by 0.0028. The step is 21.7 and 21.0 percent lower. `docs/qwen-decode-packages.md` has the table. The default stays the fp16 package.
 
+- A second int8 GPTQ package calibrated on prose, multilingual and code prompts is listed in `docs/qwen-decode-packages.md` (seals 829b43ab for the M1 and 539b3c73 for the M2 Max). On a 13-inch M1 it keeps the technical-set KL (0.000390 against 0.000397) and cuts the KL on 26 code prompts it never saw from 1.60 to 1.38 times the fp16 KL, which passes the rule the first package failed. On the 170-position prompt set it is worse (2.26 times against 2.06). Both packages stay opt-in speed tiers. The M2 Max package has not been run.
+
 ### Release and promotion tooling
 
 - The release step cuts the release it should: one release per run covering
