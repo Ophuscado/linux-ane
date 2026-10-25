@@ -219,6 +219,15 @@ except (AttributeError, OSError):
     _SCHED_GETCPU = None
 
 
+def load_order(tables):
+    """Indices of the (anec, ports, ...) tables, largest program file first, ties in index order. The driver gets every section from the
+    IOVA allocator (aligned to its power of two size) in a 32-bit window of about 3 GB, and the shipped package fills 2.8 GB of it, so the
+    order of the loads decides whether the last one fits. In index order the 38 programs load on a fresh boot but a later session fails at
+    a large section (BO_INIT ENOMEM, 'device-open-failed'), with an empty pool; largest first loaded 38 of 38 in eight sessions in a row
+    on an M2 where index order and reverse order refused (the M2 load test of this change)."""
+    return sorted(range(len(tables)), key=lambda k: (-os.path.getsize(tables[k][0]), k))
+
+
 def sched_getcpu():
     """The CPU the calling thread runs on now (glibc sched_getcpu, looked up once; os has no such call); -1 when unavailable."""
     return _SCHED_GETCPU() if _SCHED_GETCPU is not None else -1
@@ -302,7 +311,8 @@ class Decoder:
         if self.session is not None:
             for name in list(self.session.names):
                 self.session.free(name)
-            for i, (anec, path, ports) in enumerate(self.tables):
+            for i in load_order(self.tables):
+                anec, path, ports = self.tables[i]
                 n_in = len([p for p in ports.values()
                             if p["direction"] == "input"])
                 n_out = len([p for p in ports.values()

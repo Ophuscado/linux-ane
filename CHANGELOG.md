@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `tools/qwen_m2_decode.py` loads the programs of a package largest first. On the M2 Max the shipped package (38 programs, 2.8 GB of sections) refused to load after other sessions had run on the same boot: `device-open-failed` at a large section, from `DRM_IOCTL_ANE_BO_INIT` failing with ENOMEM. A load-only test on one boot showed the cause is the order, not a leak. The pool was empty and `bo_total_bytes` was 0. Index order refused the 38th program and reverse order refused the 7th. Largest first loaded all 38 in eight sessions in a row, across sessions of both packages. The sections come from the IOVA allocator aligned to a power of two inside a window of about 3 GB, so the order decides whether the last large one fits. A refused session leaves nothing behind: `bo_total_bytes` went back to the parked pool when its process exited. The earlier reading of a leak came from counters read while the process was still shutting down. Not shown yet: a full decode run after the change, and other packages than the two tested.
+
 - ANE clock level on the T6001 (M1 Max): ane.ko requests level 1 from the PMP
   when the partition comes up and releases it before the partition goes down
   (`ane/src/ane_dvfs.c`, runtime resume and suspend), in the order macOS uses.
