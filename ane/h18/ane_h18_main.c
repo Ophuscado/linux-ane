@@ -128,6 +128,14 @@ static unsigned int hs_props;
 module_param(hs_props, uint, 0444);
 MODULE_PARM_DESC(hs_props, "hs_start=1: send the five CH_PROPERTY_WRITE commands (0x1f) the macOS kext sends after CONFIG_GET and RESOURCE_INFO_GET: 0x10a4=1, 0x10a6=1, 0xa1=0, 0x10aa=1, 0x1209=1, in the kext's order. A refused write is logged and the sequence goes on. The values of 0x10a6 and 0x1209 depend on kext config bytes that are not known for the T8152. hs_props=2 sends 0xa1 = 1 instead of 0: the kext writes 0 for 'ProcedureCall Firmware log', 1 may turn the firmware's per call log on (not tested). Default 0 (off).");
 
+static bool hs_defset;
+module_param(hs_defset, bool, 0444);
+MODULE_PARM_DESC(hs_defset, "hs_props=1 or 2: send DEFAULT_SETTING_SET (0x2e, 0x18 bytes: one setting, register id 2, value 0x2710) after the property writes, as the macOS kext does. Default off.");
+
+static bool hs_mcsz;
+module_param(hs_mcsz, bool, 0444);
+MODULE_PARM_DESC(hs_mcsz, "hs_start=1: send MCACHE_SIZE_GET (0x26, read only) after CONFIG_GET and log the size in the reply. Default off.");
+
 static unsigned int hs_dyn;
 module_param(hs_dyn, uint, 0444);
 MODULE_PARM_DESC(hs_dyn, "hs_pmu=1: send SET_DYNAMIC_POWERGATE (0x2d) right after SET_SNE_PMU_BASE2: 1 = disable dynamic power gating (byte 0), 2 = enable it (byte 1). Default 0: not sent.");
@@ -1715,18 +1723,20 @@ static int ane_h18_chan_step(struct ane_h18 *ane, const struct ane_h18_hs_buf *t
 		/* the kext's order: PRINT_ENABLE, START, CONFIG_GET, RESOURCE_INFO_GET (the last two commands only with hs_start) */
 		/* prop: a CH_PROPERTY_WRITE (0x1f, 0x14 bytes: u32 0 at +8, property id at +0xc, value at +0x10), sent only with hs_props. The kext sends the first one before
 		 * RESOURCE_INFO_GET and the other four after it. */
-		static const struct { u16 op; u32 len; bool arg; const char *name; bool start_only; bool prop; u32 id, val; bool pmu, dyn; } seq[] = {
+		static const struct { u16 op; u32 len; bool arg; const char *name; bool start_only; bool prop; u32 id, val; bool pmu, dyn, mcsz, defset; } seq[] = {
 			{ ANE_H18_CSNE_PRINT_ENABLE, 12, true, "PRINT_ENABLE", false },
 			{ ANE_H18_CSNE_START, 12, false, "START", true },
 			{ ANE_H18_CSNE_SET_SNE_PMU_BASE2, 16, false, "SET_SNE_PMU_BASE2", true, false, 0, 0, true },
 			{ ANE_H18_CSNE_SET_DYNAMIC_POWERGATE, 12, false, "SET_DYNAMIC_POWERGATE", true, false, 0, 0, true, true },
 			{ ANE_H18_CSNE_CONFIG_GET, 16, false, "CONFIG_GET", false },
+			{ ANE_H18_CSNE_MCACHE_SIZE_GET, 12, false, "MCACHE_SIZE_GET", true, false, 0, 0, false, false, true },
 			{ ANE_H18_CSNE_CH_PROPERTY_WRITE, 0x14, false, "PROPERTY 0x10a4", true, true, 0x10a4, 1 },
 			{ ANE_H18_CSNE_RESOURCE_INFO_GET, 100, false, "RESOURCE_INFO_GET", true },
 			{ ANE_H18_CSNE_CH_PROPERTY_WRITE, 0x14, false, "PROPERTY 0x10a6", true, true, 0x10a6, 1 },
 			{ ANE_H18_CSNE_CH_PROPERTY_WRITE, 0x14, false, "PROPERTY 0xa1", true, true, 0xa1, 0 },
 			{ ANE_H18_CSNE_CH_PROPERTY_WRITE, 0x14, false, "PROPERTY 0x10aa", true, true, 0x10aa, 1 },
 			{ ANE_H18_CSNE_CH_PROPERTY_WRITE, 0x14, false, "PROPERTY 0x1209", true, true, 0x1209, 1 },
+			{ ANE_H18_CSNE_DEFAULT_SETTING_SET, 0x18, false, "DEFAULT_SETTING_SET", true, false, 0, 0, false, false, false, true },
 		};
 
 		bool pmu_ok = false;
@@ -1737,6 +1747,10 @@ static int ane_h18_chan_step(struct ane_h18 *ane, const struct ane_h18_hs_buf *t
 			if (seq[i].start_only && !hs_start)
 				continue;
 			if (seq[i].prop && !hs_props)
+				continue;
+			if (seq[i].mcsz && !hs_mcsz)
+				continue;
+			if (seq[i].defset && (!hs_defset || !hs_props))
 				continue;
 			if (seq[i].pmu && !seq[i].dyn && !hs_pmu)
 				continue;
@@ -1750,7 +1764,15 @@ static int ane_h18_chan_step(struct ane_h18 *ane, const struct ane_h18_hs_buf *t
 				dev_warn(ane->dev, "ane_h18 chan: no %s: the firmware did not take the PMU base\n", seq[i].name);
 				continue;
 			}
-			if (seq[i].dyn) {
+			if (seq[i].defset) {
+				u32 body[4] = { 1, 0, 2, 0x2710 };	/* u64 1 (one setting), u32 register id 2, u32 value 0x2710 */
+
+				ret = ane_h18_cmd_body(ane, &io, seq[i].op, seq[i].len, false, 0, (const u8 *)body, sizeof(body), &blk);
+				if (ret == -EREMOTEIO) {
+					dev_warn(ane->dev, "ane_h18 chan: the firmware refused %s (ack at +6 nonzero), going on\n", seq[i].name);
+					continue;
+				}
+			} else if (seq[i].dyn) {
 				u32 on = hs_dyn == 2;	/* the byte at +8 is the low byte of this word */
 
 				ret = ane_h18_cmd_body(ane, &io, seq[i].op, seq[i].len, false, 0, (const u8 *)&on, sizeof(on), &blk);
@@ -1783,6 +1805,10 @@ static int ane_h18_chan_step(struct ane_h18 *ane, const struct ane_h18_hs_buf *t
 				ane_h18_chan_snapshot(ane, when, true);
 				ane_h18_term_log(ane, when);
 				return ret == -EPROTO || ret == -EREMOTEIO || ret == -ETIMEDOUT || ret == -EBUSY ? -EIO : ret;
+			}
+			if (seq[i].op == ANE_H18_CSNE_MCACHE_SIZE_GET) {
+				memcpy(&v, blk + 8, 4);
+				dev_info(ane->dev, "ane_h18 chan: MCACHE_SIZE_GET reply u32 at +8 = %#x\n", v);
 			}
 			if (seq[i].op == ANE_H18_CSNE_CONFIG_GET) {
 				memcpy(&v, blk + 8, 4);

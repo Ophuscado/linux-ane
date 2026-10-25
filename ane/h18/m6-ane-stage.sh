@@ -3,7 +3,7 @@
 # m6-ane-stage.sh: run ONE ane_h18 stage on the M6 (T8152), as root, and collect the log.
 #   m6-ane-stage.sh <1|2|3> <boot-id prefix> [GO [state [slots [mbox [ctrl]]]]]
 #   m6-ane-stage.sh 4 <boot-id prefix> GO [state [slots [wait_ms [dart [hello [scratch]]]]]]
-#   m6-ane-stage.sh 5 <boot-id prefix> GO [state [slots [wait_ms [dart [hello [scratch [handshake [chan [dinst [premap [props [pmu [pwait [dyn]]]]]]]]]]]]]]   (chan 0 to 4; dinst = mask of DART instances 0 to 3 to read, premap = send PREMAP_BUFFER, props = send the five CH_PROPERTY_WRITE commands)
+#   m6-ane-stage.sh 5 <boot-id prefix> GO [state [slots [wait_ms [dart [hello [scratch [handshake [chan [dinst [premap [props [pmu [pwait [dyn [defset [mcsz]]]]]]]]]]]]]]]]   (chan 0 to 4; dinst = mask of DART instances 0 to 3 to read, premap = send PREMAP_BUFFER, props = send the five CH_PROPERTY_WRITE commands)
 # Step 1 = stage dt (no MMIO), step 2 = stage psd (read-only PSD slots 30 and 31), step 3 = stage power with
 # confirm_power=1 (requests PSD state <state> on the first <slots> slots, default 1 = slot 30 only, then reads CPU_STATUS,
 # ASC_STATUS and IORVBAR; mbox=1 also reads the Postoffice status words of three candidate channels, ctrl=1 also reads CPU_CONTROL).
@@ -46,7 +46,7 @@ fi
 
 WORK=${WORK:-/var/tmp/m6-ane}
 KO=${KO:-$WORK/ane_h18.ko}
-KO_SHA256=${KO_SHA256:-2dae54ee0e5d9943e56874b1c652c67141e4e6402be698ffc4e38ca69679fdba}
+KO_SHA256=${KO_SHA256:-b060cc5c24db81c5b0a40cb6abce4630ed6ad82f8ebfb4294124a6f9e1d1671d}
 PROG=${PROG:-$WORK/ane_h18_prog.bin}
 # PROG_SHA256 is a list: any one of the reviewed program files may be staged (a space separated list of sha256, each one a file that went through review)
 PROG_SHA256=${PROG_SHA256:-0050490148431c2a787a1e424b8779f74dc666a1a451111606f92fc10144d59f 8408eb553c8f1017f91472405fe87c4c609ae7d94f41a26005b0ed2de6c2196a 5ce40ebefc2d5aac7987b01fea4dc2c2642805bdb7f1662541bfc6a1a4a165a9 aa2d445daf23162c9d86f2518d1e6ad1a277e4e6e012cf99b35c1046d4946b02 8068aee9b91cc336ad6d9f0c8dcc8710bbae580e0777b4b4350a626598727d51 230f4caa8c2134389c214f83014fe6e17abc6bc3294f7e0d8898c6ef4427b4f4 b014b30cd284a0ad4abc836ac10681e58237ad40c5fe5993386252919c010dd6 3719e5ee14d9d4ea9c0dab1655a8b84785bd73fc04126f1de620edb60ca56d24 b623517dfdc86df62255dfac4278b9e9b3d1f49e33d1af364301f6ba6f670e7d 8f2ff344b55500b131915461b481aeb7fbd267f602f3e60d6ba427174adb23e3 8b36520d17f586689714eb3d3643be592df8b502146d80dc86bfbc020af98f72 b85d3928ddfaa5a16d54e98a750238494d43a9c4b2b22a738a9b39944f8b0399}
@@ -82,6 +82,8 @@ props=${14:-0}
 pmu=${15:-0}
 pwait=${16:-0}
 dyn=${17:-0}
+defset=${18:-0}
+mcsz=${19:-0}
 die() { echo "m6-ane-stage: REFUSED: $*" >&2; exit 2; }
 
 case "$step" in 1|2|3|4) ;; *) die "usage: $0 <1|2|3|4> <boot-id prefix> [GO [state [slots [mbox [ctrl]]]]]" ;; esac
@@ -100,6 +102,9 @@ if [ "$step" = 4 ]; then
   [ "$pmu" = 0 ] || [ "$chan" -ge 3 ] || die "pmu needs chan=3 or 4"
   case "$dyn" in 0|1|2) ;; *) die "dyn must be 0, 1 or 2" ;; esac
   [ "$dyn" = 0 ] || [ "$pmu" = 1 ] || die "dyn needs pmu=1"
+  case "$defset$mcsz" in 00|01|10|11) ;; *) die "defset and mcsz must be 0 or 1" ;; esac
+  [ "$defset" = 0 ] || [ "$props" != 0 ] || die "defset needs props 1 or 2"
+  [ "$mcsz" = 0 ] || [ "$chan" -ge 3 ] || die "mcsz needs chan=3 or 4"
   [ "$dinst" = 0 ] || { [ "$chan" = 4 ] && [ "$dart" = 1 ]; } || die "dinst needs chan=4 and dart=1"
   [ "$premap" = 0 ] || [ "$chan" = 4 ] || die "premap needs chan=4"
   [ "$props" = 0 ] || [ "$chan" -ge 3 ] || die "props needs chan=3 or 4"
@@ -174,6 +179,8 @@ case "$step" in
      [ "$pmu" = 0 ] || args="$args hs_pmu=1"
      [ "$pwait" = 0 ] || args="$args hs_wait_ms=5000"
      [ "$dyn" = 0 ] || args="$args hs_dyn=$dyn"
+     [ "$defset" = 0 ] || args="$args hs_defset=1"
+     [ "$mcsz" = 0 ] || args="$args hs_mcsz=1"
      [ "$hello" = 0 ] || args="$args rtkit_hello=1"
      [ "$hello" -ge 2 ] && args="$args rtkit_start=1"
      [ "$hello" = 3 ] && args="$args rtkit_stop=1"
