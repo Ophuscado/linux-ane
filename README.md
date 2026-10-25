@@ -1,15 +1,49 @@
 # omarchy-ane
 
-Linux driver for the Apple Neural Engine (ANE) in M1 and M2 Macs. It ships DRM kernel modules and `libane`, the userspace library. Tested and on by default after install: M1 (T8103), M1 Pro (T6000), M1 Max (T6001), M2 Pro (T6020) and M2 Max (T6021). Other chips are opt-in and untested, or unsupported. eiln/ane did the M1 reverse engineering. This fork wires up the other chips.
+Linux driver for the Apple Neural Engine (ANE) in M1 and M2 Macs. It ships DRM
+kernel modules and `libane`, the userspace library. Based on [eiln/ane](https://github.com/eiln/ane),
+which reverse engineered the M1; this fork adds the other chips, packaging,
+device-tree overlays and verification tools.
 
-## Chip coverage
+<a id="chip-coverage"></a>
 
-- on by default: tested on real hardware. The overlay applies at install and the driver binds at boot.
-- opt-in, untested: a driver binds the `compatible`, and an overlay with cited values exists. Nobody has run it on that silicon yet. You add the opt-in key yourself. `omarchy-ane-check` prints `UNTESTED SoC` for it.
-- unsupported: no driver binds this ANE.
-- data-only: no driver binds this ANE, but the repo keeps cited data for it in `data/ane-soc/` ([docs/ane-soc-data.md](docs/ane-soc-data.md)). No opt-in key applies its overlay. `omarchy-ane-check` prints `DATA-ONLY SoC` for it.
+## Support at a glance
 
-To opt in, append the key as one line to `/etc/omarchy-mac-boot/dtb-overlays.opt-in`, then:
+- Enabled by default: M1, M1 Pro, M1 Max, M2 Pro, M2 Max. The overlay
+  applies at install and the driver binds at boot. Each of these chips has run
+  exact fp16 execution on real hardware. Enabled by default still requires a
+  system that can apply the overlay (omarchy-mac-boot overlay support, or the
+  kernel's own device tree already carrying the node) and, on the M2 family,
+  the firmware fetch; the install section covers both.
+- Opt in, untested: M1 Ultra (die 0), plain M2, M2 Ultra (die 0). A driver
+  and a cited overlay exist; nobody has run them on that silicon. You add one
+  opt-in key.
+- No packaged driver for M3 and later. Experimental bring-up modules for the
+  first owner of such a machine live in `ane/h15` (M3), `ane/h16` (M4) and
+  `ane/h18` (Mac mini M6). None is packaged or autoloaded; each loads by hand
+  behind its own opt-in parameter and per-stage confirmations, and none runs
+  real inference yet ([h15](ane/h15/README-bringup.md),
+  [h16](ane/h16/README-bringup.md), [h18](ane/h18/README-bringup.md)). Data
+  for newer chips sits in `data/ane-soc/`
+  ([docs/ane-soc-data.md](docs/ane-soc-data.md)).
+
+| Mac | SoC | Internal | Linux `compatible` | Driver | State | Opt-in key | Tested by |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| M1 | T8103 | not recorded | `apple,t8103-ane` | `ane` | on by default | none | fp16 execution verified |
+| M1 Pro | T6000 | not recorded | `apple,t6000-ane` | `ane` | on by default | none | fp16 execution verified |
+| M1 Max | T6001 | not recorded | `apple,t6000-ane` | `ane` | on by default | none | fp16 execution verified |
+| M1 Ultra | T6002 | not recorded | `apple,t6000-ane` | `ane` | opt-in, untested (die 0) | `ane-t6002` | not tested |
+| M2 | T8112 | not recorded | `apple,t8112-ane` | `ane_t6021` | opt-in, untested | `ane-t8112` + note | not tested |
+| M2 Pro | T6020 | not recorded | `apple,t6020-ane` | `ane_t6021` | on by default | none | fp16 execution verified |
+| M2 Max | T6021 | not recorded | `apple,t6021-ane` | `ane_t6021` | on by default | none | fp16 execution verified |
+| M2 Ultra | T6022 | not recorded | `apple,t6022-ane` | `ane_t6021` | opt-in, untested (die 0) | `ane-t6022` + note | not tested |
+
+The T8112 and T6022 note: after adding the key, run
+`sudo omarchy-ane-firmware-fetch` before `omarchy-ane-dt apply`. The M2 Pro
+and M2 Max fetch firmware automatically at install.
+
+To opt in, append the key as one line to
+`/etc/omarchy-mac-boot/dtb-overlays.opt-in`, then:
 
 ```sh
 sudo omarchy-ane-dt apply
@@ -17,22 +51,213 @@ sudo update-m1n1
 sudo reboot
 ```
 
-Some installers set `DTBS=` in `/etc/default/update-m1n1` (iconidentify/aurora-linux does). Then m1n1 boots the kernel's own device trees, and `omarchy-ane-check` prints `dtbs_source=kernel`: overlay opt-in has no effect, chip enabled only by its node in the kernel DT. On such a system `omarchy-ane-dt apply` refuses, and the check names no opt-in key.
+Some installers set `DTBS=` in `/etc/default/update-m1n1` so m1n1 boots the
+kernel's own device trees. On such a system overlay opt-in has no effect
+(`omarchy-ane-check` prints `dtbs_source=kernel`), and `omarchy-ane-dt apply`
+refuses. The chip is then enabled only by its node in the kernel's device
+tree.
 
-| Marketing | SoC | Internal | Linux `compatible` | Driver | State | Opt-in key | Tested by |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| M1 | T8103 | H13G | `apple,t8103-ane` | `ane` | on by default | none | bind plus exact fp16 execution. Qwen staged decode and the Parakeet contract bit-exact against same-SoC macOS. |
-| M1 Pro | T6000 | H13J | `apple,t6000-ane` | `ane` | on by default | none | bind plus exact fp16 execution (passing row 6eb94f49985b, H13 smoke). |
-| M1 Max | T6001 | H13J | `apple,t6000-ane` | `ane` | on by default | none | bind plus exact fp16 execution. Task-queue recovery validated. |
-| M1 Ultra | T6002 | H13J | `apple,t6000-ane` | `ane` | opt-in, untested (die 0) | `ane-t6002` | nothing on T6002 silicon |
-| M2 | T8112 | H14G | `apple,t8112-ane` | `ane_t6021` | opt-in, untested | `ane-t8112` + note | nothing on T8112 silicon |
-| M2 Pro | T6020 | H14J | `apple,t6020-ane` | `ane_t6021` | on by default | none | bind plus exact fp16 execution (passing row 3c9389040f51, H14 smoke). |
-| M2 Max | T6021 | H14J | `apple,t6021-ane` | `ane_t6021` | on by default | none | firmware starts under Linux. fp16 ops and matvec to 2048x5120 exact. The whole Parakeet encoder is bit-exact. All 38 Qwen programs conform to the M1. |
-| M2 Ultra | T6022 | H14J | `apple,t6022-ane` | `ane_t6021` | opt-in, untested (die 0) | `ane-t6022` + note | nothing on T6022 silicon |
+## Install
 
-The T6022 and T8112 note: after adding the key, run `sudo omarchy-ane-firmware-fetch` before `omarchy-ane-dt apply`. The install hook fetches firmware on the M2 Pro and M2 Max. M3 and later are unsupported: the package binds no driver to them. For the M4 family, `ane/h16` has an experimental bring-up module that is not packaged, loads only by hand with `optin=SOC`, and runs no inference ([ane/h16/README-bringup.md](ane/h16/README-bringup.md)). The macOS 27.0 ADTs give four shapes. The M3 family (H15) ANE is an ASC IOP (`iop,ascwrap-v6`). The M4 family (H16) keeps `ane,t8020`. The MacBook Neo, the M5 MacBook and T6050 (H17) use `ane,t8132exclave`, which the macOS kernel binds to the same `H11ANEIn` class as `ane,t8020`, so `ane_t6021` is the closer model for H16 and H17 ([receipts/2026-10-02-neo-ane](receipts/2026-10-02-neo-ane/README.md)). The M6 Mac mini (T8152, H18) is an ASC IOP again, `iop-ane,ascwrap-v8` ([receipts/2026-10-02-ane-gen-h18](receipts/2026-10-02-ane-gen-h18/README.md)).
+### Omarchy
 
-Data-only chips. Each row is a file `data/ane-soc/SOC.json`. Overlay is yes when `packaging/dt/SOC-ane-dataonly.dts` exists. `tools/gen_coverage_table.py` writes this table.
+```sh
+sudo pacman -S omarchy-ane-dkms
+```
+
+or pick the Install menu's "MLX + Core ML (Apple Silicon)" row, which installs
+it with the rest of the MLX stack. The package:
+
+- builds `ane.ko` (M1 family) and `ane_t6021.ko` (M2 family) with DKMS for
+  every kernel that has headers, and rebuilds after each kernel update.
+  Install the headers for the kernel you run (`linux-aurora-headers`,
+  `linux-asahi-headers`). A kernel that ships its own ANE driver
+  (`CONFIG_DRM_ACCEL_ANE`) keeps its own modules; DKMS skips that kernel.
+- installs the device-tree overlays to
+  `/usr/lib/omarchy-mac-boot/dtb-overlays` and re-applies them after kernel
+  updates.
+- fetches the M2-family ANE firmware at install and upgrade.
+- ships the tools: `omarchy-ane-check`, `omarchy-ane-dt`,
+  `omarchy-ane-firmware-fetch`, `omarchy-ane-probe`
+  ([docs/ane-probe.md](docs/ane-probe.md)), `omarchy-ane-smoke` and
+  `omarchy-ane-run`.
+
+On M1, M1 Max and M2 Max the package does the rest: omarchy-mac-boot applies
+package-owned overlays (support merged in omacom/omarchy-mac-pkgs#3, the port
+of omacom/omarchy-mac#677). The overlay applies at install and the driver
+binds at boot. With an omarchy-mac-boot old enough to predate that support,
+`omarchy-ane-dt` refuses and the ANE node is absent unless the kernel's own
+device tree has it; update omarchy-mac-boot first. The package adds no udev
+rule: systemd's default rule makes `/dev/accel/*` mode `0666`, so every user
+can open the ANE node.
+
+### Arch Linux ARM (asahi-alarm)
+
+```sh
+sudo omarchy-ane-dt apply
+sudo update-m1n1
+sudo reboot
+```
+
+`omarchy-ane-dt apply` finds this Mac's board device tree, applies the
+overlays to a checked copy per installed kernel under
+`/var/lib/omarchy-ane/dtbs/`, and points `/etc/default/update-m1n1` at the
+copies. It never edits a package-owned file, and a second run changes
+nothing. Removing the package takes the line and the copies out; run
+`sudo update-m1n1` afterwards. When the kernel's own device tree already has
+the ANE node enabled, the overlay steps aside.
+
+### From source
+
+```sh
+make -C ane            # ane.ko        (M1 family)
+make -C ane/t6021      # ane_t6021.ko  (M2 family)
+make -C libane && make -C bindings/python/dylib
+```
+
+Build against the headers of the kernel you run. `dkms.conf` at the repo root
+builds the same two modules through DKMS. The overlays install with
+`packaging/build-dtbo /`.
+
+## Firmware
+
+M1-family chips need no firmware from Linux; iBoot preloads it before the
+kernel boots. The M2 family is the other way: Linux starts the ANE's ASC
+firmware, and the driver takes one image only: the selene payload from the
+macOS 13.5 (22G74) stub every Omarchy M1 and M2 install boots.
+`omarchy-ane-firmware-fetch` reads the stub version from the device tree,
+range-fetches only the ANE member (about 5 MB of a ~13 GB IPSW) from a pinned
+Apple CDN URL, and installs it under `/usr/lib/firmware/apple/ane/` only when
+size and SHA-256 match the pin stored in the driver. It refuses and writes
+nothing when the stub version is unknown, the network is down, or the hash
+differs. Apple firmware is never shared; each Mac fetches its own copy. The
+tool needs nothing but Python 3's standard library.
+
+## Clock level (M1 Max)
+
+Linux used to leave the M1 Max ANE at its lowest clock level. Since 0.5.2 the
+`ane` driver asks the platform's power manager for clock level 1 when the ANE
+partition comes up and releases it before the partition goes down. On one
+16-inch M1 Max this cut a full Qwen decode step from 0.2009 s to 0.1158 s
+(4.98 to 8.64 tokens per second) with bit-identical logits; level 2 added
+under 3 percent and the driver never writes a higher level.
+
+The request needs three extra device-tree resources on the ANE node (two
+`reg` windows and the PMS SRAM power domain). Only the T6001 overlay carries
+them, and it ships separately from the base overlay:
+
+- `omarchy-ane-level-dt` is an Arch package built from this checkout. Build
+  and install it:
+
+  ```sh
+  cd packaging/arch/omarchy-ane-level-dt && makepkg -f
+  sudo pacman -U ./omarchy-ane-level-dt-*.pkg.tar.zst
+  ```
+
+  It installs the overlay where omarchy-mac-boot applies package-owned
+  overlays. At install and after kernel updates, `omarchy-ane-level-check`
+  compares the installed linux-aurora T6001 device trees against the exact
+  values the overlay was written for; if they differ, the guard removes the
+  overlay so the next m1n1 build runs without it.
+- a driver build that contains the clock-level code. DKMS builds of
+  `omarchy-ane-dkms` include it. On a kernel that ships its own ANE driver,
+  the package `omarchy-ane-modules-aurora-12.6` installs an `ane.ko` under
+  `updates/` for the one kernel version it names, where depmod prefers it to
+  the kernel's copy. Build and install it the same way from
+  `packaging/arch/omarchy-ane-modules-aurora-12.6`; its dependency on the
+  kernel's modules package means `pacman -U` needs that package already
+  installed. A loaded module is replaced only by the next boot. Neither
+  package is in a binary repository.
+
+To undo the clock level, remove the two packages and rebuild the boot files
+before you reboot:
+
+```sh
+sudo pacman -R omarchy-ane-modules-aurora-12.6 omarchy-ane-level-dt
+sudo update-m1n1
+```
+
+Removing `omarchy-ane-level-dt` deletes its overlay. Rebuilding m1n1 leaves
+out that clock-level overlay; other installed overlays are not removed.
+Removing the modules package runs depmod again, so the next boot returns to
+the kernel's own `ane.ko`.
+
+The level request also needs the PMP firmware running; nothing in this
+repository starts it. `perf_state` in the device's sysfs directory reports
+what happened, including the reason when the driver stayed at level 0; after
+three failed handshakes the driver stops retrying until it is reloaded.
+Sequence and measurements:
+[receipts/2026-10-24-ane-level-driver/README.md](receipts/2026-10-24-ane-level-driver/README.md).
+
+## Verifying it works
+
+```sh
+omarchy-ane-check            # read-only: SoC, device-tree node, module, firmware pin
+omarchy-ane-check --installed   # after a kernel update: both modules rebuilt for every kernel
+omarchy-ane-check --smoke    # runs the add program 20 times, bit-exact or fail
+```
+
+`ready` (exit 0) means the driver is built, loaded, bound, and the
+`/dev/accel` node is open. On the M2 family the check also verifies the
+installed firmware against the pin. `omarchy-ane-check --smoke` exits 0 only
+when all 20 calls produce the exact fp16 sum, bit for bit; exit 2 means this
+Mac has no smoke program. It prints one JSON line suitable for the community
+collector. M1-family chips run the H13 add program, M2-family chips the H14
+add program.
+
+One separate opt-in overlay, `t6021-uboot-serial-stdin` (key
+`uboot-serial-stdin-t6021`), exists for M2 Max laptops that stop at the
+U-Boot prompt on every disk boot. It is off by default and unrelated to the
+ANE.
+
+## How it fits
+
+- **DRM accel device.** Each module is a DRM accelerator driver; the ANE
+  appears as `/dev/accel/accel0`. The DRM version ioctl's major is the ABI:
+  `1` for `ane` (M1 family), `2` for `ane_t6021` (M2 family). Clients must
+  match it.
+- **libane.** The userspace loader and submission library (C, with Python
+  bindings under `bindings/python/`). Contract on both ABIs: a completed
+  submit guarantees terminal completion and CPU-visible outputs.
+- **[mil-hwx-compiler](https://github.com/joshuaswarren/mil-hwx-compiler).**
+  The Linux ANE compiler: textual MIL in, H13/H14 ANEC (or HWX) packages out.
+  Nothing in this repo compiles a model.
+- **[omarchy-mlx](https://github.com/joshuaswarren/omarchy-mlx).** MLX for
+  Apple Silicon, installed with `bash install.sh --ane`. Its ANE runtime runs
+  a worker that owns the device while a model executes; compiled programs
+  ship in the wheel.
+
+## Contributing
+
+The most useful contribution is a capture of your machine. From an
+[omarchy-mlx](https://github.com/joshuaswarren/omarchy-mlx) checkout:
+
+```sh
+python3 scripts/collect_quick.py --submit \
+  https://mlx-omarchy-community-data.joshua-s-warren.workers.dev
+```
+
+No driver and no install needed; it finishes in seconds and fills in a row of
+the chip table above. Run it under macOS and Omarchy on the same machine and
+submit both. What gets collected and how redaction works:
+[omarchy-mlx docs/contribute-data.md](https://github.com/joshuaswarren/omarchy-mlx/blob/main/docs/contribute-data.md).
+The deep collector adds benchmarks and smoke rows.
+
+An opt-in chip is promoted to "enabled by default" by passing community
+smoke rows; a default-on chip can also drop back to opt-in when its latest
+rows are not clean. The exact rules, how to submit a judged row, and how the
+promotion automation works:
+[docs/promotion.md](docs/promotion.md).
+
+Bringing up a new chip takes more than a capture. Its overlay goes in
+`packaging/dt/`, with a cited source for every value, and
+`tools/test_ane_overlays.py` must pass. Expect PMGR, DART and SET offset
+work, netconsole, and reboots. Do not write SET `0xf` from userspace.
+
+## Newer chip data
+
+These chips have data records, not a packaged inference driver.
+The table is generated from `data/ane-soc/` and the data-only overlays.
 
 <!-- BEGIN DATA-ONLY TABLE -->
 | SoC | Internal | Boards | Overlay |
@@ -50,78 +275,3 @@ Data-only chips. Each row is a file `data/ane-soc/SOC.json`. Overlay is yes when
 | T8150 | H18 | 5 | no |
 | T8152 | H18 | 1 | yes |
 <!-- END DATA-ONLY TABLE -->
-
-Promotion. One passing community row promotes an untested chip. A passing row has a ready `omarchy-ane-check`, the chip's driver loaded, 20 smoke calls (`add-fixture`) that match the golden bit for bit, and no ANE, ANE-DART or ANE-mailbox fault. A row from a machine without omarchy-ane installed is not judged and counts neither for nor against promotion. If an opt-in chip has both passing and failing rows, the result is `CONFLICT`; it does not promote until the failing row is explained or superseded. H13 chips (T8103, T6000, T6001 and T6002) use the H13 smoke golden; H14 chips use the H14 golden. The Parakeet encoder hash is a developer check, not a collector field. `tools/promotion_check.py --remote` prints the live verdict. When it says `PROMOTE`, a PR can set that chip's line in `packaging/dt/overlays` to `enabled`.
-
-Regression. A chip that is on by default goes back to opt-in when its latest judged row is not clean. Not clean means `omarchy-ane-check` is not ready, or the row has a fault line. The chip stays opt-in until a clean row lands. `promotion_check.py` prints `REVERT` for such a chip, and a PR sets its line back to `opt-in`.
-
-In-tree rows. Each row records `driver_source`. It is `intree` when the kernel's own ANE driver ran (aurora-silicon/linux #155 builds it under `kernel/drivers/accel/ane`), `dkms` when the omarchy-ane-dkms module ran, and `none` when the kernel has no ANE driver. A row without the field counts as `dkms`. In-tree and dkms rows are judged the same way, so the `CONFLICT` and `REVERT` rules do not change. A `none` row is not judged. A `PROMOTE` names its targets: `overlay` is the PR above, and `aurora-dt` comes with it when a passing row is in-tree. A chip that is on by default and has a passing in-tree row gets `aurora-dt` alone. The gate judges a promotion PR on the base branch, where its flip is not merged yet. It merges the PR while the verdict and the targets stay the same, every judged row keeps its outcome, and no new judged row fails. New passing rows and rows that are not judged do not hold it back. Each run closes its own open promotion PR, labeled `auto-promotion` and from this repository, when it no longer proposes that chip. On an in-tree kernel the chip runs only when aurora's device tree enables its node.
-
-Two jobs of `.github/workflows/promotion.yml` make the `aurora-dt` change. The `aurora-plan` job builds the chip's board device trees from aurora-silicon/linux `aurora-wip` with `tools/aurora_dt.py`, which finds each disabled node that the ANE node uses. It removes the chip's `APPLE_ANE_UNTESTED` define when the tree has one (T6000, T6020 and T8103 at #155). Otherwise it adds `status = "okay"` for each of those nodes. This job runs code from the aurora tree, so it holds no credential. The `aurora-pr` job runs on a new runner and builds nothing. It checks that `aurora-wip` is still at the commit the plan used. It reads the file at that commit from GitHub, makes the change again, and stops before any write if the result differs from the plan. Then it commits the change to the joshuaswarren/aurorasilicon-linux fork, opens or updates a PR to aurora-silicon/linux, and comments on #155 for the in-tree tester once per PR. Only that last step gets the repository secret `AURORA_PR_TOKEN`. The token needs three permissions and no others: push to the fork, open a PR on aurora-silicon/linux, and comment there. A classic token with the `public_repo` scope can do this. Without the secret, and on a `dry_run` or `synthetic` dispatch, the step runs with `DRY_RUN=1` and only prints the diff, the PR text and the comment. When no board of the chip has an ANE node in `aurora-wip`, which is true until #155 merges, the plan prints a `SKIPPED` line and the run stays green: the aurora PR can be made only after the in-tree driver lands in that branch, and the overlay PR is not affected.
-
-To submit a judged row for an untested chip, install `omarchy-ane-dkms` and add that chip's opt-in key from the table above to `/etc/omarchy-mac-boot/dtb-overlays.opt-in`. For T6022 and T8112, run `sudo omarchy-ane-firmware-fetch` first. Then run `sudo omarchy-ane-dt apply` and reboot. From an omarchy-mlx checkout, run `python3 scripts/collect_deep.py --ane-smoke --submit`. The collector runs the smoke when the chip is idle (load < 0.5, PSI 0); no fixed uptime is required. Rows without an installed driver or smoke attempt are not judged. On a kernel that ships the ANE driver, `omarchy-ane-check` says: userspace + smoke + firmware fetch only; do not install omarchy-ane-dkms. Build the userspace from source (below) instead.
-
-## Install
-
-### Omarchy
-
-Install `omarchy-ane-dkms` (`sudo pacman -S omarchy-ane-dkms`), or pick the Install menu's "MLX + Core ML (Apple Silicon)" row. The row installs it with the rest of the MLX stack. The package:
-
-- builds `ane.ko` (M1 family) and `ane_t6021.ko` (M2 family) with DKMS for every kernel that has headers. It rebuilds them after each kernel update. Install the headers for the kernel you run (`linux-aurora-headers`, `linux-asahi-headers`). A kernel that ships the ANE driver itself (`CONFIG_DRM_ACCEL_ANE`, aurora-silicon/linux #155) keeps its own modules: DKMS skips that kernel.
-- installs the device-tree overlays to `/usr/lib/omarchy-mac-boot/dtb-overlays` and re-applies them after every kernel update (pacman hook `90-omarchy-ane-dt.hook`).
-- fetches the ANE firmware at install and upgrade on the M2 Max (pacman hook `90-omarchy-ane-firmware.hook`).
-- ships the tools: `omarchy-ane-check`, `omarchy-ane-dt`, `omarchy-ane-firmware-fetch`, `omarchy-ane-probe` (a read-only JSON report of the ANE state, [docs/ane-probe.md](docs/ane-probe.md)), `omarchy-ane-smoke`, and `omarchy-ane-run` (the `tools/ane-run` program runner).
-
-On M1, M1 Max and M2 Max the package does the rest, once omarchy-mac-boot can apply device tree overlays. That support is [omacom/omarchy-mac-pkgs#3](https://github.com/omacom/omarchy-mac-pkgs/pull/3), the port of [omacom/omarchy-mac#677](https://github.com/omacom/omarchy-mac/pull/677), which is not merged yet. omarchy-mac-boot ships the overlay directory empty, and this package drops its overlays into it. With an older omarchy-mac-boot, `omarchy-ane-dt` refuses, and the ANE node is absent unless the kernel's own device tree has it. With the support in place, the overlay applies at install and the driver binds at boot. The package adds no udev rule: systemd's default rule makes `/dev/accel/*` mode `0666`, so every user can open the ANE node.
-
-### Arch Linux ARM (asahi-alarm)
-
-Run `sudo omarchy-ane-dt apply`. It finds this Mac's board device tree from `/sys/firmware/devicetree/base/compatible`. It applies the overlays to a copy for each installed kernel. Then it checks the copy: dtc must read it, the ANE node must be present and enabled, and each new reference must resolve to an enabled node. It writes the copy to `/var/lib/omarchy-ane/dtbs/KERNEL/`. It never edits a package-owned file. It adds one line to `/etc/default/update-m1n1` so `update-m1n1` boots the copy. Then run `sudo update-m1n1` and reboot. A second run changes nothing. Removing the package takes the line and the copies out; run `sudo update-m1n1` afterwards. When the kernel's own device tree already has the ANE node enabled, the overlay steps aside.
-
-### From source
-
-```sh
-make -C ane            # ane.ko        (M1 family)
-make -C ane/t6021      # ane_t6021.ko  (M2 family)
-make -C libane && make -C bindings/python/dylib
-```
-
-Build against the headers of the kernel you run. `dkms.conf` at the repo root builds the same two modules through DKMS. The overlays install with `packaging/build-dtbo /`. Each `packaging/dt/PREFIX-NAME.dts` compiles to `OVERLAY_DIR/PREFIX/omarchy-NAME.dtbo`.
-
-## Firmware
-
-M1-family chips need no firmware from Linux. iBoot preloads it before the kernel boots. The M2 family is the other way. Linux starts the ANE's ASC firmware, and the driver takes one image only. That image is the selene payload from the macOS 13.5 (22G74) stub. Every Omarchy M1 and M2 install boots that stub. `omarchy-ane-firmware-fetch` reads the stub version from the device tree and maps it to a pinned Apple CDN URL. It range-fetches only the ANE member (about 5 MB of a ~13 GB IPSW) and unwraps the IM4P. The pins live in the driver: `a9c4b771...` for the T602x image, `af587dfa...` for the T8112 image. The tool installs the payload under `/usr/lib/firmware/apple/ane/` only when size and SHA-256 match the pin. It refuses, and writes nothing, when the stub version is unknown, the network is down, or the hash differs. On the M2 Max the pacman hook turns a failed fetch into a note, and the ANE stays off until a fetch succeeds and the Mac reboots. Apple firmware is never shared. Each Mac fetches its own copy. The tool needs nothing but Python 3's standard library.
-
-## Verifying it works
-
-```sh
-omarchy-ane-check
-```
-
-Read-only; it never loads a module. It checks, in order, that this Mac's SoC is one the drivers know. That the device tree has an enabled `apple,t*-ane` node. The check names where the node came from. Sources seen in practice: the kernel DTB, an omarchy-ane overlay, a hand-built DTB, or something else. That the driver is built for the running kernel. That it is loaded. That it is bound to the ANE platform device. That the `/dev/accel` node exists, mode `0666`. On the M2 family it also checks that the installed firmware matches the pin. `ready` (exit 0) means all of that passed: the driver is built, loaded, bound, and open. After a kernel update, run `omarchy-ane-check --installed` to confirm both modules rebuilt for every installed kernel. `omarchy-ane-dt status` gives the device-tree detail.
-
-The check also prints two lines that the community collector records. `dtbs_source` says where m1n1's device trees come from: `kernel` (a `DTBS=` line in `/etc/default/update-m1n1`), `overlay` (no such line) or `unknown` (no such file). `driver_source` says whose ANE module the kernel runs: `intree` (built in, or under `kernel/drivers/accel/ane`), `dkms` (another path, such as `updates/dkms`) or `none`. A loaded module counts by its `srcversion`, so a DKMS copy installed over a loaded in-tree driver reads `intree` until the reboot.
-
-`omarchy-ane-check --smoke` also proves execution. After the checks pass, it runs `omarchy-ane-smoke`. That tool sends the shipped add program through `libane` 20 times, one `omarchy-ane-run` process per call. Each output must equal the exact fp16 sum of fixed inputs, bit for bit. The tool prints one JSON line for the community collector (`name`, `chip`, `die`, `sha256`, `golden_sha256`, `errors`, `min_ms`, `median_ms`; `die` is the bound device's ANE die index, 0 except on an Ultra board's second device; see docs/collector-die-field.md). It exits 0 when all 20 calls are exact, 1 when one is not, and 2 when this Mac has no smoke. The M1 family (T8103, T6000, T6001, T6002) runs the H13 add program, and the M2 family runs the H14 add program.
-
-One separate opt-in overlay, `t6021-uboot-serial-stdin` (key `uboot-serial-stdin-t6021`), exists for M2 Max laptops that stop at the U-Boot prompt on every disk boot. It is off by default and unrelated to the ANE.
-
-## How it fits
-
-- DRM accel device. Each module is a DRM accelerator driver. When it binds, the ANE appears as `/dev/accel/accel0`. The DRM version ioctl's major is the ABI: `1` for `ane` (M1 family), `2` for `ane_t6021` (M2 family). Clients must match it.
-- libane. The userspace loader and submission library (C, with Python bindings under `bindings/python/`). The contract on both ABIs: a completed submit guarantees terminal completion and CPU-visible outputs. Output values are never used as completion signals.
-- mil-hwx-compiler. The Linux ANE compiler ([joshuaswarren/mil-hwx-compiler](https://github.com/joshuaswarren/mil-hwx-compiler)): textual MIL in, H13/H14 ANEC (or HWX) packages out, without Apple's compiler. Nothing in this repo compiles a model. The compiler's runner validates each package before it opens `libane`.
-- omarchy-mlx. MLX for Apple Silicon ([joshuaswarren/omarchy-mlx](https://github.com/joshuaswarren/omarchy-mlx)), installed with `bash install.sh --ane`. Its ANE runtime runs a worker. The worker pins a `libane` commit per ABI lane and owns the device while a model executes. Compiled programs ship in the wheel.
-
-## Contributing
-
-The most useful contribution is a capture of your machine. From an [omarchy-mlx](https://github.com/joshuaswarren/omarchy-mlx) checkout:
-
-```sh
-python3 scripts/collect_quick.py --submit \
-  https://mlx-omarchy-community-data.joshua-s-warren.workers.dev
-```
-
-No driver and no install needed. It finishes in seconds and fills in a row of the chip table above (see "Promotion"). Run it under macOS and Omarchy on the same machine, and submit both. The pair shows data neither side sees alone. The full story is in [omarchy-mlx docs/contribute-data.md](https://github.com/joshuaswarren/omarchy-mlx/blob/main/docs/contribute-data.md). It covers what gets collected and how redaction works. The deep collector adds benchmarks.
-
-Bringing up a chip takes more than a capture. Its overlay goes in `packaging/dt/`, with a cited source for every value. `tools/test_ane_overlays.py` must pass. Expect PMGR, DART and SET offset work, netconsole, and reboots. Do not write SET `0xf` from userspace.
