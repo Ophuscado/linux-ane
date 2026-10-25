@@ -1729,6 +1729,8 @@ static int ane_h18_chan_step(struct ane_h18 *ane, const struct ane_h18_hs_buf *t
 			{ ANE_H18_CSNE_CH_PROPERTY_WRITE, 0x14, false, "PROPERTY 0x1209", true, true, 0x1209, 1 },
 		};
 
+		bool pmu_ok = false;
+
 		for (i = 0; i < ARRAY_SIZE(seq); i++) {
 			char when[48];
 
@@ -1740,6 +1742,14 @@ static int ane_h18_chan_step(struct ane_h18 *ane, const struct ane_h18_hs_buf *t
 				continue;
 			if (seq[i].dyn && (!hs_pmu || !hs_dyn))
 				continue;
+			if (seq[i].dyn && hs_dyn > 2) {
+				dev_err(ane->dev, "ane_h18 hs_dyn must be 0, 1 or 2 (got %u)\n", hs_dyn);
+				return -EINVAL;
+			}
+			if (seq[i].dyn && !pmu_ok) {
+				dev_warn(ane->dev, "ane_h18 chan: no %s: the firmware did not take the PMU base\n", seq[i].name);
+				continue;
+			}
 			if (seq[i].dyn) {
 				u32 on = hs_dyn == 2;	/* the byte at +8 is the low byte of this word */
 
@@ -1756,6 +1766,7 @@ static int ane_h18_chan_step(struct ane_h18 *ane, const struct ane_h18_hs_buf *t
 					dev_warn(ane->dev, "ane_h18 chan: the firmware refused %s (ack at +6 nonzero), going on\n", seq[i].name);
 					continue;
 				}
+				pmu_ok = !ret;
 			} else if (seq[i].prop) {
 				u32 body[2] = { seq[i].id, seq[i].id == 0xa1 ? hs_props == 2 : seq[i].val };
 
