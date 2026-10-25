@@ -14,6 +14,8 @@ The staged decode keeps the Q6_K head on the CPU. It runs the 38 layer programs 
 | int8 with GPTQ weights | M2 Max (H14) | `de3d4dab6cea2fe8997f83207266c77902d64ed9b4ec1535833fbb60be4cbcf8` |
 | int8 with GPTQ weights, mixed calibration | M1 (H13) | `829b43ab2f42e962d85617a8ce47ac08d17286c6c035c842f5a29f1fce4d1bf5` |
 | int8 with GPTQ weights, mixed calibration | M2 Max (H14) | `539b3c73d09e187474d6777f95b9068c9234f8cef92abc3e7e4542daac31a116` |
+| int8 with GPTQ weights, mixed calibration, attention in fp16 | M1 (H13) | `3fbb7a306a1a515aff14574165ac6ad9bad912bbbbe7466c52a5092494ab91d5` |
+| int8 with GPTQ weights, mixed calibration, attention in fp16 | M2 Max (H14) | `d628ebc486deb0bddc84817a09dc16404a49047cb4c5ef3229527249c062de92` |
 
 The int8 package replaces the weights of 15 of the 17 large programs with int8 per output row. Two programs stay fp16, because plain int8 cost them too much quality. The weights come from GPTQ. Each row is rounded to minimise the error on the layer's real activations. The 80 calibration prompts are not in the test set.
 
@@ -68,7 +70,34 @@ The first GPTQ package was calibrated on prose and multilingual prompts. The mix
 | code, the 26 unseen prompts: KL, top-1 | 0.000254, 0.9958 | 0.000407 (1.60 times), 0.9934 | 0.000351 (1.38 times), 0.9952 |
 | long position, 50 prompts of 170 positions: KL, top-1 | 0.000293, 0.9935 | 0.000605 (2.06 times), 0.9896 | 0.000663 (2.26 times), 0.9898 |
 
-The mixed package passes the same rule as before on the code prompts it never saw (at most 2 times the fp16 KL and top-1 within 0.001). The first package failed it on top-1 there. On the long-position prompts neither package passes, and the mixed one is 10 percent worse. Those prompts are the old prompt set. Neither calibration contains them. Against the first GPTQ package the mixed package costs nothing on the technical set (0.000390 against 0.000397; fp16 is 0.000267). Both packages stay opt-in speed tiers. The mixed H14 package for the M2 Max has not been run yet. The step time of the mixed package was not measured, because the 13-inch ran with a GPU load. The weight bytes are the same as the first package.
+The mixed package passes the same rule as before on the code prompts it never saw (at most 2 times the fp16 KL and top-1 within 0.001). The first package failed it on top-1 there. On the long-position prompts neither package passes, and the mixed one is 10 percent worse. Those prompts are the old prompt set. Neither calibration contains them. Against the first GPTQ package the mixed package costs nothing on the technical set (0.000390 against 0.000397; fp16 is 0.000267). The selective package below replaces both as the speed tier. The mixed H14 package for the M2 Max has not been run for quality. Its step on the 13-inch M1 was 29.4 percent lower than fp16 in one run under GPU load. The weight bytes are the same as the first package.
+
+## Selective int8, the speed tier
+
+The mixed package keeps the quality cost of int8 on long text. A scan with a CPU model showed where it comes from. It put the largest share on the early attention programs. So the selective package keeps the five attention programs in fp16 (programs 6, 12, 18, 25 and 31) and keeps the ten MLP programs in int8. It uses the mixed calibration. It gives back about half of the int8 weight-byte saving. It replaces the mixed package as the opt-in speed tier.
+
+Quality against the fp32 reference, on the same three sets as above. The 13-inch M1 used the older runner without the Q6_K head. The 14-inch M2 Max used the staged decode with 50 prompts per set. The shipped numbers are in the fp16 column of the same chip:
+
+| Chip | Set | fp16: KL, top-1 | Selective: KL, top-1 | KL ratio | Top-1 gap |
+|---|---|---|---|---|---|
+| 13-inch M1 | technical, 50 prompts of 128 positions | 0.000267, 0.9955 | 0.000330, 0.9955 | 1.24 | 0.0000 |
+| 13-inch M1 | code, the 26 unseen prompts | 0.000254, 0.9958 | 0.000299, 0.9949 | 1.18 | 0.0009 |
+| 13-inch M1 | long position, 50 prompts of 170 positions | 0.000293, 0.9935 | 0.000453, 0.9912 | 1.54 | 0.0024 |
+| 14-inch M2 Max | technical | 0.000269, 0.9955 | 0.000333, 0.9956 | 1.24 | -0.0001 |
+| 14-inch M2 Max | code, the 26 unseen prompts | 0.000256, 0.9958 | 0.000303, 0.9952 | 1.18 | 0.0006 |
+| 14-inch M2 Max | long position | 0.000293, 0.9926 | 0.000450, 0.9911 | 1.54 | 0.0015 |
+
+The selective package passes the technical gate and the code rule on both chips. On the long-position prompts the KL is 1.54 times the fp16 KL on both chips, which is under the limit of 2 times. The top-1 limit is 0.001. The package misses it on both chips: the gap is 0.0024 on the 13-inch M1 and 0.0015 on the 14-inch M2 Max. The limit was set before the runs and stays. So the package is a speed tier and the fp16 package stays the default. The mixed package read 2.26 times on the long-position prompts of the 13-inch M1, and the first GPTQ package 2.06 times.
+
+Step time, p50. The shipped package and the selective package were interleaved in one session, with the arms of each pair within 1 percent of each other:
+
+| Chip | fp16 | Selective | Change | First GPTQ package |
+|---|---|---|---|---|
+| 13-inch M1, under GPU load | 0.0863 s | 0.0732 s | 14.5 percent lower (median of 4 runs, from 13.6 to 15.4; the values shown are from the quietest run) | 29.4 percent lower |
+| 14-inch M2 Max | 0.1580 s | 0.1401 s | 11.3 percent lower | 21.3 percent lower |
+| 16-inch M1 Max, level driver | 0.1189 s | 0.1086 s | 8.7 percent lower (median of 3 runs, from 7.9 to 8.8; the values shown are from one of them) | 16.6 percent lower |
+
+The selective package keeps about half of the step gain of the first GPTQ package. The 16-inch M1 Max has not run the quality sets.
 
 ## What this does not show
 
