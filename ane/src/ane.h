@@ -113,6 +113,18 @@ struct ane_device {
 	} boost;
 
 	/*
+	 * ANE clock level (ane_dvfs.c): pmgr DVFS block and PMP PTD window, mapped only when
+	 * the DT names them (reg-names "dvfs" and "ptd"); NULL otherwise.
+	 */
+	struct ane_dvfs {
+		void __iomem *dvfs;
+		void __iomem *ptd;
+		bool active;
+		unsigned int ack_timeouts;
+		const char *state;
+	} dvfs;
+
+	/*
 	 * ane_stats producer (out-of-tree coreglass producer contract).
 	 * Counters and ring are preallocated at probe and read-only over
 	 * sysfs/debugfs. The `stats` module parameter governs creation
@@ -156,6 +168,11 @@ int ane_boost_init(struct ane_device *ane);
 void ane_boost_exit(struct ane_device *ane);
 void ane_boost_begin(struct ane_device *ane);
 void ane_boost_end(struct ane_device *ane);
+
+int ane_dvfs_init(struct ane_device *ane);
+void ane_dvfs_exit(struct ane_device *ane);
+void ane_dvfs_up(struct ane_device *ane);
+void ane_dvfs_down(struct ane_device *ane);
 
 #define ANE_DART_MAX 3
 #define ANE_DART_SCRATCH_MAX 16

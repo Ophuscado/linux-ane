@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+- ANE clock level on the T6001 (M1 Max): ane.ko requests level 1 from the PMP
+  when the partition comes up and releases it before the partition goes down
+  (`ane/src/ane_dvfs.c`, runtime resume and suspend), in the order macOS uses.
+  A full Qwen decode step on the 16-inch drops from 0.2009 s to 0.1158 s (4.98
+  to 8.64 tokens per second) with bit-identical logits; level 2 adds under 3
+  percent and higher levels were not written. The driver needs two more `reg`
+  entries and the PMS SRAM power domain on the ANE node (only the T6001 overlay
+  carries them; without them nothing changes) and the PMP firmware running (nothing in the repository starts it);
+  `perf_state` in the device's sysfs directory says what happened. See
+  `receipts/2026-10-24-ane-level-driver/README.md`.
+- The release step cuts the release it should: one release per run covering
+  every promotion merged since the last tag (verdict, chip, row shas,
+  driver_source, merge sha), tagging the release commit so the tarball
+  carries its own CHANGELOG section, with `## Unreleased` kept as the first
+  section.
+- The promotion flip is state-independent: the check's case lists and the
+  tested-header list derive their order from rules instead of absolute seats
+  into the v0.4.2 five-chip list, each overlay dts carries one
+  tool-written `Overlay state:` line, the offline suites pick their chips
+  from the overlays table, and `test_promote_chip` runs in the promotion
+  gate. Any promotion state round-trips and passes.
+- `propose` stages only the tracked files the flip wrote; `git add -A` had
+  shipped a committed `__pycache__` blob in v0.4.3 (removed, and
+  `__pycache__/` and `*.pyc` are ignored now).
+- The T6000/T6020 prose matches 0.4.3: the README's default-on line and the
+  evidence cells name the passing rows 6eb94f49985b and 3c9389040f51, the
+  overlay dts headers and the libane receipt stop claiming untested/opt-in,
+  and the libane entry and receipt carry the hardware numbers (#111) instead
+  of "not merged before hardware" and lab aliases.
+
 - `ane/h18` gains `hs_props=1` (stage script argument 14, with chan 3 or 4). After CONFIG_GET it sends the five CH_PROPERTY_WRITE commands the macOS kext sends, in the kext's order: property 0x10a4 = 1, then RESOURCE_INFO_GET, then 0x10a6 = 1, 0xa1 = 0, 0x10aa = 1 and 0x1209 = 1. The block is 0x14 bytes with the property id at +0xc and the value at +0x10, read from the kernelcache of build 26A434 (builder at 0xfffffe0009363890). The last runs sent none of them and the first program stayed started and never finished. The values of 0x10a6 and 0x1209 depend on kext config bytes that are not known for the T8152, so both are sent as 1. A write the firmware refuses is logged and the sequence goes on. The default setting command (0x2e) is not sent, because its value comes from the same unknown config. The simulation checks the order, the ids and the values, a refused write and the refusal without `hs_start=1`.
 
 - `ane/h18` logs the firmware console as text after a failed handshake command or a failed program. A record of the terminal ring holds the address of the text, its length and a timestamp (seen on a board in October 2026, not documented anywhere); the text lies in a buffer the host gave the firmware, so the module reads it and prints one line per record with the slot number and the timestamp. Records that point outside the module's buffers, or whose length is 0 or over 256 bytes, are counted and not printed. The first four printed records also appear as raw bytes (at most 32 each), to tell text from a format reference. Nothing is written. The simulation plants such records and checks the line. Not verified on a board yet: that every record on a real run has this layout.

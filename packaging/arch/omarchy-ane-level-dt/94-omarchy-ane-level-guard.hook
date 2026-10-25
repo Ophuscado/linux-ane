@@ -1,0 +1,13 @@
+# A linux-aurora update replaced the T6001 device trees: the level overlay names the kernel's power controllers by raw phandle,
+# so check them before 95-m1n1-install.hook and 95-omarchy-mac-dtb-overlays.hook rebuild m1n1 stage 2, and drop the overlay
+# (loudly) when they differ.
+[Trigger]
+Type = Path
+Operation = Install
+Operation = Upgrade
+Target = usr/lib/modules/*/dtbs/t6001-*
+
+[Action]
+Description = Checking the ANE level overlay against the new T6001 device trees...
+When = PostTransaction
+Exec = /usr/bin/omarchy-ane-level-check --guard

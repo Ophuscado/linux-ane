@@ -1,0 +1,15 @@
+_krel=7.1.12-2-12.6-sep-ARCH
+
+post_install() {
+	depmod -a "$_krel"
+	echo "omarchy-ane-modules-aurora-12.6: updates/ane.ko is used from the next boot of $_krel; a loaded ane module is not replaced."
+	echo "  check: modinfo -n ane   (must name .../updates/ane.ko)"
+}
+
+post_upgrade() {
+	post_install
+}
+
+post_remove() {
+	depmod -a "$_krel"
+}

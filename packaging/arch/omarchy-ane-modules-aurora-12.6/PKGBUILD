@@ -1,0 +1,35 @@
+# Maintainer: omarchy-ane
+# The omarchy-ane driver (ane.ko, with the ANE clock level of ane/src/ane_dvfs.c) for the linux-aurora kernel
+# 7.1.12-2-12.6-sep-ARCH, installed in updates/ so that depmod prefers it to the kernel's own kernel/drivers/accel/ane/ane.ko
+# (which stays untouched). DKMS excludes this package on kernels that ship their own ane driver (CONFIG_DRM_ACCEL_ANE), hence
+# this per-kernel package. It is built against the headers of the one kernel it names and refuses to build against another.
+# Build on the machine, from a checkout of the omarchy-ane repository:
+#   cd packaging/arch/omarchy-ane-modules-aurora-12.6 && OMARCHY_ANE_PKGVER=<version> makepkg -f
+pkgname=omarchy-ane-modules-aurora-12.6
+pkgver=${OMARCHY_ANE_PKGVER:-0.4.3.cedeebe}
+pkgrel=1
+pkgdesc="omarchy-ane ane.ko with the ANE clock level for linux-aurora 7.1.12-2-12.6-sep-ARCH"
+arch=('aarch64')
+url="https://github.com/joshuaswarren/omarchy-ane"
+license=('GPL-2.0-only OR MIT')
+depends=('lab-linux-aurora-modules-12.6' 'kmod')
+makedepends=('linux-aurora-headers=7.1.12.aurora2-12.6' 'clang' 'lld' 'llvm')
+install=omarchy-ane-modules-aurora.install
+options=(!strip !debug)
+_krel=7.1.12-2-12.6-sep-ARCH
+_repo=$startdir/../../..
+
+prepare() {
+	[ -d "/usr/lib/modules/$_krel/build" ] || { echo "no kernel headers for $_krel" >&2; return 1; }
+	mkdir -p ane
+	cp -r "$_repo/ane/Makefile" "$_repo/ane/src" "$_repo/ane/include" "$_repo/ane/ane_stats_show.c" ane/
+}
+
+build() {
+	make -C /usr/lib/modules/$_krel/build M="$srcdir/ane" LLVM=1 ANE_VERSION="$pkgver" modules
+	modinfo -F vermagic "$srcdir/ane/ane.ko" | grep -q "^$_krel " || { echo "ane.ko vermagic is not $_krel" >&2; return 1; }
+}
+
+package() {
+	install -Dm644 "$srcdir/ane/ane.ko" "$pkgdir/usr/lib/modules/$_krel/updates/ane.ko"
+}

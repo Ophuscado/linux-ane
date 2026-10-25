@@ -1,0 +1,39 @@
+// SPDX-License-Identifier: GPL-2.0+ OR MIT
+/*
+ * ANE clock level (ane/src/ane_dvfs.c) for T6001 (M1 Max) board device trees whose kernel already carries the ANE
+ * node, as linux-aurora 7.1.12.aurora2 does: the node is /soc/ane@285c04000 there (the overlay of t6001-ane.dts creates
+ * /soc/ane@284000000 instead, and is left out when the kernel's node is available). This overlay adds to the
+ * kernel's node:
+ *   reg-names "dvfs": the pmgr DVFS block, macOS RegMap 113 = pmgr ADT index 39 of the M1 Max (AppleT6001PMGR::initRegMaps
+ *                     in the 25G83 kernelcache), PA 0x285868000, 0x4000 bytes: DVFS_ON at +0x2000, DVFS_CMD at +0xa00
+ *   reg-names "ptd":  the PMP PTD window, 0x28e3c0000, 0x20000 bytes: read entities at +reg*16, update space at +0x10000 + reg*8
+ *   the PMS SRAM power domain (the PTD window lives in it), after the five domains the node already has.
+ * Without these entries ane.ko behaves as before. No skip rule: this file is for kernels that have the node; on a kernel
+ * without it the target path does not exist, fdtoverlay refuses and the device tree stays as the kernel shipped it.
+ *
+ * The power domains are the kernel's own phandles, written as numbers. A label on an existing node in an overlay gives that
+ * node a new phandle while every other reference keeps the old number (fdtoverlay 1.7.2 does this), so no label is used.
+ * The numbers are those of linux-aurora 7.1.12.aurora2-20261013.18 (ane_sys_cpu 0x15, ane_set1..4 0x19..0x1c, pms_sram 0x20);
+ * the package (packaging/arch/omarchy-ane-level-dt) checks against the installed device trees that each one still names the
+ * controller below, and removes its overlay file after installation, and after a kernel update, when they do not.
+ *   0x15 /soc/power-management@28e080000/power-controller@2c8  ane_sys_cpu
+ *   0x19 .../power-controller@c010 ane_set1   0x1a .../@c018 ane_set2   0x1b .../@c020 ane_set3   0x1c .../@c028 ane_set4
+ *   0x20 .../power-controller@2e0  pms_sram
+ * Evidence for the addresses and the sequence (exact sources, sha256): receipts/2026-10-24-ane-level-driver/README.md, section Evidence.
+ */
+/dts-v1/;
+/plugin/;
+
+/ {
+	fragment@0 {
+		target-path = "/soc/ane@285c04000";
+
+		__overlay__ {
+			reg-names = "engine", "dvfs", "ptd";
+			reg = <0x2 0x85c04000 0x0 0x24000>,
+			      <0x2 0x85868000 0x0 0x4000>,
+			      <0x2 0x8e3c0000 0x0 0x20000>;
+			power-domains = <0x15>, <0x19>, <0x1a>, <0x1b>, <0x1c>, <0x20>;
+		};
+	};
+};

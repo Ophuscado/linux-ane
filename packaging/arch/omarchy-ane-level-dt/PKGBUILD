@@ -1,0 +1,39 @@
+# Maintainer: omarchy-ane
+# ANE clock level for the T6001 (M1 Max): the device tree overlay that gives the kernel's ANE node the pmgr DVFS window, the
+# PMP PTD window and the PMS SRAM power domain (packaging/dt/t6001-ane-level.dts), installed where omarchy-mac-boot applies
+# package-owned overlays. Build from a checkout of the omarchy-ane repository:  cd packaging/arch/omarchy-ane-level-dt && makepkg -f
+# The driver that uses the windows is the package omarchy-ane-modules-aurora-12.6.
+pkgname=omarchy-ane-level-dt
+pkgver=${OMARCHY_ANE_PKGVER:-0.4.3.cedeebe}
+pkgrel=1
+pkgdesc="ANE clock level overlay for the T6001 device trees of linux-aurora"
+arch=('any')
+url="https://github.com/joshuaswarren/omarchy-ane"
+license=('GPL-2.0-or-later')
+depends=('omarchy-mac-boot>=20261005' 'dtc>=1.7.1' 'linux-aurora')
+makedepends=('dtc')
+install=omarchy-ane-level-dt.install
+options=(!strip)
+_repo=$startdir/../../..
+
+build() {
+	dtc -q -@ -I dts -O dtb -o t6001-ane-level.dtbo "$_repo/packaging/dt/t6001-ane-level.dts"
+}
+
+package() {
+	install -Dm644 t6001-ane-level.dtbo "$pkgdir/usr/lib/omarchy-mac-boot/dtb-overlays/t6001/omarchy-ane-level.dtbo"
+	{
+		echo '#!/bin/sh'
+		echo '# omarchy-ane-level-check [--guard]: is the installed linux-aurora device tree the one the level overlay was written for (read-only).'
+		echo '# --guard: if not, remove the overlay so the next update-m1n1 builds without it.'
+		sed -n '/^# BEGIN-CHECK$/,/^# END-CHECK$/p' "$startdir/omarchy-ane-level-dt.install"
+		cat << 'EOF'
+case "${1:-}" in
+--guard) _level_guard ;;
+*) _level_check ;;
+esac
+EOF
+	} > omarchy-ane-level-check
+	install -Dm755 omarchy-ane-level-check "$pkgdir/usr/bin/omarchy-ane-level-check"
+	install -Dm644 "$startdir/94-omarchy-ane-level-guard.hook" "$pkgdir/usr/share/libalpm/hooks/94-omarchy-ane-level-guard.hook"
+}
