@@ -128,6 +128,10 @@ static unsigned int hs_props;
 module_param(hs_props, uint, 0444);
 MODULE_PARM_DESC(hs_props, "hs_start=1: send the five CH_PROPERTY_WRITE commands (0x1f) the macOS kext sends after CONFIG_GET and RESOURCE_INFO_GET: 0x10a4=1, 0x10a6=1, 0xa1=0, 0x10aa=1, 0x1209=1, in the kext's order. A refused write is logged and the sequence goes on. The values of 0x10a6 and 0x1209 depend on kext config bytes that are not known for the T8152. hs_props=2 sends 0xa1 = 1 instead of 0: the kext writes 0 for 'ProcedureCall Firmware log', 1 may turn the firmware's per call log on (not tested). Default 0 (off).");
 
+static bool hs_pmu;
+module_param(hs_pmu, bool, 0444);
+MODULE_PARM_DESC(hs_pmu, "hs_start=1: send SET_SNE_PMU_BASE2 (0x29) with the value 0x300700000 after START and before CONFIG_GET, as the macOS kext does for ANE types 0x300 and 0x310. Default off: the firmware uses the value as a bus address, so one value only.");
+
 static bool hs_premap;
 module_param(hs_premap, bool, 0444);
 MODULE_PARM_DESC(hs_premap, "hs_prog=1: send PREMAP_BUFFER (0x20d, type 2) for one inference request pool before LOAD_PROGRAM, as the macOS kext does at init. The reply is logged. Default off.");
@@ -1707,9 +1711,10 @@ static int ane_h18_chan_step(struct ane_h18 *ane, const struct ane_h18_hs_buf *t
 		/* the kext's order: PRINT_ENABLE, START, CONFIG_GET, RESOURCE_INFO_GET (the last two commands only with hs_start) */
 		/* prop: a CH_PROPERTY_WRITE (0x1f, 0x14 bytes: u32 0 at +8, property id at +0xc, value at +0x10), sent only with hs_props. The kext sends the first one before
 		 * RESOURCE_INFO_GET and the other four after it. */
-		static const struct { u16 op; u32 len; bool arg; const char *name; bool start_only; bool prop; u32 id, val; } seq[] = {
+		static const struct { u16 op; u32 len; bool arg; const char *name; bool start_only; bool prop; u32 id, val; bool pmu; } seq[] = {
 			{ ANE_H18_CSNE_PRINT_ENABLE, 12, true, "PRINT_ENABLE", false },
 			{ ANE_H18_CSNE_START, 12, false, "START", true },
+			{ ANE_H18_CSNE_SET_SNE_PMU_BASE2, 16, false, "SET_SNE_PMU_BASE2", true, false, 0, 0, true },
 			{ ANE_H18_CSNE_CONFIG_GET, 16, false, "CONFIG_GET", false },
 			{ ANE_H18_CSNE_CH_PROPERTY_WRITE, 0x14, false, "PROPERTY 0x10a4", true, true, 0x10a4, 1 },
 			{ ANE_H18_CSNE_RESOURCE_INFO_GET, 100, false, "RESOURCE_INFO_GET", true },
@@ -1726,7 +1731,17 @@ static int ane_h18_chan_step(struct ane_h18 *ane, const struct ane_h18_hs_buf *t
 				continue;
 			if (seq[i].prop && !hs_props)
 				continue;
-			if (seq[i].prop) {
+			if (seq[i].pmu && !hs_pmu)
+				continue;
+			if (seq[i].pmu) {
+				u64 pmu_base = ANE_H18_PMU_BASE_H18G;
+
+				ret = ane_h18_cmd_body(ane, &io, seq[i].op, seq[i].len, false, 0, (const u8 *)&pmu_base, sizeof(pmu_base), &blk);
+				if (ret == -EREMOTEIO) {
+					dev_warn(ane->dev, "ane_h18 chan: the firmware refused %s (ack at +6 nonzero), going on\n", seq[i].name);
+					continue;
+				}
+			} else if (seq[i].prop) {
 				u32 body[2] = { seq[i].id, seq[i].id == 0xa1 ? hs_props == 2 : seq[i].val };
 
 				ret = ane_h18_cmd_body(ane, &io, seq[i].op, seq[i].len, false, 0, (const u8 *)body, sizeof(body), &blk);

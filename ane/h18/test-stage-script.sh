@@ -121,6 +121,17 @@ sleep 1
 FAKE_STAGE=boot expect "step 5 on a DTB with iommus and power-domains passes" 0 bash "$S" 5 0123abcd GO 1 2 800 1 1
 grep -q 'stage=boot confirm_power=1 confirm_boot=1 psd_state=1 psd_slots=2 boot_wait_ms=800 alias_mbox=1 read_dart=1 map_fw=1 rtkit_hello=1' "$T/insmod.args" && echo "  PASS step 5 args carry map_fw=1" || { echo "  FAIL step 5 args"; fails=$((fails + 1)); }
 expect "a second step 5 or 4 on one boot is refused" 2 bash "$S" 4 0123abcd GO
+# pmu and pwait: pmu needs chan 3 or 4, both are 0 or 1
+expect "step 5 with pmu=1 and chan=2 refused" 2 bash "$S" 5 0123abcd GO 1 2 800 0 3 1 1 2 0 0 0 1
+expect "step 5 with pmu=2 refused" 2 bash "$S" 5 0123abcd GO 1 2 800 0 3 1 1 4 0 0 0 2
+rm -f "$T/work/step4-run-0123abcd"
+sleep 1
+FAKE_STAGE=boot expect "step 5 with pmu=1 and pwait=1 passes" 0 bash "$S" 5 0123abcd GO 1 2 800 0 3 1 1 4 0 0 0 1 1
+grep -q 'hs_props' "$T/insmod.args" && { echo "  FAIL props leaked into the pmu args"; fails=$((fails + 1)); } || echo "  PASS props stay off when 0"
+grep -q 'hs_pmu=1 hs_wait_ms=5000' "$T/insmod.args" && echo "  PASS pmu and pwait args reach the module" || { echo "  FAIL pmu/pwait args"; fails=$((fails + 1)); }
+rm -f "$T/fw/ane_h18_prog.bin"
+rm -f "$T/work/step4-run-0123abcd"
+sleep 1
 rm -f "$T/work/step4-run-0123abcd" "$T/dt/soc/ane@419600000/iommus" "$T/dt/soc/ane@419600000/power-domains"
 sleep 1
 FAKE_STAGE=boot expect "step 4 on the old DTB passes and carries no map_fw" 0 bash "$S" 4 0123abcd GO 1 2 800
