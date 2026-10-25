@@ -39,8 +39,23 @@ Quality against the fp32 reference, from the quality harness:
 
 On the 13-inch the GPTQ package decodes 16.4 tokens per second against 11.6 for the fp16 package. With two decode streams in one process it reaches 18.05 scored steps per second against 12.12, which is 48.9 percent more.
 
-The GPTQ package passes the gate on both chips. Plain int8 missed it on both. Paired by prompt on the M2 Max, GPTQ lowers the KL by 27 percent against plain int8. It is lower on 45 of 50 prompts. A second GPTQ run with other damping choices gave the same KL to 0.3 percent. The first set is the package.
+The fp16 package is the default. The GPTQ package is an opt-in speed tier. It passes the gate on both chips, on the technical prompts it was measured on. Plain int8 missed it on both. Paired by prompt on the M2 Max, GPTQ lowers the KL by 27 percent against plain int8. It is lower on 45 of 50 prompts. A second GPTQ run with other damping choices gave the same KL to 0.3 percent. The first set is the package.
+
+## Other prompt sets
+
+The gate above uses technical text. The GPTQ calibration used prose and multilingual prompts. On the 14-inch M2 Max the package was also run on two sets it never saw, with the fp16 package in the same session:
+
+| Set | Package | Step p50 | KL | Top-1 |
+|---|---|---|---|---|
+| code, 50 prompts of 128 positions | fp16 | 0.1575 s | 0.000289 | 0.9966 |
+| code | int8, GPTQ | 0.1234 s | 0.000454 | 0.9953 |
+| long position, 50 prompts of 170 positions | fp16 | 0.1574 s | 0.000293 | 0.9926 |
+| long position | int8, GPTQ | 0.1243 s | 0.000604 | 0.9898 |
+
+The step is 21.7 percent lower on the code set and 21.0 percent lower on the long-position set. The KL is 1.57 times the fp16 KL on code and 2.06 times on the long-position set. Top-1 is lower by 0.0013 and 0.0028. The rule set before the run asked for at most 2 times the fp16 KL and a top-1 within 0.001. Both sets miss it. So the int8 GPTQ package is a speed tier: it passes the technical gate and costs more quality on text unlike its calibration. Its KL is higher than the fp16 KL on 48 of 50 code prompts and on 49 of 50 long-position prompts. The 13-inch M1 has not run these two sets.
+
+The recipe scripts and the calibration notes are in the compiler repo: `receipts/2026-10-24-int8-gptq-qwen38-h13-h14` in [mil-hwx-compiler](https://github.com/joshuaswarren/mil-hwx-compiler).
 
 ## What this does not show
 
-The 16-inch M1 Max has not run the int8 GPTQ package. The fp16 KL on the M2 Max comes from an earlier run. The prompts are technical text. A check on code and long-context prompts is not done yet.
+The 16-inch M1 Max has not run the int8 GPTQ package for quality. The fp16 KL on the M2 Max comes from an earlier run. Plain int8 is not measured on the code and long-position sets, so the split of the cost between int8 and GPTQ is open.
