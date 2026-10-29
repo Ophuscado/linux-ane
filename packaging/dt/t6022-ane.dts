@@ -36,6 +36,34 @@
 			ane@284000000 {
 				compatible = "apple,t6022-ane";
 			};
+
+			/*
+			 * The three DARTs take their power from ANE_SYS (pmgr 0x260) on
+			 * T6022. In the live macOS 15 IORegistry of a J475d, dart-ane0
+			 * (all three windows) has power-gates 0x1fb, which pmgr's device
+			 * table names ANE-SYS-DART, a gate without registers under 0x3c
+			 * ANE_SYS. With dart0 in pmp, the J475d panicked at boot with an
+			 * asynchronous SError in apple_dart_probe (7.1.13); with all three
+			 * in ANE_SYS it boots, the DARTs initialize and ane_t6021's smoke
+			 * run passes 20/20 (receipts/2026-10-29-t6022-j475d-ane-sys).
+			 */
+			iommu@285800000 {
+				power-domains = <&ps_ane_sys>;
+			};
+
+			iommu@285810000 {
+				power-domains = <&ps_ane_sys>;
+			};
+
+			iommu@285820000 {
+				power-domains = <&ps_ane_sys>;
+			};
+		};
+	};
+
+	fragment@12 {
+		target-path = "/soc/power-management@28e080000/power-controller@260";
+		ps_ane_sys: __overlay__ {
 		};
 	};
 };
