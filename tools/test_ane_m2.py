@@ -84,7 +84,7 @@ for dtb in sorted(Path(os.environ['ANE_DTBS']).glob('*.dtb')) if os.environ.get(
 # 2. omarchy-ane-dt apply on a fake root with the packaged overlays and a
 # T602x board tree that has the nodes the overlays reach by path.
 PCS = ''.join(f'power-controller@{a} {{ #power-domain-cells = <0>; #reset-cells = <0>; }};'
-              for a in ('2c8', '2e0', '4000', '4008', '4010', '4018', '4020', '4028', '4030'))
+              for a in ('260', '2c8', '2e0', '4000', '4008', '4010', '4018', '4020', '4028', '4030'))
 BOARD = '''/dts-v1/;
 / {
   compatible = "apple,%s", "apple,%s";
